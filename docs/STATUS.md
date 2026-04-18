@@ -1,47 +1,63 @@
 # CBC — Project Status
 
-**Current Sprint:** 2 — Frontend Page Flow (No Chat Yet)
+**Current Sprint:** 3 — Company Registry & Admin General Tab
 **Last Updated:** 2026-04-18
 
 ---
 
-## Sprint 1 — COMPLETE
+## Sprint 2 — COMPLETE
 
 ### Deliverables
-- [x] `CBCopilot/src/backend/main.py`
-- [x] `CBCopilot/src/backend/core/config.py`
-- [x] `CBCopilot/src/backend/api/v1/admin/auth.py`
-- [x] `CBCopilot/src/frontend/sidecar/main.py` (minimal: /internal/health + /internal/config)
-- [x] `CBCopilot/Dockerfile.backend`
-- [x] `CBCopilot/Dockerfile.frontend`
-- [x] `CBCopilot/docker-compose.backend.yml`
-- [x] `CBCopilot/docker-compose.frontend.yml`
-- [x] `CBCopilot/config/deployment_backend.json`
-- [x] `CBCopilot/config/deployment_frontend.json`
-- [x] `CBCopilot/config/nginx/frontend.conf`
-- [x] `CBCopilot/config/supervisord.conf`
-- [x] Admin SPA shell (Setup/Login/Dashboard-placeholder) + Vite/Tailwind config
-- [x] Frontend React stub so Nginx has something to serve before Sprint 2
-- [x] ADR-007 logged: online-detection criterion moved from Sprint 1 to Sprint 4
+- [x] `CBCopilot/src/frontend/src/App.tsx` (router rewrite)
+- [x] `CBCopilot/src/frontend/src/types.ts` (Phase, LangCode, Company, SurveyData, ComparisonScope)
+- [x] `CBCopilot/src/frontend/src/token.ts` (XXXX-NNNN generator — adapted from HRDD)
+- [x] `CBCopilot/src/frontend/src/i18n.ts` (EN only for Sprint 2; Sprint 8 adds ES/FR/DE/PT)
+- [x] `CBCopilot/src/frontend/src/index.css` (+ tailwind directives)
+- [x] `CBCopilot/src/frontend/src/components/LanguageSelector.tsx`
+- [x] `CBCopilot/src/frontend/src/components/DisclaimerPage.tsx`
+- [x] `CBCopilot/src/frontend/src/components/SessionPage.tsx`
+- [x] `CBCopilot/src/frontend/src/components/AuthPage.tsx` (with dev banner showing 6-digit code)
+- [x] `CBCopilot/src/frontend/src/components/InstructionsPage.tsx`
+- [x] `CBCopilot/src/frontend/src/components/CompanySelectPage.tsx` (NEW)
+- [x] `CBCopilot/src/frontend/src/components/SurveyPage.tsx` (CBC fields + comparison_scope for Compare All)
+- [x] `CBCopilot/src/frontend/package.json`, `tailwind.config.js`, `postcss.config.js`
+- [x] `CBCopilot/src/frontend/sidecar/main.py` — added /internal/companies, auth stubs, /internal/queue
+- [x] `CBCopilot/src/frontend/sidecar/companies.json` (stub; Sprint 3 moves it to backend)
+- [x] `CBCopilot/Dockerfile.frontend` — copies companies.json into container
+- [x] CompanySelectPage: country tags removed from buttons (data stays in model for Sprint 5 filtering)
+- [x] `docs/IDEAS.md` — backlog of captured-but-not-scoped feature ideas
+- [x] `.claude/commands/idea.md` — `/idea` slash command for logging into IDEAS.md
 
-### Acceptance Criteria (to verify manually after docker build)
-- [ ] `docker compose -f CBCopilot/docker-compose.backend.yml up` starts without errors
-- [ ] `GET http://localhost:8100/health` returns `{"status": "ok"}` (host port — `CBC_BACKEND_PORT`)
-- [ ] `GET http://localhost:8100/admin/` serves the admin SPA (login page)
-- [ ] Admin setup flow works: set password → login → JWT returned
-- [ ] `docker compose -f CBCopilot/docker-compose.frontend.yml up` starts without errors
-- [ ] `GET http://localhost:8190/internal/health` returns `{"status": "ok"}` (host port — `CBC_FRONTEND_PORT`)
-- [ ] Sidecar reachable from backend container (smoke test via `docker exec`)
+### Acceptance Criteria
+- [x] Language selection page shows and stores choice (EN only for now)
+- [x] Disclaimer page displays and "Accept" advances
+- [x] Session token generated and stored in browser state
+- [x] Auth page sends email verification code (dev banner shows it)
+- [x] Auth is skipped when auth_required = false (verified by toggling config)
+- [x] Instructions page displays and advances
+- [x] Company selection page shows Compare All + 3 sample companies
+- [x] Selecting a company advances to survey
+- [x] Survey page shows all fields per §3.4
+- [x] Survey submit stores data in sidecar (`/internal/queue` + `dequeue_messages` smoke-tested)
+- [x] Placeholder page shows after submit
+- [x] Compare All selection shows comparison scope field in survey
+- [x] Full page flow works in Docker (`localhost:8190`)
 
-### Deviations
-- Moved "backend polls sidecar and detects online" to Sprint 4 (ADR-007). `polling.py` is a Sprint 6 deliverable; `frontend_registry.py` is Sprint 4.
-- Added `campaigns_path` to backend config for later sprints (Sprint 3+ uses it).
+### Deviations from milestone
+- Auth is a sidecar-only stub returning `dev_code` inline (per user decision D1 = A). Real backend-mediated SMTP lands Sprint 7.
+- Document upload shows a file input but does not send the file (per user decision D2 = A). Wiring lands with session RAG in Sprint 5.
+- Only EN translated; ES/FR/DE/PT fall back to EN (per user decision D3 = C). Sprint 8 fills translations.
+- Session recovery path omitted (no "Recover existing session" button). Arrives in Sprint 7 alongside backend session store.
 
 ---
 
-## Sprint 2 — PLANNED
+## Sprint 1 — COMPLETE (condensed)
 
-Next sprint scaffolds the full frontend page flow: LanguageSelector → Disclaimer → Session → Auth → Instructions → CompanySelectPage → SurveyPage, plus the sidecar endpoints each page needs.
+- Backend FastAPI + admin auth + admin SPA shell (`/admin/`)
+- Minimal sidecar (`/internal/health`, `/internal/config`)
+- Docker: multi-stage backend & frontend images, shared `cbc-net`
+- Host ports editable via `CBC_BACKEND_PORT` (8100) / `CBC_FRONTEND_PORT` (8190)
+- ADR-007 (polling moved to Sprint 4)
 
 ---
 

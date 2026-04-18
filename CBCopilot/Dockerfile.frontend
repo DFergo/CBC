@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir -r /app/sidecar/requirements.txt
 COPY src/frontend/sidecar/ /app/sidecar/
 
 COPY config/deployment_frontend.json /app/config/deployment_frontend.json
+COPY src/frontend/sidecar/companies.json /app/config/companies.json
 
 RUN mkdir -p /app/data
 
