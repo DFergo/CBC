@@ -1,0 +1,25 @@
+# Host port is configurable via CBC_FRONTEND_PORT (default 8190).
+# When deploying via Portainer, set CBC_FRONTEND_PORT per frontend instance.
+# The container port stays 80 (Nginx).
+services:
+  cbc-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: cbc-frontend
+    ports:
+      - "${CBC_FRONTEND_PORT:-8190}:80"
+    volumes:
+      - cbc-frontend-data:/app/data
+    environment:
+      - DEPLOYMENT_JSON_PATH=/app/config/deployment_frontend.json
+    networks:
+      - cbc-net
+
+volumes:
+  cbc-frontend-data:
+
+networks:
+  cbc-net:
+    name: cbc-net
+    external: true

@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Docker
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+._*
+*.icloud
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Data (runtime, not source)
+data/sessions/
+data/rag_index/
+data/campaigns/*/rag_index/
+data/campaigns/*/companies/*/rag_index/
+
+# Temp files
+*.tmp
+~$*
+
+# Admin hash and JWT secret
+.admin_hash
+.jwt_secret
+
+# Claude Code working files (local only)
+.claude/
+CLAUDE.md
+
+# Reference implementation (kept locally, not shipped in CBC repo)
+HRDDHelper/

@@ -1,0 +1,29 @@
+## Stage 1: Build admin React app
+FROM node:20-slim AS admin-builder
+
+WORKDIR /app/admin
+
+COPY src/admin/package.json src/admin/package-lock.json* ./
+RUN npm install
+
+COPY src/admin/ .
+RUN npm run build
+
+## Stage 2: Python backend
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY src/backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/backend/ ./src/
+COPY config/deployment_backend.json ./config/deployment_backend.json
+
+COPY --from=admin-builder /app/admin/dist /app/admin/dist
+
+RUN mkdir -p /app/data
+
+EXPOSE 8000
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,26 @@
+# Host port is configurable via CBC_BACKEND_PORT (default 8100).
+# When deploying via Portainer, set CBC_BACKEND_PORT in the stack's env vars.
+# The container port stays 8000 — internal service URLs (e.g. from frontend
+# to backend over cbc-net) use http://cbc-backend:8000 regardless.
+services:
+  cbc-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: cbc-backend
+    ports:
+      - "${CBC_BACKEND_PORT:-8100}:8000"
+    volumes:
+      - cbc-data:/app/data
+    environment:
+      - DEPLOYMENT_JSON_PATH=/app/config/deployment_backend.json
+      - CBC_DATA_DIR=/app/data
+    networks:
+      - cbc-net
+
+volumes:
+  cbc-data:
+
+networks:
+  cbc-net:
+    name: cbc-net

@@ -1,0 +1,40 @@
+## Stage 1: Build React app
+FROM node:20-slim AS builder
+
+WORKDIR /app/frontend
+
+COPY src/frontend/package.json src/frontend/package-lock.json* ./
+RUN npm install
+
+COPY src/frontend/ .
+RUN npm run build
+
+## Stage 2: Runtime — Nginx + FastAPI sidecar
+FROM python:3.11-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends nginx supervisor && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/frontend/dist /app/frontend/dist
+
+COPY config/nginx/frontend.conf /etc/nginx/sites-available/default
+RUN rm -f /etc/nginx/sites-enabled/default && \
+    ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+
+COPY src/frontend/sidecar/requirements.txt /app/sidecar/requirements.txt
+RUN pip install --no-cache-dir -r /app/sidecar/requirements.txt
+
+COPY src/frontend/sidecar/ /app/sidecar/
+
+COPY config/deployment_frontend.json /app/config/deployment_frontend.json
+
+RUN mkdir -p /app/data
+
+COPY config/supervisord.conf /etc/supervisor/conf.d/cbc.conf
+
+EXPOSE 80
+
+CMD ["supervisord", "-n", "-c", "/etc/supervisor/conf.d/cbc.conf"]

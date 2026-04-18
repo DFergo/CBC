@@ -1,0 +1,19 @@
+{
+  "role": "frontend",
+  "frontend_id": "packaging-eu",
+  "backend_url": "http://cbc-backend:8000",
+  "auth_required": true,
+  "disclaimer_enabled": true,
+  "instructions_enabled": true,
+  "compare_all_enabled": true,
+  "session_resume_hours": 48,
+  "auto_close_hours": 72,
+  "auto_destroy_hours": 0,
+  "output_user_summary": true,
+  "branding": {
+    "app_title": "CBC — Packaging EU",
+    "logo_url": "/assets/logo.png",
+    "primary_color": "#1e40af",
+    "secondary_color": "#f59e0b"
+  }
+}
