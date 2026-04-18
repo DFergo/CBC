@@ -1,5 +1,14 @@
 # CBC — Changelog
 
+## Spec bump — API as third LLM provider (2026-04-18, between Sprint 2 and Sprint 3)
+
+- SPEC §4.7: `lm_studio` / `ollama` / `api` as first-class provider types; `api` flavors (`anthropic` / `openai` / `openai_compatible`); slots can mix providers independently; per-frontend overrides preserved
+- SPEC §5.1: admin LLM config UI enumerates the three provider types + `api`-specific fields (flavor, endpoint, key-env-var name)
+- SPEC §8.3: chat content leaves the deployment only when `api` is selected (documented exception to "no third-party services"); API keys referenced by env var name, never plaintext, never committed
+- MILESTONES Sprint 3: `llm.py` deliverable expanded to 2 slots × 3 providers; two new acceptance criteria for `api` flavor + env-var-name persistence
+- IDEAS entry promoted to `planned → Sprint 3 + 6`
+- STATUS gains a "Spec Updates (between sprints)" section
+
 ## Sprint 2 — Frontend Page Flow (2026-04-18)
 
 - Full page flow: language → disclaimer → session → auth → instructions → company select → survey → placeholder
