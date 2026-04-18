@@ -121,32 +121,38 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 
 **Goal:** Admin can fully configure per-frontend and per-company settings from the Frontends tab. Config inheritance works correctly.
 
+**Scope split:** Sprint 4 is delivered in two halves due to size. **4A** = registry + infrastructure + branding/session-settings/companies UI. **4B** = per-frontend prompts/RAG/orgs/LLM UI + resolvers.
+
 ### Deliverables
-- [ ] `CBCopilot/src/admin/src/FrontendsTab.tsx` — Complete frontend config UI
-- [ ] `CBCopilot/src/backend/api/v1/admin/frontends.py` — Frontend CRUD + per-frontend config
-- [ ] `CBCopilot/src/backend/services/frontend_registry.py` — Adapted from HRDD Helper
-- [ ] Backend prompt resolution logic: company → frontend → global
-- [ ] Backend RAG resolution logic: configurable modes per company
-- [ ] Backend organizations resolution: global / own / combine per frontend
+- [x] `CBCopilot/src/admin/src/FrontendsTab.tsx` — 4A: registry + branding + session settings + companies
+- [x] `CBCopilot/src/backend/api/v1/admin/frontends.py` — 4A: Frontend CRUD + per-frontend branding + session settings + sidecar push
+- [x] `CBCopilot/src/backend/services/frontend_registry.py` — 4A: adapted from HRDD, keyed by stable `frontend_id`
+- [x] `CBCopilot/src/backend/services/polling_loop.py` — 4A: health-only poll (full queue polling stays Sprint 6)
+- [x] `CBCopilot/src/backend/services/branding_store.py` — 4A
+- [x] `CBCopilot/src/backend/services/session_settings_store.py` — 4A
+- [x] Sidecar `/internal/branding` + `/internal/session-settings` push endpoints + `/internal/config` merge — 4A
+- [ ] Backend prompt resolution logic: company → frontend → global — 4B
+- [ ] Backend RAG resolution logic: configurable modes per company — 4B
+- [ ] Backend organizations resolution: global / own / combine per frontend — 4B
 
 ### Acceptance Criteria
-- [ ] Backend polls sidecar and detects it as online (moved from Sprint 1 per ADR-007)
-- [ ] Frontend dropdown shows all registered frontends
-- [ ] Selecting a frontend loads its current config
-- [ ] Can override branding per frontend
-- [ ] Can add/edit prompts per frontend (or toggle "inherit global")
-- [ ] Can upload RAG docs per frontend
-- [ ] Can manage company list (add, remove, rename, reorder, enable/disable)
-- [ ] Expanding a company shows prompt and RAG config
-- [ ] Company rag_mode dropdown works (own_only, inherit_frontend, inherit_all, combine_*)
-- [ ] Organizations list per frontend: toggle global / own / combine
-- [ ] Session settings configurable per frontend (auth, auto_close, auto_destroy, resume)
-- [ ] Feature toggles work (disclaimer, instructions, compare_all)
-- [ ] Prompt resolution: company prompt served when exists, falls back to frontend then global
-- [ ] RAG resolution: documents combined according to rag_mode setting
+- [x] Backend polls sidecar and detects it as online (moved from Sprint 1 per ADR-007) — 4A
+- [x] Frontend dropdown shows all registered frontends — 4A
+- [x] Selecting a frontend loads its current config — 4A
+- [x] Can override branding per frontend — 4A
+- [ ] Can add/edit prompts per frontend (or toggle "inherit global") — 4B
+- [ ] Can upload RAG docs per frontend — 4B
+- [x] Can manage company list (add, remove, rename, reorder, enable/disable) — 4A
+- [ ] Expanding a company shows prompt and RAG config — 4B
+- [x] Company rag_mode dropdown works (own_only, inherit_frontend, inherit_all, combine_*) — 4A (value persists; resolver lands 4B)
+- [ ] Organizations list per frontend: toggle global / own / combine — 4B
+- [x] Session settings configurable per frontend (auth, auto_close, auto_destroy, resume) — 4A
+- [x] Feature toggles work (disclaimer, instructions, compare_all) — 4A
+- [ ] Prompt resolution: company prompt served when exists, falls back to frontend then global — 4B
+- [ ] RAG resolution: documents combined according to rag_mode setting — 4B
 
 ### Spec Sections Covered
-- §2.4 (Three-Tier Config), §4.4 (Company Registry), §5.1 (Admin Layout - Frontends Tab)
+- §2.4 (Three-Tier Config), §4.4 (Company Registry), §4.9 (Frontend Registry — expanded in 4A), §5.1 (Admin Layout - Frontends Tab)
 
 ---
 

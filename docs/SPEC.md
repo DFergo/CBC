@@ -353,7 +353,28 @@ Admin auth flow (Sprint 7) reads the Contacts store (§4.11) as the allowlist �
 
 ### §4.9 Frontend Registry
 
-Reuse from HRDD Helper. Tracks registered frontends, health status, enabled flag.
+Admin registers each frontend manually with:
+- `frontend_id` — stable string the frontend uses in its own `deployment_frontend.json` (e.g. `packaging-eu`). Same ID keys the `/app/data/campaigns/{frontend_id}/` folder for all per-frontend config (companies, prompts, RAG, branding, session settings, notifications).
+- `url` — where the sidecar is reachable from the backend container (e.g. `http://cbc-frontend`, `http://100.64.0.5:8190`).
+- `name` — human-readable label (optional; defaults to `frontend_id`).
+
+CBC does **not** auto-register: the sidecar never initiates contact with the backend, preserving the HRDD "frontend doesn't know the backend" rule (portability across NAT/firewall/Tailscale). Registration is a one-time admin action on the Frontends tab.
+
+**Runtime state:** `status` (online | offline | unknown) and `last_seen` are updated by the polling loop every 5 seconds via `GET {url}/internal/health`. Only `online` writes `last_seen`. Runtime state is NOT persisted — recomputed on every poll.
+
+**Persistent storage:** `/app/data/frontends.json`, atomic writes.
+
+**Per-frontend config resolution** (push pattern from HRDD):
+- Admin edits branding or session-settings override in the admin UI
+- Backend `PUT` endpoint saves to `/app/data/campaigns/{frontend_id}/{branding,session_settings}.json`
+- Backend `POST /internal/branding` or `/internal/session-settings` on the frontend's URL
+- Sidecar caches the pushed payload and merges it into its `/internal/config` response
+- If the sidecar is offline at push time, the admin UI still saves successfully — the sidecar will re-read the pushed cache from its own local cache on next boot (pushed caches live in the frontend container's `/app/data/`)
+
+**Session settings fields (all optional — None means inherit from `deployment_frontend.json`):**
+`auth_required`, `session_resume_hours`, `auto_close_hours`, `auto_destroy_hours`, `disclaimer_enabled`, `instructions_enabled`, `compare_all_enabled`.
+
+**Branding fields:** `app_title`, `logo_url`, `primary_color`, `secondary_color`. Empty branding = fall back to baseline from deployment config.
 
 ### §4.10 Guardrails
 

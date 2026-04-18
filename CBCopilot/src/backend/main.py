@@ -1,6 +1,6 @@
 # Adapted from HRDDHelper/src/backend/main.py
-# Sprint 3: admin API surface complete (companies, prompts, rag stub, knowledge, llm, smtp).
-# Polling / lifecycle / llm inference / rag indexing land in later sprints.
+# Sprint 4A: + frontend registry, health-only polling loop, per-frontend
+# branding + session-settings overrides.
 import asyncio
 import logging
 import shutil
@@ -19,6 +19,7 @@ from src.api.v1.admin.knowledge import router as knowledge_router
 from src.api.v1.admin.llm import router as llm_router
 from src.api.v1.admin.smtp import router as smtp_router
 from src.api.v1.admin.contacts import router as contacts_router
+from src.api.v1.admin.frontends import router as frontends_router
 from src.services._paths import (
     ensure_dirs,
     PROMPTS_DIR,
@@ -26,33 +27,24 @@ from src.services._paths import (
     GLOSSARY_FILE,
     ORGANIZATIONS_FILE,
 )
+from src.services.polling_loop import polling_loop
 from src.services.smtp_service import check_smtp_health
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backend")
 
-# Shipped-with-image defaults live next to the backend source.
 DEFAULTS_PROMPTS = Path(__file__).parent / "prompts"
 DEFAULTS_KNOWLEDGE = Path(__file__).parent / "knowledge"
 
 
 def ensure_defaults() -> None:
-    """Copy shipped defaults into the data volume on first boot.
-
-    Idempotent: existing files in the data volume are never overwritten, so
-    admin edits survive container restarts and upgrades.
-    """
     ensure_dirs()
-
-    # Default prompts
     if DEFAULTS_PROMPTS.is_dir():
         for src in DEFAULTS_PROMPTS.glob("*.md"):
             dst = PROMPTS_DIR / src.name
             if not dst.exists():
                 shutil.copy2(src, dst)
                 logger.info(f"Installed default prompt: {dst.name}")
-
-    # Default knowledge
     for src_name, dst in (("glossary.json", GLOSSARY_FILE), ("organizations.json", ORGANIZATIONS_FILE)):
         src = DEFAULTS_KNOWLEDGE / src_name
         if src.exists() and not dst.exists():
@@ -65,13 +57,20 @@ def ensure_defaults() -> None:
 async def lifespan(app: FastAPI):
     ensure_defaults()
     asyncio.create_task(check_smtp_health())
-    logger.info("CBC backend started (Sprint 3 — admin API surface)")
+    poll_task = asyncio.create_task(polling_loop())
+    logger.info("CBC backend started (Sprint 4A — registry + health polling)")
     yield
+    poll_task.cancel()
+    try:
+        await poll_task
+    except asyncio.CancelledError:
+        pass
 
 
-app = FastAPI(title="CBC Backend", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="CBC Backend", version="0.4.0", lifespan=lifespan)
 
 app.include_router(auth_router)
+app.include_router(frontends_router)
 app.include_router(companies_router)
 app.include_router(prompts_router)
 app.include_router(rag_router)

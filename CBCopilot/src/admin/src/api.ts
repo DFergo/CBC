@@ -318,15 +318,90 @@ export async function deleteFrontendNotificationOverride(frontendId: string): Pr
   return request(`/admin/api/v1/smtp/frontend/${encodeURIComponent(frontendId)}`, { method: 'DELETE' })
 }
 
-// --- Frontends listing (Sprint 3.5 placeholder — Sprint 4 replaces with real registry) ---
+// --- Frontends registry (Sprint 4A) ---
 
 export interface FrontendInfo {
-  id: string
+  frontend_id: string
+  url: string
   name: string
+  enabled: boolean
+  status: 'online' | 'offline' | 'unknown'
+  last_seen: string | null
+  created_at: string | null
+  metadata: Record<string, unknown>
 }
 
 export async function listFrontends(): Promise<{ frontends: FrontendInfo[] }> {
-  return request('/admin/api/v1/smtp/frontends')
+  return request('/admin/api/v1/frontends')
+}
+
+export async function registerFrontend(data: { frontend_id: string; url: string; name?: string }): Promise<{ frontend: FrontendInfo }> {
+  return request('/admin/api/v1/frontends', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export async function updateFrontend(frontendId: string, patch: { url?: string; name?: string; enabled?: boolean; metadata?: Record<string, unknown> }): Promise<{ frontend: FrontendInfo }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export async function deleteFrontend(frontendId: string): Promise<{ status: string }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}`, { method: 'DELETE' })
+}
+
+// --- Per-frontend branding ---
+
+export interface FrontendBranding {
+  app_title: string
+  logo_url: string
+  primary_color: string
+  secondary_color: string
+}
+
+export async function getFrontendBranding(frontendId: string): Promise<{ frontend_id: string; branding: FrontendBranding | null }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/branding`)
+}
+
+export async function saveFrontendBranding(frontendId: string, branding: FrontendBranding): Promise<{ frontend_id: string; branding: FrontendBranding }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/branding`, {
+    method: 'PUT',
+    body: JSON.stringify(branding),
+  })
+}
+
+export async function deleteFrontendBranding(frontendId: string): Promise<{ frontend_id: string; removed: boolean }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/branding`, { method: 'DELETE' })
+}
+
+// --- Per-frontend session settings ---
+
+export interface FrontendSessionSettings {
+  auth_required: boolean | null
+  session_resume_hours: number | null
+  auto_close_hours: number | null
+  auto_destroy_hours: number | null
+  disclaimer_enabled: boolean | null
+  instructions_enabled: boolean | null
+  compare_all_enabled: boolean | null
+}
+
+export async function getFrontendSessionSettings(frontendId: string): Promise<{ frontend_id: string; settings: FrontendSessionSettings | null }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/session-settings`)
+}
+
+export async function saveFrontendSessionSettings(frontendId: string, settings: FrontendSessionSettings): Promise<{ frontend_id: string; settings: FrontendSessionSettings }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/session-settings`, {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  })
+}
+
+export async function deleteFrontendSessionSettings(frontendId: string): Promise<{ frontend_id: string; removed: boolean }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/session-settings`, { method: 'DELETE' })
 }
 
 // --- Contacts (authorized users directory) ---

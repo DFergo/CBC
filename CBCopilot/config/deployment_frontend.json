@@ -1,7 +1,6 @@
 {
   "role": "frontend",
   "frontend_id": "packaging-eu",
-  "backend_url": "http://cbc-backend:8000",
   "auth_required": true,
   "disclaimer_enabled": true,
   "instructions_enabled": true,

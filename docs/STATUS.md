@@ -1,7 +1,53 @@
 # CBC — Project Status
 
-**Current Sprint:** 4 — Admin Frontends Tab & 3-Tier Config
+**Current Sprint:** 4B — Per-frontend content overrides + 3-tier resolvers
 **Last Updated:** 2026-04-18
+
+---
+
+## Sprint 4A — COMPLETE
+
+**Decisions locked at sprint start:**
+- D1 = A — HRDD-style: admin registers each frontend manually (URL + name + stable `frontend_id`). Auto-registration was rejected because it would require the frontend to know the backend URL, violating the "frontend doesn't know backend" rule.
+- D2 = A — Push immediately on save. Backend POSTs branding / session-settings to sidecar; sidecar caches and merges into `/internal/config`. HRDD pattern.
+- D3 = health-only polling. Full message-queue polling stays Sprint 6.
+- Side-effect: `backend_url` removed from `deployment_frontend.json` and sidecar — it was unused and violated the architectural rule.
+
+### Deliverables
+- [x] `services/frontend_registry.py` (keyed by stable `frontend_id`, not a random hex ID)
+- [x] `services/polling_loop.py` (health-check every 5s)
+- [x] `services/branding_store.py`
+- [x] `services/session_settings_store.py`
+- [x] `api/v1/admin/frontends.py` (registry CRUD + per-frontend branding + session-settings, with POST push to sidecar on save)
+- [x] Sidecar `POST /internal/branding`, `POST /internal/session-settings`, `/internal/config` merges pushed overrides with baseline JSON
+- [x] Deleted `services/frontends.py` scanner + `/admin/api/v1/smtp/frontends` endpoint
+- [x] Removed `backend_url` from `deployment_frontend.json` + sidecar
+- [x] `main.py` wires polling loop in lifespan with clean cancellation
+- [x] Admin `FrontendsTab.tsx` rewrite: registered-list with status dots + register form + selected-frontend panels
+- [x] `panels/BrandingPanel.tsx`
+- [x] `panels/SessionSettingsPanel.tsx` (session hours + feature toggles, per-field inherit)
+- [x] `panels/CompanyManagementPanel.tsx` (UI for Sprint 3 companies CRUD — inline rag_mode/prompt_mode + country tags + enable flag)
+- [x] `api.ts` extensions (`FrontendInfo`, register/update/delete, branding + session-settings CRUD)
+- [x] SPEC §4.9 rewritten with push pattern; MILESTONES Sprint 4 acceptance split by 4A/4B
+- [x] ADR-007 criterion resolved: smoke-tested — registered frontend `packaging-eu` detected online by polling in <6s
+
+### Acceptance tested (curl end-to-end on `localhost:8100` + `localhost:8190`)
+- [x] `POST /admin/api/v1/frontends` registers; `GET` lists; polling flips status → `online` within 5s
+- [x] `PUT /admin/api/v1/frontends/{fid}/branding` persists + pushes → sidecar `/internal/config` shows the custom branding
+- [x] `PUT /admin/api/v1/frontends/{fid}/session-settings` with some overrides + some `null` → sidecar merges: overridden fields use override, null fields inherit from `deployment_frontend.json`
+- [x] `DELETE /admin/api/v1/frontends/{fid}/branding` → sidecar falls back to baseline branding
+
+---
+
+## Sprint 4B — PLANNED
+
+**Scope:** per-frontend content overrides + 3-tier resolvers
+- Per-frontend prompts UI (wrap Sprint 3 backend routes)
+- Per-frontend RAG docs UI (wrap Sprint 3 backend routes)
+- Per-frontend organizations override (global / own / combine)
+- Per-frontend LLM override (HRDD per-frontend pattern, 3 slots + compression + routing)
+- Per-company prompts + RAG documents (expand CompanyManagementPanel)
+- Backend resolvers: `resolve_prompt(name, fid, slug)` + `resolve_rag(fid, slug)` + preview endpoints
 
 ---
 

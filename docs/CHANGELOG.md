@@ -1,5 +1,18 @@
 # CBC — Changelog
 
+## Sprint 4A — Frontend registry + polling + per-frontend branding/session-settings/companies (2026-04-18)
+
+- **Frontend registry** (`services/frontend_registry.py`): CBC variant of HRDD's registry, keyed by the stable `frontend_id` each frontend already carries in its `deployment_frontend.json` (same key that names `/app/data/campaigns/{frontend_id}/`). No random hex ID. Admin registers each frontend manually with `{frontend_id, url, name}` — auto-registration rejected because it would force the frontend to know the backend URL (violates "frontend doesn't know backend" rule; breaks NAT/firewall/Tailscale portability).
+- **Health polling** (`services/polling_loop.py`): every 5s, `GET {url}/internal/health` on each enabled frontend; updates runtime `status` (online / offline / unknown) and writes `last_seen` on success. Not persisted — recomputed each loop. Lifespan wires + cancels cleanly. **Resolves ADR-007** (the acceptance criterion from Sprint 1).
+- **Per-frontend branding + session settings** (`branding_store.py`, `session_settings_store.py`): overrides live under `/app/data/campaigns/{frontend_id}/`. Session-settings fields are individually nullable so admins can inherit from `deployment_frontend.json` for some while overriding others.
+- **Sidecar push pattern** (HRDD): `POST /internal/branding` + `POST /internal/session-settings`. Sidecar caches pushed payloads in its own `/app/data/` and merges into `/internal/config` so the React app sees effective config without knowing which layer each field came from. Baseline `deployment_frontend.json` continues to drive fields that have no override.
+- **Admin routes** (`api/v1/admin/frontends.py`): registry CRUD + per-frontend branding + session-settings + push on save. DELETE clears override and pushes empty body to restore baseline.
+- **Admin UI**: `FrontendsTab.tsx` rewritten from placeholder — registered-list with status dots + last-seen, register form, per-frontend panels. `panels/BrandingPanel.tsx`, `panels/SessionSettingsPanel.tsx`, `panels/CompanyManagementPanel.tsx`. New types in `api.ts` (`FrontendInfo`, `FrontendBranding`, `FrontendSessionSettings`) + register/update/delete/branding/session-settings client functions. `FrontendInfo` shape migrated from `{id,name}` to `{frontend_id, url, name, status, last_seen, enabled, ...}` — callers (RegisteredUsersTab, SMTPSection override block) updated.
+- **Cleanups**: deleted obsolete `services/frontends.py` scanner + provisional `/admin/api/v1/smtp/frontends` endpoint (replaced by the real registry). Dropped `backend_url` from `deployment_frontend.json` + sidecar — it was unused and violated the architectural rule.
+- **Smoke-tested end-to-end**: registered `packaging-eu` → polling flipped to `online` within 6s → branding push → sidecar `/internal/config` shows custom → session-settings push with mixed overrides/nulls → sidecar merges correctly (e.g. `auth_required=false` override, `disclaimer_enabled=true` inherited from baseline) → branding DELETE → sidecar falls back to baseline.
+
+Sprint 4B (per-frontend prompts/RAG/orgs/LLM + 3-tier resolvers) is next.
+
 ## SMTP admin emails — input+chips UX (fix Enter swallowing new line) (2026-04-18)
 
 - Bug: the admin emails textarea used `split('\n').filter(Boolean)` which deleted empty lines as soon as you typed Enter, swallowing the cursor before you could type the next address.

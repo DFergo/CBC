@@ -235,7 +235,7 @@ function FrontendOverrideBlock() {
           className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm"
         >
           <option value="">— select —</option>
-          {frontends.map(fe => <option key={fe.id} value={fe.id}>{fe.name || fe.id}</option>)}
+          {frontends.map(fe => <option key={fe.frontend_id} value={fe.frontend_id}>{fe.name || fe.frontend_id}</option>)}
         </select>
         {status && <span className="text-xs text-gray-500">{status}</span>}
       </div>

@@ -255,8 +255,8 @@ export default function RegisteredUsersTab() {
             >
               <option value="global">Global</option>
               {frontends.map(fe => (
-                <option key={fe.id} value={`frontend:${fe.id}`}>
-                  {fe.name || fe.id}{frontendsWithOverride.has(fe.id) ? ' ◆ custom' : ''}
+                <option key={fe.frontend_id} value={`frontend:${fe.frontend_id}`}>
+                  {fe.name || fe.frontend_id}{frontendsWithOverride.has(fe.frontend_id) ? ' ◆ custom' : ''}
                 </option>
               ))}
             </select>
@@ -284,8 +284,8 @@ export default function RegisteredUsersTab() {
                 className="border border-gray-300 rounded-lg px-3 py-1 text-sm"
               >
                 <option value="">— select —</option>
-                {frontends.filter(fe => fe.id !== currentFrontendId && frontendsWithOverride.has(fe.id)).map(fe => (
-                  <option key={fe.id} value={fe.id}>{fe.name || fe.id}</option>
+                {frontends.filter(fe => fe.frontend_id !== currentFrontendId && frontendsWithOverride.has(fe.frontend_id)).map(fe => (
+                  <option key={fe.frontend_id} value={fe.frontend_id}>{fe.name || fe.frontend_id}</option>
                 ))}
               </select>
               <button

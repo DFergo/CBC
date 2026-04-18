@@ -1,8 +1,8 @@
-"""Admin SMTP configuration + test send + per-frontend notification override + frontends list."""
+"""Admin SMTP configuration + test send + per-frontend notification override."""
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.v1.admin.auth import require_admin
-from src.services import frontends, smtp_service
+from src.services import smtp_service
 from src.services.smtp_service import FrontendNotificationOverride, SMTPConfig
 
 router = APIRouter(prefix="/admin/api/v1/smtp", tags=["admin-smtp"])
@@ -62,9 +62,3 @@ async def delete_frontend_override(frontend_id: str, _admin: dict = Depends(requ
     return {"frontend_id": frontend_id, "removed": True}
 
 
-# --- Frontends list helper (scans /app/data/campaigns/*). Sprint 4 replaces
-# this with the real frontend_registry. The Registered Users tab and the
-# per-frontend override UI both depend on having a list of known frontends.
-@router.get("/frontends")
-async def list_frontends_for_ui(_admin: dict = Depends(require_admin)):
-    return {"frontends": frontends.list_frontends()}
