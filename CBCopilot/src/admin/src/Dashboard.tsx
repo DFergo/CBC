@@ -1,9 +1,17 @@
-// Sprint 1 placeholder. Full dashboard (General + Frontends tabs) lands in Sprint 3.
+import { useState } from 'react'
+import GeneralTab from './GeneralTab'
+import FrontendsTab from './FrontendsTab'
+import RegisteredUsersTab from './RegisteredUsersTab'
+
+type Tab = 'general' | 'frontends' | 'users'
+
 interface Props {
   onLogout: () => void
 }
 
 export default function Dashboard({ onLogout }: Props) {
+  const [tab, setTab] = useState<Tab>('general')
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
@@ -19,15 +27,40 @@ export default function Dashboard({ onLogout }: Props) {
         </button>
       </header>
 
-      <main className="p-8">
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 max-w-2xl">
-          <h2 className="text-xl font-semibold text-gray-800 mb-2">Sprint 1 — scaffolding online</h2>
-          <p className="text-gray-600 text-sm">
-            Backend is running, admin auth works. The full dashboard (General + Frontends tabs,
-            prompts, RAG, companies) ships in Sprint 3.
-          </p>
+      <nav className="bg-white border-b border-gray-200 px-6">
+        <div className="flex gap-6">
+          <TabButton active={tab === 'general'} onClick={() => setTab('general')}>
+            General
+          </TabButton>
+          <TabButton active={tab === 'frontends'} onClick={() => setTab('frontends')}>
+            Frontends
+          </TabButton>
+          <TabButton active={tab === 'users'} onClick={() => setTab('users')}>
+            Registered Users
+          </TabButton>
         </div>
+      </nav>
+
+      <main className="p-6">
+        {tab === 'general' && <GeneralTab />}
+        {tab === 'frontends' && <FrontendsTab />}
+        {tab === 'users' && <RegisteredUsersTab />}
       </main>
     </div>
+  )
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`py-3 px-1 text-sm font-medium border-b-2 transition-colors ${
+        active
+          ? 'border-uni-blue text-uni-blue'
+          : 'border-transparent text-gray-500 hover:text-gray-800'
+      }`}
+    >
+      {children}
+    </button>
   )
 }

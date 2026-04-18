@@ -88,7 +88,7 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 - [ ] `CBCopilot/src/backend/api/v1/admin/prompts.py` — Prompt management (global + per-frontend + per-company)
 - [ ] `CBCopilot/src/backend/api/v1/admin/rag.py` — RAG management (3-tier)
 - [ ] `CBCopilot/src/backend/api/v1/admin/knowledge.py` — Glossary + organizations
-- [ ] `CBCopilot/src/backend/api/v1/admin/llm.py` — LLM config (2 slots × 3 provider types: `lm_studio`, `ollama`, `api`; see SPEC §4.7)
+- [ ] `CBCopilot/src/backend/api/v1/admin/llm.py` — LLM config (3 slots × 3 provider types: `lm_studio`, `ollama`, `api`; + context-compression settings + two routing toggles; see SPEC §4.7)
 - [ ] `CBCopilot/src/backend/api/v1/admin/smtp.py` — SMTP config
 - [ ] `CBCopilot/src/admin/src/GeneralTab.tsx` — Global config UI
 - [ ] `CBCopilot/src/admin/src/Dashboard.tsx` — Tab navigation
@@ -102,8 +102,11 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 - [ ] RAG stats endpoint returns document count + index size
 - [ ] Can manage glossary terms (CRUD)
 - [ ] Can manage organizations list (CRUD)
-- [ ] LLM config saves and health check returns status per slot, for all three provider types (`lm_studio`, `ollama`, `api`)
+- [ ] LLM config saves and health check returns status per slot (3 slots × 3 provider types)
 - [ ] API provider flavor picker (anthropic / openai / openai_compatible) works; API key env var name is saved (the value itself is never stored)
+- [ ] Context compression settings persist (`enabled`, `first_threshold`, `step_size`)
+- [ ] Summary routing toggles persist (`document_summary_slot`, `user_summary_slot`), each accepting one of `inference` / `compressor` / `summariser`
+- [ ] Endpoint field auto-fills when the admin switches a slot's provider (defaults come from backend config)
 - [ ] SMTP config saves and test email sends successfully
 - [ ] Company API: POST creates company, PATCH updates, DELETE removes
 - [ ] Company list returned via `/admin/api/v1/frontends/{fid}/companies`

@@ -10,9 +10,9 @@ from pydantic import BaseModel
 
 class BackendConfig(BaseModel):
     role: str = "backend"
-    lm_studio_endpoint: str = "http://host.docker.internal:1234/v1"
+    lm_studio_endpoint: str = "http://localhost:1234/v1"
     lm_studio_model: str = "qwen3-235b-a22b"
-    ollama_endpoint: str = "http://host.docker.internal:11434"
+    ollama_endpoint: str = "http://localhost:11434"
     ollama_summariser_model: str = "qwen2.5:7b"
     ollama_num_ctx: int = 8192
     rag_documents_path: str = "./data/documents"

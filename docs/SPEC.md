@@ -294,18 +294,20 @@ Session storage:
 
 ### §4.7 LLM Provider
 
-Reuse HRDD Helper's LLM provider with simplification:
-- Two slots only: `inference` (main chat) and `summariser` (session summary)
-- No `reporter` slot (no formal reports)
-- Circuit breaker, health checks, per-frontend overrides — all carried over
-- Per-slot provider selection — each slot picks independently from the three provider types below
+Adapted from HRDD Helper's LLM provider:
+- **Three slots** — each picks a provider/model independently:
+  - `inference` — main chat
+  - `compressor` — periodic context-window compression (progressive, see below). Lightweight by default
+  - `summariser` — heavier work: document summaries during injection, final conversation summary emailed to the user
+- Circuit breaker, health checks, per-frontend overrides — carried over from HRDD
+- Fallback cascade on failure: `compressor → summariser → inference` (preserves robustness from HRDD Sprint 17)
 
-**Supported provider types:**
+**Supported provider types (same for every slot):**
 
 | Type | Location | Auth | Default endpoint |
 |------|----------|------|------------------|
-| `lm_studio` | local | none | `http://host.docker.internal:1234/v1` |
-| `ollama` | local | none | `http://host.docker.internal:11434` |
+| `lm_studio` | local | none | `http://localhost:1234/v1` |
+| `ollama` | local | none | `http://localhost:11434` |
 | `api` | remote cloud | API key | depends on flavor (see below) |
 
 For `api` provider, the admin picks a flavor:
@@ -313,16 +315,41 @@ For `api` provider, the admin picks a flavor:
 - `openai` — OpenAI (`https://api.openai.com/v1`)
 - `openai_compatible` — any OpenAI-compatible endpoint (Groq, Together, Mistral, etc.); admin provides the full base URL
 
+In Docker deployments where the LLM runtime is on the Docker host, `localhost` inside the backend container does not reach the host — admins typically override the endpoint to `http://host.docker.internal:<port>` (OrbStack / Docker Desktop) or to a sibling-container hostname. The admin UI auto-fills the field with the backend's configured default, which the deployment's `deployment_backend.json` controls.
+
 **API key handling:** API keys are never stored in plaintext in config files or committed to git. The admin config stores the *name* of an environment variable (e.g. `ANTHROPIC_API_KEY`), which the container reads at startup. Portainer stack environment variables are the intended mechanism. Keys are redacted from logs and admin API responses.
 
-**Mixing providers:** The two slots can use different provider types independently (e.g. cloud `api` for `inference`, local `ollama` for `summariser`). Per-frontend overrides can swap providers per slot without affecting the global default.
+**Context compression settings** (top-level, independent of the slot configs):
+- `enabled` — master toggle; when `false`, conversations are passed to `inference` unchanged
+- `first_threshold` — token count (estimated) at which the first compression fires (default `20000`)
+- `step_size` — subsequent compressions fire every N tokens after the first (default `15000`). So if `first=20000`, `step=15000`, compressions happen at 20k, 35k, 50k, 65k, ...
+
+The compression prompt lives at `prompts/context_compression.md` and is admin-editable like any other prompt (3-tier resolution applies).
+
+**Summary routing toggles** (choose which slot handles summarisation tasks):
+- `document_summary_slot` — who summarises an uploaded document before injection into chat context. Options: `inference` | `compressor` | `summariser`. Default: `summariser`.
+- `user_summary_slot` — who generates the final conversation summary emailed to the user at session close. Options: `inference` | `compressor` | `summariser`. Default: `summariser`.
+
+Both toggles support all three slots so admins can combine a heavy model for chat with a lighter one for document/summary work, or vice versa.
+
+**Mixing providers:** Every slot can use any provider type independently (e.g. cloud `api` for `inference`, local `ollama` for `compressor`, `api` again for `summariser`). Per-frontend overrides can swap providers per slot without affecting the global default.
+
+**Not supported in v1.0:** multimodal / image inputs.
 
 ### §4.8 SMTP Service
 
-Reuse from HRDD Helper. Used for:
-- Auth verification codes
-- User session summaries (emailed at session close)
-- Admin alerts (new document uploaded by user)
+Outgoing email for:
+- Auth verification codes (Sprint 7)
+- User session summaries (to the email the user provided in the survey)
+- Admin notifications (session summary + new document uploaded by user)
+
+**Global config:** `host`, `port`, `username`, `password`, `use_tls`, `from_address`, `admin_notification_emails: list[str]`, plus three toggles (`send_summary_to_user`, `send_summary_to_admin`, `send_new_document_to_admin`).
+
+**Per-frontend notification override:** lives at `/app/data/campaigns/{frontend_id}/notifications.json` and only overrides the **admin recipient list**, not the toggles. Admins can configure a sector-specific responsible person to receive notifications for a specific frontend. Two modes:
+- `replace` — per-frontend list replaces the global admin list for this frontend's notifications
+- `append` — per-frontend emails are added to the global list (deduplicated)
+
+Admin auth flow (Sprint 7) reads the Contacts store (§4.11) as the allowlist — NOT the SMTP notification emails.
 
 ### §4.9 Frontend Registry
 
@@ -337,6 +364,37 @@ Reuse from HRDD Helper with adapted rules:
 - Flag sensitive topics (strikes, industrial action)
 - Max trigger count before session warning
 
+### §4.11 Contacts (Authorized Users Directory)
+
+Adapted from HRDD Helper. Directory of authorized end-user emails with profile metadata. Drives the email-code auth flow (Sprint 7) as the allowlist.
+
+**Fields per contact** (identical to HRDD for xlsx portability):
+- `email` (required, lowercase-normalised)
+- `first_name`, `last_name`, `organization`, `country`, `sector`, `registered_by`
+
+**Storage:** `/app/data/contacts.json`
+```
+{
+  "global": [Contact, ...],
+  "per_frontend": {
+    "{frontend_id}": {"mode": "replace" | "append", "contacts": [Contact, ...]}
+  }
+}
+```
+
+**Resolution for a given frontend:**
+- No per-frontend entry → use global
+- `mode: replace` → per-frontend list only
+- `mode: append` → global + per-frontend, deduped by email
+
+**Admin operations** (all require admin JWT):
+- CRUD at global and per-frontend scopes
+- Copy contacts from one frontend's override to another
+- Export to `.xlsx` (single scope or `all` for multi-sheet workbook)
+- Import from `.xlsx` or `.csv` — **additive merge only**: existing emails get non-empty fields updated; new emails are added; emails in the store but not in the file are preserved
+
+**Admin UI:** dedicated "Registered Users" tab (§5.1 layout) with sortable/filterable inline-editable table, scope selector, mode + copy-from, export/import buttons.
+
 ---
 
 ## §5 Admin Panel
@@ -345,15 +403,22 @@ Reuse from HRDD Helper with adapted rules:
 
 Single-page app with **two main tabs**:
 
+Three tabs: **General Configuration**, **Frontend Configuration**, **Registered Users**.
+
 **Tab 1 — General Configuration:**
 - Branding defaults (logo, colors, app title)
 - Global prompts (list, edit, save)
 - Global RAG (upload documents, reindex, view stats)
-- Glossary management (terms + translations)
-- Organizations list (add, edit, remove)
-- LLM configuration per slot (`inference`, `summariser`) — provider type (`lm_studio` | `ollama` | `api`), model, temperature, max tokens, context window; API flavor + endpoint + key-env-var name when provider is `api`
-- SMTP configuration
-- Registered users
+- Glossary management (terms + translations, download/upload JSON)
+- Organizations list (download/upload JSON)
+- LLM configuration per slot (`inference`, `compressor`, `summariser`) — provider type (`lm_studio` | `ollama` | `api`), model, temperature, max tokens, context window; API flavor + endpoint + key-env-var name when provider is `api`. Top indicator polls the auto-detected local endpoints every 15s. Model field is a `<select>` populated from `/v1/models` (LM Studio / OpenAI-compat / Anthropic) or `/api/tags` (Ollama)
+- Context compression settings — `enabled` toggle + `first_threshold` + `step_size` (progressive thresholds)
+- Summary routing toggles — `document_summary_slot` and `user_summary_slot`, each picking one of `inference` / `compressor` / `summariser`
+- Endpoint auto-detect: probes `deployment_backend.json` override → `host.docker.internal:<port>` → `localhost:<port>` and picks whichever responds. Admins can override per slot for Tailscale / remote boxes.
+- SMTP configuration with three notification toggles (`send_summary_to_user`, `send_summary_to_admin`, `send_new_document_to_admin`) and a global admin-notification-emails list
+- Per-frontend notification override: replace or append the global admin-emails list for a specific frontend
+
+**Tab 3 — Registered Users** (see §4.11): directory of authorized end-user emails with xlsx/csv import/export + per-frontend replace/append overrides.
 
 **Tab 2 — Frontend Configuration:**
 - Dropdown to select frontend (from registered list)
