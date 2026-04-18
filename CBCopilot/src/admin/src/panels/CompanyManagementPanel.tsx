@@ -130,12 +130,21 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
                 </div>
               </div>
               <div className="mt-2">
-                <label className="block text-[11px] text-gray-500">Country tags (comma-separated ISO codes)</label>
-                <input type="text"
-                  value={(c.country_tags || []).join(', ')}
-                  onChange={e => patch(c.slug, { country_tags: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
-                  placeholder="DE, FR, IT, PL"
-                  className="w-full border border-gray-200 rounded px-2 py-1 text-xs font-mono" />
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] text-gray-500">Country tags</label>
+                  <span className="text-[10px] text-gray-400 italic">auto-derived from document metadata (Sprint 5)</span>
+                </div>
+                {(c.country_tags || []).length === 0 ? (
+                  <p className="text-xs text-gray-400">— none yet. Upload company CBAs in Sprint 5 with country metadata to populate this.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {(c.country_tags || []).map(t => (
+                      <span key={t} className="inline-block px-2 py-0.5 bg-gray-100 border border-gray-200 rounded text-[11px] font-mono text-gray-700">
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))}

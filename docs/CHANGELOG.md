@@ -1,5 +1,9 @@
 # CBC — Changelog
 
+## CompanyManagementPanel polish — country_tags as read-only chips (2026-04-18)
+
+- `country_tags` is meant to be auto-derived from per-document RAG metadata (SPEC §4.2) once Sprint 5 lands. Instead of shipping a manual editor in Sprint 4A that Sprint 5 will replace with a computed field, the UI now shows the tags as read-only chips with a "auto-derived from document metadata (Sprint 5)" hint. Existing values (seeded from the Sprint 2 sidecar stub) are preserved. Backend PATCH still accepts the field so Sprint 5 can write to it programmatically when indexing documents.
+
 ## Sprint 4A — Frontend registry + polling + per-frontend branding/session-settings/companies (2026-04-18)
 
 - **Frontend registry** (`services/frontend_registry.py`): CBC variant of HRDD's registry, keyed by the stable `frontend_id` each frontend already carries in its `deployment_frontend.json` (same key that names `/app/data/campaigns/{frontend_id}/`). No random hex ID. Admin registers each frontend manually with `{frontend_id, url, name}` — auto-registration rejected because it would force the frontend to know the backend URL (violates "frontend doesn't know backend" rule; breaks NAT/firewall/Tailscale portability).
