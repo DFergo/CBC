@@ -6,6 +6,31 @@ Statuses: `captured` → `triaged` → `planned` (→ Sprint N) → `shipped` / 
 
 ---
 
+## LLM provider options: Ollama, LM Studio, API
+
+**Captured:** 2026-04-18 (Sprint 3)
+**Status:** planned → Sprint 3 (admin UI + config schema) and Sprint 6 (chat engine exercises all three); promoted via `/spec` on 2026-04-18. Spec landed in §4.7 + §5.1 + §8.3.
+**Candidate sprint:** 3 (LLM admin config UI) + 6 (chat engine actually uses it)
+**Context:** SPEC §4.7 currently lists "LM Studio, Ollama (OpenAI-compatible API)". Both are local providers on `host.docker.internal`. The admin LLM tab should offer three distinct provider types: Ollama, LM Studio, and "API" (remote cloud providers — Anthropic, OpenAI, etc.) as separate, first-class options.
+
+**Idea:** "la selección de llm incluir opciones ollama, lm studio y api." — admin's LLM configuration dropdown lets the user pick per slot (inference / summariser) between the two local runtimes and a remote cloud API, with whatever credentials / endpoint fields each option needs.
+
+**Open questions:**
+- Which cloud providers under "API"? Anthropic only, OpenAI only, both, or a generic "OpenAI-compatible endpoint" that also fits Groq / Together / Mistral?
+- Where do API keys live? Env var at container start, admin-panel input (stored encrypted in config), or both?
+- Can different slots use different providers (e.g. API for inference, local Ollama for summariser)? HRDD's LLM provider supports per-slot config, so yes in principle.
+- Per-frontend LLM override (HRDD pattern) should still work for cloud API slots — confirm.
+- Streaming: all three options must keep SSE streaming working end-to-end with the pull-inverse pattern.
+- Cost tracking / rate limiting for remote API — in scope for v1.0 or defer?
+
+**Prerequisite work:**
+- Sprint 1 backend config already allows LM Studio / Ollama endpoints — schema will need an `api` provider block with `endpoint`, `api_key`, `model` fields
+- Sprint 3 is building the LLM admin tab — easiest place to land this
+- `llm_provider.py` (adapted from HRDD in Sprint 6) needs a third branch for remote API (auth headers, different error shapes)
+- Security: API keys must not be committed or logged — extend secret-redaction pattern
+
+---
+
 ## CBA sidepanel in chat — browse & download loaded agreements
 
 **Captured:** 2026-04-18 (Sprint 2)

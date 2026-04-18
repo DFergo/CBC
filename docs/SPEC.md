@@ -298,7 +298,24 @@ Reuse HRDD Helper's LLM provider with simplification:
 - Two slots only: `inference` (main chat) and `summariser` (session summary)
 - No `reporter` slot (no formal reports)
 - Circuit breaker, health checks, per-frontend overrides — all carried over
-- Provider support: LM Studio, Ollama (OpenAI-compatible API)
+- Per-slot provider selection — each slot picks independently from the three provider types below
+
+**Supported provider types:**
+
+| Type | Location | Auth | Default endpoint |
+|------|----------|------|------------------|
+| `lm_studio` | local | none | `http://host.docker.internal:1234/v1` |
+| `ollama` | local | none | `http://host.docker.internal:11434` |
+| `api` | remote cloud | API key | depends on flavor (see below) |
+
+For `api` provider, the admin picks a flavor:
+- `anthropic` — Anthropic Claude (`https://api.anthropic.com/v1`)
+- `openai` — OpenAI (`https://api.openai.com/v1`)
+- `openai_compatible` — any OpenAI-compatible endpoint (Groq, Together, Mistral, etc.); admin provides the full base URL
+
+**API key handling:** API keys are never stored in plaintext in config files or committed to git. The admin config stores the *name* of an environment variable (e.g. `ANTHROPIC_API_KEY`), which the container reads at startup. Portainer stack environment variables are the intended mechanism. Keys are redacted from logs and admin API responses.
+
+**Mixing providers:** The two slots can use different provider types independently (e.g. cloud `api` for `inference`, local `ollama` for `summariser`). Per-frontend overrides can swap providers per slot without affecting the global default.
 
 ### §4.8 SMTP Service
 
@@ -334,7 +351,7 @@ Single-page app with **two main tabs**:
 - Global RAG (upload documents, reindex, view stats)
 - Glossary management (terms + translations)
 - Organizations list (add, edit, remove)
-- LLM configuration (providers, models, temperature, slots)
+- LLM configuration per slot (`inference`, `summariser`) — provider type (`lm_studio` | `ollama` | `api`), model, temperature, max tokens, context window; API flavor + endpoint + key-env-var name when provider is `api`
 - SMTP configuration
 - Registered users
 
@@ -473,6 +490,8 @@ Supported languages: Any (no restrictions). UI translations provided for: EN, ES
 - All data on local Docker volumes — no cloud storage
 - No analytics, no tracking, no third-party services
 - SMTP only for auth codes, summaries, and admin alerts
+- When the LLM `api` provider is configured, chat content leaves the deployment to the chosen cloud endpoint. This is the one intentional exception to "no third-party services"; admins who require full on-premises operation must use `lm_studio` or `ollama` for both slots.
+- API keys for `api` providers are referenced by env var name only; never stored in plaintext in config files or logs, never committed to git.
 
 ---
 
