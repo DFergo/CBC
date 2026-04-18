@@ -1,5 +1,11 @@
 # CBC — Changelog
 
+## SMTP admin emails — input+chips UX (fix Enter swallowing new line) (2026-04-18)
+
+- Bug: the admin emails textarea used `split('\n').filter(Boolean)` which deleted empty lines as soon as you typed Enter, swallowing the cursor before you could type the next address.
+- Replaced both admin-email editors (global + per-frontend override) with HRDD's pattern: `<input type="email">` + "Add" button + chip per email with × to remove. Enter key adds. Duplicates rejected silently (case-insensitive).
+- New reusable `admin/src/EmailChipsInput.tsx` component.
+
 ## Registered Users tab + SMTP notifications overhaul (2026-04-18)
 
 - **New Registered Users tab (SPEC §4.11):** dedicated directory of authorized end-user emails, adapted from HRDD. Seven fields (email / first_name / last_name / organization / country / sector / registered_by), global list + per-frontend replace/append overrides, sortable filterable inline-editable table, xlsx/csv import (additive merge — never destructive), xlsx export (single scope or multi-sheet `all`), copy-from-another-frontend helper.

@@ -8,6 +8,7 @@ import {
   deleteFrontendNotificationOverride,
 } from '../api'
 import type { SMTPConfig, FrontendInfo, NotificationOverride, NotificationOverrideResponse } from '../api'
+import EmailChipsInput from '../EmailChipsInput'
 
 export default function SMTPSection() {
   const [cfg, setCfg] = useState<SMTPConfig | null>(null)
@@ -109,14 +110,12 @@ export default function SMTPSection() {
       <div className="mt-5 border-t border-gray-200 pt-4">
         <label className="block text-sm font-medium text-gray-700 mb-1">Admin notification emails (global)</label>
         <p className="text-xs text-gray-500 mb-2">
-          Recipients for admin notifications system-wide. One per line. Per-frontend overrides can replace or extend this list — see below.
+          Recipients for admin notifications system-wide. Type an email and press Enter or click Add. Per-frontend overrides can replace or extend this list — see below.
         </p>
-        <textarea
-          value={cfg.admin_notification_emails.join('\n')}
-          onChange={e => update({ admin_notification_emails: e.target.value.split(/\n+/).map(s => s.trim()).filter(Boolean) })}
-          rows={3}
+        <EmailChipsInput
+          value={cfg.admin_notification_emails}
+          onChange={emails => update({ admin_notification_emails: emails })}
           placeholder="admin@uniglobalunion.org"
-          className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono"
         />
       </div>
 
@@ -258,13 +257,11 @@ function FrontendOverrideBlock() {
             )}
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Admin emails for this frontend (one per line)</label>
-            <textarea
-              value={override.admin_notification_emails.join('\n')}
-              onChange={e => { setOverride({ ...override, admin_notification_emails: e.target.value.split(/\n+/).map(s => s.trim()).filter(Boolean) }); setDirty(true) }}
-              rows={3}
+            <label className="block text-xs text-gray-500 mb-1">Admin emails for this frontend</label>
+            <EmailChipsInput
+              value={override.admin_notification_emails}
+              onChange={emails => { setOverride({ ...override, admin_notification_emails: emails }); setDirty(true) }}
               placeholder="sector-lead@example.org"
-              className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono bg-white"
             />
           </div>
           <div className="text-xs text-gray-600">
