@@ -1,9 +1,25 @@
 # CBC — Project Status
 
 **Current Sprint:** 5 — RAG Engine + File Watcher
-**Last Updated:** 2026-04-18
+**Last Updated:** 2026-04-19
 
-Sprint 4 closed (4A + 4B). MILESTONES Sprint 4 acceptance criteria all green.
+Sprint 4 fully closed (4A + 4B + post-sprint polish). MILESTONES Sprint 4 acceptance criteria all green. Ready to start Sprint 5.
+
+---
+
+## Sprint 4 — Post-sprint polish (2026-04-19, commit `74cdb01`)
+
+Round of UX cleanup driven by Daniel walking through the admin panel after the Sprint 4B build. Backend semantics didn't change — same resolver behaviour, same data flows, just the admin UX simplified.
+
+- **Auto-IDs everywhere.** Frontend registration: URL + display name only (`frontend_id` slug auto-derived in backend, `-2`/`-3` on collision). Company creation: display name only (slug auto-derived the same way). Admin never types or sees an internal ID. Frontend containers are now anonymous — no `CBC_FRONTEND_ID` baked in or required.
+- **Prompts: same canonical menu at every tier.** Sidebar always shows the 6 canonical prompts (now including `summary.md`). Tier badge per row indicates where it currently resolves. Save commits at the current tier; "Remove this-tier override" appears only when the current tier owns the file. Company tier hides `compare_all`/`summary` and only allows `cba_advisor` edits (backend enforces).
+- **Session settings: dropped null/inherit.** Concrete defaults (48/72/0 hours, all toggles ON). Plain checkboxes for bools, plain numeric inputs with inline help on time fields.
+- **RAG: unified "Combine RAG" subsection.** Replaced the 5-value `rag_mode` enum + `global_rag_mode` dropdown with checkboxes — `Global` at frontend tier, `Frontend` + `Global` at company tier. Both default true. Per-field merge with backwards-compat migration.
+- **Companies: alphabetical order**, Compare All first. Dropped `sort_order` field.
+- **Per-frontend LLM: per-slot override.** Mirrors the global LLM editor with one Override checkbox per slot (Inference / Compressor / Summariser). Unchecked → greyed inheriting display, checked → editable. Compression + routing always inherit from global at frontend tier. Backend `LLMOverride` model is per-slot optional. `SlotEditor` + `ProviderCard` extracted to `components/llm/` shared.
+- **Branding: per-field merge** (empty fields inherit instead of clobbering); collapsible cards with chevron at both global and per-frontend; `org_name`/`disclaimer_text`/`instructions_text` fields added end-to-end. Default branding header now uses the UNI Global monochrome logo + i18n disclaimer/instructions adapted from HRDD to CBC's bargaining-research domain.
+- **Migrations**: legacy data on disk (`prompt_mode` field, full-config LLM overrides, 5-value `rag_mode`, `global_rag_mode`, `sort_order`, etc.) loads without error — all dropped or translated on read.
+- **SPEC** §4.9 + §9.1 + §5.1 (Tab 2) updated for the auto-ID model, multi-frontend deploys, per-frontend LLM override.
 
 ---
 
