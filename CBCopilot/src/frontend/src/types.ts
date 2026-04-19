@@ -39,7 +39,6 @@ export interface Company {
   slug: string
   display_name: string
   enabled: boolean
-  sort_order: number
   is_compare_all?: boolean
   country_tags?: string[]
 }

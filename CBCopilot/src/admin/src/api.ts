@@ -48,10 +48,9 @@ export interface Company {
   slug: string
   display_name: string
   enabled: boolean
-  sort_order: number
   is_compare_all: boolean
-  prompt_mode: string
-  rag_mode: string
+  combine_frontend_rag: boolean
+  combine_global_rag: boolean
   country_tags: string[]
   metadata: Record<string, unknown>
 }
@@ -60,7 +59,7 @@ export async function listCompanies(frontendId: string): Promise<{ companies: Co
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/companies`)
 }
 
-export async function createCompany(frontendId: string, data: Partial<Company> & { slug: string; display_name: string }): Promise<{ company: Company }> {
+export async function createCompany(frontendId: string, data: Partial<Company> & { display_name: string }): Promise<{ company: Company }> {
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/companies`, {
     method: 'POST',
     body: JSON.stringify(data),
@@ -357,7 +356,7 @@ export async function listFrontends(): Promise<{ frontends: FrontendInfo[] }> {
   return request('/admin/api/v1/frontends')
 }
 
-export async function registerFrontend(data: { frontend_id: string; url: string; name?: string }): Promise<{ frontend: FrontendInfo }> {
+export async function registerFrontend(data: { url: string; name: string }): Promise<{ frontend: FrontendInfo }> {
   return request('/admin/api/v1/frontends', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -419,14 +418,23 @@ export async function deleteFrontendBranding(frontendId: string): Promise<{ fron
 // --- Per-frontend session settings ---
 
 export interface FrontendSessionSettings {
-  auth_required: boolean | null
-  session_resume_hours: number | null
-  auto_close_hours: number | null
-  auto_destroy_hours: number | null
-  disclaimer_enabled: boolean | null
-  instructions_enabled: boolean | null
-  compare_all_enabled: boolean | null
-  rag_standalone: boolean | null
+  auth_required: boolean
+  session_resume_hours: number
+  auto_close_hours: number
+  auto_destroy_hours: number
+  disclaimer_enabled: boolean
+  instructions_enabled: boolean
+  compare_all_enabled: boolean
+}
+
+export const SESSION_DEFAULTS: FrontendSessionSettings = {
+  auth_required: true,
+  session_resume_hours: 48,
+  auto_close_hours: 72,
+  auto_destroy_hours: 0,
+  disclaimer_enabled: true,
+  instructions_enabled: true,
+  compare_all_enabled: true,
 }
 
 export async function getFrontendSessionSettings(frontendId: string): Promise<{ frontend_id: string; settings: FrontendSessionSettings | null }> {
@@ -442,6 +450,27 @@ export async function saveFrontendSessionSettings(frontendId: string, settings: 
 
 export async function deleteFrontendSessionSettings(frontendId: string): Promise<{ frontend_id: string; removed: boolean }> {
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/session-settings`, { method: 'DELETE' })
+}
+
+// --- Per-frontend RAG settings ---
+
+export interface FrontendRAGSettings {
+  combine_global_rag: boolean
+}
+
+export async function getFrontendRAGSettings(frontendId: string): Promise<{ frontend_id: string; settings: FrontendRAGSettings }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/rag-settings`)
+}
+
+export async function saveFrontendRAGSettings(frontendId: string, settings: FrontendRAGSettings): Promise<{ frontend_id: string; settings: FrontendRAGSettings }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/rag-settings`, {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  })
+}
+
+export async function deleteFrontendRAGSettings(frontendId: string): Promise<{ frontend_id: string; removed: boolean; settings: FrontendRAGSettings }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/rag-settings`, { method: 'DELETE' })
 }
 
 // --- Per-frontend organizations override ---
@@ -468,11 +497,21 @@ export async function deleteFrontendOrgsOverride(frontendId: string): Promise<{ 
 
 // --- Per-frontend LLM override (D2=B: single file = full override; no file = inherit global) ---
 
-export async function getFrontendLLMOverride(frontendId: string): Promise<{ frontend_id: string; override: LLMConfig | null }> {
+// Per-slot opt-in: each slot is a SlotConfig override OR null (inherit global).
+// compression and routing always inherit from global at the frontend tier.
+export interface LLMOverride {
+  inference: SlotConfig | null
+  compressor: SlotConfig | null
+  summariser: SlotConfig | null
+}
+
+export const EMPTY_LLM_OVERRIDE: LLMOverride = { inference: null, compressor: null, summariser: null }
+
+export async function getFrontendLLMOverride(frontendId: string): Promise<{ frontend_id: string; override: LLMOverride }> {
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/llm`)
 }
 
-export async function saveFrontendLLMOverride(frontendId: string, cfg: LLMConfig): Promise<{ frontend_id: string; override: LLMConfig }> {
+export async function saveFrontendLLMOverride(frontendId: string, cfg: LLMOverride): Promise<{ frontend_id: string; override: LLMOverride }> {
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/llm`, {
     method: 'PUT',
     body: JSON.stringify(cfg),

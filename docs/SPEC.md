@@ -369,10 +369,13 @@ Admin auth flow (Sprint 7) reads the Contacts store (§4.11) as the allowlist �
 
 ### §4.9 Frontend Registry
 
-Admin registers each frontend manually with:
-- `frontend_id` — stable string the frontend uses in its own `deployment_frontend.json` (e.g. `packaging-eu`). Same ID keys the `/app/data/campaigns/{frontend_id}/` folder for all per-frontend config (companies, prompts, RAG, branding, session settings, notifications).
+Admin registers each frontend with just two fields:
 - `url` — where the sidecar is reachable from the backend container (e.g. `http://cbc-frontend`, `http://100.64.0.5:8190`).
-- `name` — human-readable label (optional; defaults to `frontend_id`).
+- `name` — human-readable label shown throughout the admin UI (e.g. `Packaging — Europe`).
+
+The backend auto-generates `frontend_id` (the internal slug used as the storage key for `/app/data/campaigns/{frontend_id}/`) by slugifying the name and appending `-2`, `-3`, … if it collides with an existing one. Admins do not see or manage `frontend_id` in normal operation — the UI shows the display name everywhere.
+
+Frontend containers themselves are anonymous: they don't need to know their backend-side ID. The backend already knows which frontend it's polling because it's hitting that frontend's registered URL. One Docker image deploys to N frontends without rebuilds.
 
 CBC does **not** auto-register: the sidecar never initiates contact with the backend, preserving the HRDD "frontend doesn't know the backend" rule (portability across NAT/firewall/Tailscale). Registration is a one-time admin action on the Frontends tab.
 
@@ -607,11 +610,24 @@ Supported languages: Any (no restrictions). UI translations provided for: EN, ES
 
 ### §9.1 Docker Compose
 
-Three compose files:
+Two compose files:
 1. `docker-compose.backend.yml` — Backend + Admin SPA
 2. `docker-compose.frontend.yml` — Frontend (one instance per deployment)
 
-Frontend instances are deployed by copying the compose file with different env vars (frontend_id, ports).
+**Multiple frontends from the same image.** Frontend containers are anonymous — they don't carry an identity that the backend cares about. To deploy a second frontend without rebuilding the image:
+
+```bash
+docker run -d \
+  --name cbc-frontend-<short-name> \
+  -p <host-port>:80 \
+  -v cbc-frontend-<short-name>-data:/app/data \
+  --network cbc-net \
+  cbcopilot-cbc-frontend
+```
+
+In Portainer, the same pattern: paste `docker-compose.frontend.yml` into a new stack, set `CBC_FRONTEND_PORT`, and override `container_name` + the volume name so the new instance doesn't collide with the existing one. The image is reusable.
+
+After the container is running, register it from the admin (Frontends tab → Register) with the URL (`http://cbc-frontend-<short-name>` over `cbc-net`) and a display name. The backend assigns the internal storage ID automatically; the polling loop picks it up within 5s.
 
 ### §9.2 Volumes
 

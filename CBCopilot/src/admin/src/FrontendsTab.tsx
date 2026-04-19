@@ -17,7 +17,6 @@ export default function FrontendsTab() {
   const [frontends, setFrontends] = useState<FrontendInfo[]>([])
   const [selected, setSelected] = useState<string>('')
   const [showRegister, setShowRegister] = useState(false)
-  const [newFid, setNewFid] = useState('')
   const [newUrl, setNewUrl] = useState('')
   const [newName, setNewName] = useState('')
   const [error, setError] = useState('')
@@ -44,16 +43,15 @@ export default function FrontendsTab() {
   }, [])
 
   const register = async () => {
-    if (!newFid.trim() || !newUrl.trim()) return
+    if (!newUrl.trim() || !newName.trim()) return
     setError('')
     try {
-      await registerFrontend({ frontend_id: newFid.trim(), url: newUrl.trim(), name: newName.trim() })
-      const fid = newFid.trim()
-      setNewFid(''); setNewUrl(''); setNewName(''); setShowRegister(false)
+      const r = await registerFrontend({ url: newUrl.trim(), name: newName.trim() })
+      setNewUrl(''); setNewName(''); setShowRegister(false)
       await reload()
-      setSelected(fid)
-      setInfo('Registered')
-      setTimeout(() => setInfo(''), 2000)
+      setSelected(r.frontend.frontend_id)
+      setInfo(`Registered as "${r.frontend.name}"`)
+      setTimeout(() => setInfo(''), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -69,8 +67,8 @@ export default function FrontendsTab() {
     }
   }
 
-  const removeFrontend = async (frontendId: string) => {
-    if (!confirm(`Unregister frontend "${frontendId}"? Backend will stop polling it. Per-frontend config in /app/data/campaigns/${frontendId}/ is NOT deleted.`)) return
+  const removeFrontend = async (frontendId: string, displayName: string) => {
+    if (!confirm(`Unregister "${displayName}"? Backend will stop polling it. Per-frontend config (companies, branding, prompts, RAG) is NOT deleted from disk and will be reclaimed if you re-register a frontend with the same name.`)) return
     try {
       await deleteFrontend(frontendId)
       if (selected === frontendId) setSelected('')
@@ -101,16 +99,10 @@ export default function FrontendsTab() {
         {showRegister && (
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-3">
             <p className="text-xs text-gray-600 mb-3">
-              Register a frontend by providing the stable <code>frontend_id</code> from its <code>deployment_frontend.json</code>,
-              the URL where its sidecar is reachable from this backend container, and an optional human-readable name.
+              Register a frontend with the URL where its sidecar is reachable from this backend container and a
+              human-readable name. The internal config-storage ID is derived from the name automatically.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">frontend_id</label>
-                <input value={newFid} onChange={e => setNewFid(e.target.value)}
-                  placeholder="packaging-eu"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono" />
-              </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-gray-500 mb-1">URL (sidecar reachable here)</label>
                 <input value={newUrl} onChange={e => setNewUrl(e.target.value)}
@@ -118,13 +110,13 @@ export default function FrontendsTab() {
                   className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono" />
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Display name (optional)</label>
+                <label className="block text-xs text-gray-500 mb-1">Display name</label>
                 <input value={newName} onChange={e => setNewName(e.target.value)}
                   placeholder="Packaging — Europe"
                   className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm" />
               </div>
             </div>
-            <button onClick={register} disabled={!newFid.trim() || !newUrl.trim()}
+            <button onClick={register} disabled={!newUrl.trim() || !newName.trim()}
               className="mt-3 text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50">
               Register
             </button>
@@ -143,9 +135,7 @@ export default function FrontendsTab() {
               >
                 <StatusDot status={fe.status} />
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-gray-800 truncate">
-                    {fe.name} <code className="text-xs text-gray-400 font-mono ml-1">{fe.frontend_id}</code>
-                  </div>
+                  <div className="text-sm font-medium text-gray-800 truncate">{fe.name}</div>
                   <div className="text-xs text-gray-500 truncate">{fe.url}</div>
                 </div>
                 <div className="text-xs text-gray-400 whitespace-nowrap">
@@ -157,7 +147,7 @@ export default function FrontendsTab() {
                   enabled
                 </label>
                 <button
-                  onClick={e => { e.stopPropagation(); removeFrontend(fe.frontend_id) }}
+                  onClick={e => { e.stopPropagation(); removeFrontend(fe.frontend_id, fe.name) }}
                   className="text-xs text-uni-red hover:underline"
                 >
                   Unregister

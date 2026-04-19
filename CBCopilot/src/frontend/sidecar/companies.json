@@ -3,28 +3,24 @@
     "slug": "compare-all",
     "display_name": "Compare All",
     "enabled": true,
-    "sort_order": -1,
     "is_compare_all": true
   },
   {
     "slug": "amcor",
     "display_name": "Amcor",
     "enabled": true,
-    "sort_order": 0,
     "country_tags": ["AU", "US", "DE", "BR"]
   },
   {
     "slug": "ds-smith",
     "display_name": "DS Smith",
     "enabled": true,
-    "sort_order": 1,
     "country_tags": ["UK", "DE", "FR", "IT", "PL"]
   },
   {
     "slug": "mondi",
     "display_name": "Mondi",
     "enabled": true,
-    "sort_order": 2,
     "country_tags": ["AT", "DE", "PL", "ZA", "US"]
   }
 ]

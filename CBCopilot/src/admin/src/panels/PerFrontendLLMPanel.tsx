@@ -1,148 +1,182 @@
-// Per-frontend LLM override (Sprint 4B, decision D2=B).
-// Single checkbox "Override global config". When enabled, the UI snapshots
-// the current global config and lets the admin edit it. When disabled, the
-// override file is deleted and the frontend inherits global.
+// Per-frontend LLM override.
+// Same UX as the global LLM section, with one extra checkbox per slot:
+// - Unchecked → slot shows the global value, greyed out, read-only.
+// - Checked  → slot becomes editable; on save the override JSON carries this
+//              slot only (other slots stay null and continue inheriting).
 //
-// This panel intentionally does NOT duplicate the full LLM editor from
-// LLMSection — too much UI. Instead it shows the effective config at-a-glance
-// and links the admin to a JSON editor / upload/download for power editing.
-// For Sprint 4B that's enough. Sprint 5+ can evolve if people find it clunky.
-import { useEffect, useRef, useState } from 'react'
+// Compression and routing settings always inherit from global at the frontend
+// tier (not exposed here).
+import { useEffect, useState } from 'react'
 import {
-  getFrontendLLMOverride, saveFrontendLLMOverride, deleteFrontendLLMOverride,
-  getLLMConfig,
+  getLLMConfig, getLLMDefaults, getProvidersStatus,
+  getFrontendLLMOverride, saveFrontendLLMOverride,
+  EMPTY_LLM_OVERRIDE,
 } from '../api'
-import type { LLMConfig } from '../api'
-import { downloadJSON } from '../utils'
+import type { LLMConfig, LLMOverride, SlotConfig, ProvidersStatus } from '../api'
+import SlotEditor from '../components/llm/SlotEditor'
+import ProviderCard from '../components/llm/ProviderCard'
+
+const POLL_INTERVAL_MS = 15000
+
+const SLOT_ORDER: { key: 'inference' | 'compressor' | 'summariser'; label: string; hint: string }[] = [
+  { key: 'inference', label: 'Inference', hint: 'Main chat responses.' },
+  { key: 'compressor', label: 'Compressor', hint: 'Lightweight model that folds older messages into a running summary at progressive thresholds.' },
+  { key: 'summariser', label: 'Summariser', hint: 'Document summaries on injection + final conversation summary emailed to the user.' },
+]
+
+type SlotKey = 'inference' | 'compressor' | 'summariser'
 
 export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string }) {
-  const [override, setOverride] = useState<LLMConfig | null>(null)
   const [globalCfg, setGlobalCfg] = useState<LLMConfig | null>(null)
+  const [defaults, setDefaults] = useState<{ lm_studio: string; ollama: string } | null>(null)
+  const [providers, setProviders] = useState<ProvidersStatus | null>(null)
+  const [override, setOverride] = useState<LLMOverride>(EMPTY_LLM_OVERRIDE)
+  const [dirty, setDirty] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('')
   const [error, setError] = useState('')
-  const [info, setInfo] = useState('')
-  const uploadRef = useRef<HTMLInputElement>(null)
 
-  const reload = async () => {
-    try {
-      const [ov, g] = await Promise.all([
-        getFrontendLLMOverride(frontendId),
-        getLLMConfig(),
-      ])
-      setOverride(ov.override)
-      setGlobalCfg(g)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+  const refreshProviders = async () => {
+    try { setProviders(await getProvidersStatus()) }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
   useEffect(() => {
-    reload()
+    setError('')
+    setDirty(false)
+    Promise.all([
+      getLLMConfig(),
+      getLLMDefaults(),
+      getProvidersStatus(),
+      getFrontendLLMOverride(frontendId),
+    ])
+      .then(([g, d, p, o]) => {
+        setGlobalCfg(g)
+        setDefaults(d)
+        setProviders(p)
+        setOverride(o.override)
+      })
+      .catch(e => setError(e instanceof Error ? e.message : String(e)))
+
+    const interval = window.setInterval(refreshProviders, POLL_INTERVAL_MS)
+    return () => window.clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frontendId])
 
-  const enableOverride = async () => {
-    if (!globalCfg) return
+  if (!globalCfg || !defaults) {
+    return (
+      <div className="border border-gray-200 rounded-lg p-4">
+        <h4 className="text-sm font-semibold text-gray-700 mb-1">LLM</h4>
+        <p className="text-xs text-gray-400">Loading…</p>
+      </div>
+    )
+  }
+
+  const toggleSlot = (key: SlotKey, checked: boolean) => {
+    setOverride(o => ({
+      ...o,
+      // Snapshot global into the override on enable; null on disable.
+      [key]: checked ? { ...globalCfg[key] } : null,
+    }))
+    setDirty(true)
+  }
+
+  const updateSlot = (key: SlotKey, patch: Partial<SlotConfig>) => {
+    setOverride(o => {
+      if (!o[key]) return o  // safety: don't edit an inherited slot
+      return { ...o, [key]: { ...o[key]!, ...patch } }
+    })
+    setDirty(true)
+  }
+
+  const save = async () => {
+    setSaveStatus('Saving…')
     setError('')
     try {
-      // Snapshot the current global and persist as this frontend's override
-      await saveFrontendLLMOverride(frontendId, globalCfg)
-      await reload()
-      setInfo('Override created from global snapshot')
-      setTimeout(() => setInfo(''), 2500)
+      const r = await saveFrontendLLMOverride(frontendId, override)
+      setOverride(r.override)
+      setDirty(false)
+      setSaveStatus('Saved')
+      setTimeout(() => setSaveStatus(''), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      setSaveStatus('')
     }
   }
 
-  const disableOverride = async () => {
-    if (!confirm('Disable the per-frontend LLM override? This frontend will use the global config.')) return
-    setError('')
-    try {
-      await deleteFrontendLLMOverride(frontendId)
-      await reload()
-      setInfo('Override removed')
-      setTimeout(() => setInfo(''), 2500)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
+  const modelsForSlot = (slot: SlotConfig): string[] => {
+    if (slot.provider === 'lm_studio') return providers?.lm_studio.models || []
+    if (slot.provider === 'ollama') return providers?.ollama.models || []
+    return []  // api: would need a per-slot health probe — skipped at this tier
   }
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setError('')
-    try {
-      const text = await file.text()
-      const data = JSON.parse(text)
-      if (!data.inference || !data.compressor || !data.summariser) {
-        throw new Error('Invalid LLM config JSON: needs inference, compressor, summariser slots.')
-      }
-      await saveFrontendLLMOverride(frontendId, data)
-      await reload()
-      setInfo('Override updated from uploaded JSON')
-      setTimeout(() => setInfo(''), 2500)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      if (uploadRef.current) uploadRef.current.value = ''
-    }
-  }
-
-  const effective = override || globalCfg
+  const overriddenCount = Object.values(override).filter(Boolean).length
 
   return (
     <div className="border border-gray-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-1">
-        <h4 className="text-sm font-semibold text-gray-700">LLM override</h4>
+        <h4 className="text-sm font-semibold text-gray-700">LLM</h4>
         <span className="text-xs text-gray-500">
-          {override ? 'custom ◆' : 'inheriting global'}
-          {info && <span className="ml-2 text-green-700">{info}</span>}
+          {overriddenCount === 0 ? 'inheriting global' : `${overriddenCount} slot${overriddenCount === 1 ? '' : 's'} overridden ◆`}
+          {saveStatus && <span className="ml-2 text-green-700">{saveStatus}</span>}
         </span>
       </div>
-      <p className="text-xs text-gray-500 mb-3">
-        When disabled, this frontend uses the global LLM config from the General tab. When enabled, the override replaces
-        the global one entirely for this frontend's chat sessions. Edit by downloading the JSON, modifying, and re-uploading.
+      <p className="text-xs text-gray-500 mb-4">
+        Per-slot opt-in. Tick "Override" on any slot to take it off the global config and edit it for this frontend; leave unticked to inherit.
+        Compression and summary-routing always come from the global config at the frontend tier.
       </p>
 
-      {error && <p className="text-uni-red text-xs mb-2">{error}</p>}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+        <ProviderCard name="LM Studio" info={providers?.lm_studio} />
+        <ProviderCard name="Ollama" info={providers?.ollama} />
+      </div>
 
-      <label className="flex items-center gap-2 text-sm mb-3">
-        <input
-          type="checkbox"
-          checked={!!override}
-          onChange={e => (e.target.checked ? enableOverride() : disableOverride())}
-          className="rounded border-gray-300"
-        />
-        Override global config
-      </label>
+      {error && <p className="text-uni-red text-xs mb-3">{error}</p>}
 
-      {effective && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs mb-3">
-          <div><strong>Effective config:</strong> {override ? 'per-frontend override' : 'inherited from global'}</div>
-          <ul className="mt-2 space-y-0.5">
-            <li><code>inference</code>: {effective.inference.provider} / {effective.inference.model || '(no model)'}</li>
-            <li><code>compressor</code>: {effective.compressor.provider} / {effective.compressor.model || '(no model)'}</li>
-            <li><code>summariser</code>: {effective.summariser.provider} / {effective.summariser.model || '(no model)'}</li>
-            <li>compression <code>{effective.compression.enabled ? 'enabled' : 'disabled'}</code> · first={effective.compression.first_threshold} · step={effective.compression.step_size}</li>
-            <li>routing: doc summary → <code>{effective.routing.document_summary_slot}</code>, user summary → <code>{effective.routing.user_summary_slot}</code></li>
-          </ul>
-        </div>
-      )}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        {SLOT_ORDER.map(({ key, label, hint }) => {
+          const isOverridden = override[key] !== null
+          const effective: SlotConfig = isOverridden ? override[key]! : globalCfg[key]
+          return (
+            <SlotEditor
+              key={key}
+              label={label}
+              hint={hint}
+              slot={effective}
+              onChange={p => updateSlot(key, p)}
+              defaults={defaults}
+              availableModels={modelsForSlot(effective)}
+              disabled={!isOverridden}
+              headerRight={
+                <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isOverridden}
+                    onChange={e => toggleSlot(key, e.target.checked)}
+                    className="rounded border-gray-300"
+                  />
+                  Override
+                </label>
+              }
+            />
+          )
+        })}
+      </div>
 
-      {override && (
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => downloadJSON(override, `llm-override-${frontendId}.json`)}
-            className="text-xs border border-gray-300 text-gray-600 rounded-lg px-3 py-1.5 hover:bg-gray-50"
-          >
-            Download JSON
-          </button>
-          <label className="text-xs bg-uni-blue text-white rounded-lg px-3 py-1.5 font-medium hover:opacity-90 cursor-pointer">
-            Upload JSON
-            <input ref={uploadRef} type="file" accept=".json" onChange={handleUpload} className="hidden" />
-          </label>
-        </div>
-      )}
+      <div className="flex gap-2 mt-4">
+        <button
+          onClick={save}
+          disabled={!dirty}
+          className="text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
+        >
+          Save LLM override
+        </button>
+        <button
+          onClick={refreshProviders}
+          className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-1.5 hover:bg-gray-50"
+        >
+          Refresh providers
+        </button>
+      </div>
     </div>
   )
 }

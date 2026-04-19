@@ -12,13 +12,14 @@ router = APIRouter(prefix="/admin/api/v1/frontends", tags=["admin-companies"])
 
 
 class CreateCompanyRequest(BaseModel):
-    slug: str
+    """Slug is derived server-side from display_name (admins don't pick it).
+    `slug` may still be sent by internal callers restoring state explicitly."""
     display_name: str
+    slug: str | None = None
     enabled: bool = True
-    sort_order: int = 0
     is_compare_all: bool = False
-    prompt_mode: str = "inherit"
-    rag_mode: str = "combine_all"
+    combine_frontend_rag: bool = True
+    combine_global_rag: bool = True
     country_tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -26,10 +27,9 @@ class CreateCompanyRequest(BaseModel):
 class UpdateCompanyRequest(BaseModel):
     display_name: str | None = None
     enabled: bool | None = None
-    sort_order: int | None = None
     is_compare_all: bool | None = None
-    prompt_mode: str | None = None
-    rag_mode: str | None = None
+    combine_frontend_rag: bool | None = None
+    combine_global_rag: bool | None = None
     country_tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
 
@@ -42,8 +42,13 @@ async def list_companies(frontend_id: str, _admin: dict = Depends(require_admin)
 
 @router.post("/{frontend_id}/companies", status_code=201)
 async def create_company(frontend_id: str, req: CreateCompanyRequest, _admin: dict = Depends(require_admin)):
+    if not req.display_name.strip():
+        raise HTTPException(status_code=400, detail="display_name is required")
+    payload = req.model_dump()
+    if not payload.get("slug"):
+        payload["slug"] = registry.slug_for_name(frontend_id, req.display_name)
     try:
-        company = Company(**req.model_dump())
+        company = Company(**payload)
         created = registry.create_company(frontend_id, company)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

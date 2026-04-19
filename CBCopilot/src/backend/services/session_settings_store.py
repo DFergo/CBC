@@ -1,21 +1,23 @@
-"""Per-frontend session settings + feature toggles override (SPEC §6.2).
+"""Per-frontend session settings + feature toggles.
 
-Storage: /app/data/campaigns/{frontend_id}/session_settings.json. Any field set
-to None means "inherit from deployment_frontend.json". Non-None fields override.
+Storage: /app/data/campaigns/{frontend_id}/session_settings.json. Concrete
+per-field values — no `inherit` semantics. When the file is absent the
+defaults below apply (matching what `deployment_frontend.json` ships with).
+RAG-related settings live in `rag_settings_store.py`, not here.
 
 Fields covered:
     auth_required          — enable email-code auth flow on this frontend
-    session_resume_hours   — how long a session token stays recoverable
-    auto_close_hours       — idle before session is marked complete
-    auto_destroy_hours     — privacy wipe (0 = never, >0 = delete after N hours)
+    session_resume_hours   — how long a session token stays recoverable after
+                             it's created (user can come back with the token
+                             and pick up the conversation within this window)
+    auto_close_hours       — idle hours before the session is marked complete
+                             and the user-summary prompt is triggered
+    auto_destroy_hours     — privacy wipe — delete conversation + uploads N
+                             hours after the session closes (0 = keep forever)
     disclaimer_enabled     — show or skip the Disclaimer page
     instructions_enabled   — show or skip the Instructions page
-    compare_all_enabled    — show or hide the "Compare All" button on CompanySelectPage
-    rag_standalone         — if true, global RAG docs are EXCLUDED from this
-                             frontend's resolution even when a company is set
-                             to inherit_all. Default false = frontend supplements
-                             global. Backend-only (NOT pushed to sidecar — the
-                             sidecar doesn't need to know; resolver uses it).
+    compare_all_enabled    — show or hide the "Compare All" button on
+                             CompanySelectPage
 
 Admin saves override → backend pushes to sidecar via POST /internal/session-settings
 (sidecar caches + merges into /internal/config).
@@ -32,18 +34,13 @@ logger = logging.getLogger("session_settings")
 
 
 class SessionSettings(BaseModel):
-    auth_required: bool | None = None
-    session_resume_hours: int | None = None
-    auto_close_hours: int | None = None
-    auto_destroy_hours: int | None = None
-    disclaimer_enabled: bool | None = None
-    instructions_enabled: bool | None = None
-    compare_all_enabled: bool | None = None
-    rag_standalone: bool | None = None
-
-
-# Fields that are backend-only (resolver reads them; sidecar doesn't need to know).
-_BACKEND_ONLY_FIELDS = {"rag_standalone"}
+    auth_required: bool = True
+    session_resume_hours: int = 48
+    auto_close_hours: int = 72
+    auto_destroy_hours: int = 0
+    disclaimer_enabled: bool = True
+    instructions_enabled: bool = True
+    compare_all_enabled: bool = True
 
 
 def _path(frontend_id: str) -> Path:
@@ -54,8 +51,13 @@ def load(frontend_id: str) -> SessionSettings | None:
     data = read_json(_path(frontend_id))
     if not isinstance(data, dict):
         return None
+    # Drop legacy/unknown keys (e.g. `rag_standalone` from before it moved to
+    # rag_settings) and replace `null` with the field's default. Old per-tier
+    # configs used None to mean "inherit" — under the new model concrete values
+    # always win, so Nones get coerced to defaults rather than failing validation.
+    cleaned = {k: v for k, v in data.items() if k in SessionSettings.model_fields and v is not None}
     try:
-        return SessionSettings(**data)
+        return SessionSettings(**cleaned)
     except Exception as e:
         logger.warning(f"Invalid session_settings.json for {frontend_id}: {e}")
         return None
@@ -78,13 +80,10 @@ def delete(frontend_id: str) -> bool:
 def to_push_payload(settings: SessionSettings | None) -> dict[str, Any]:
     """Body sent to the sidecar's POST /internal/session-settings.
 
-    Empty dict = clear cache (fall back to deployment_frontend.json). Otherwise,
-    only non-None fields are sent, AND backend-only fields (e.g. rag_standalone,
-    which affects resolver behaviour but is invisible to the sidecar) are stripped.
+    Empty dict = no override (sidecar uses its baseline). Otherwise we push
+    every field as a concrete value — the sidecar layers them on top of the
+    deployment_frontend.json baseline.
     """
     if settings is None:
         return {}
-    return {
-        k: v for k, v in settings.model_dump().items()
-        if v is not None and k not in _BACKEND_ONLY_FIELDS
-    }
+    return settings.model_dump()

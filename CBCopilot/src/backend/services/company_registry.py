@@ -21,14 +21,46 @@ logger = logging.getLogger("company_registry")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
+def _slugify(name: str) -> str:
+    """Derive a filesystem-safe slug from a display name. Same shape as
+    frontend_registry's slugify so admins can predict folder names when
+    navigating /app/data/campaigns/{frontend_id}/companies/{slug}/ on disk.
+    Falls back to 'company' if the input collapses to empty.
+    """
+    slug = name.strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "company"
+
+
+def next_unique_slug(frontend_id: str, base: str) -> str:
+    """Return `base`, or `base-2`, `base-3`, … until we find an unused slug
+    for this frontend. Used so admins can add two companies with the same
+    display name (e.g. "Smurfit Kappa") without worrying about collisions.
+    """
+    existing = {c.slug for c in list_companies(frontend_id)}
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}-{n}" in existing:
+        n += 1
+    return f"{base}-{n}"
+
+
+def slug_for_name(frontend_id: str, display_name: str) -> str:
+    """Convenience: slugify + uniqueness check in one call."""
+    return next_unique_slug(frontend_id, _slugify(display_name))
+
+
 class Company(BaseModel):
     slug: str
     display_name: str
     enabled: bool = True
-    sort_order: int = 0
     is_compare_all: bool = False
-    prompt_mode: str = "inherit"  # inherit | own | combine
-    rag_mode: str = "combine_all"  # own_only | inherit_frontend | inherit_all | combine_frontend | combine_all
+    # When the chat session resolves RAG for this company, layer in higher tiers?
+    # Both default true — admins opt OUT of inheritance per tier.
+    combine_frontend_rag: bool = True
+    combine_global_rag: bool = True
     country_tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -42,6 +74,32 @@ class Company(BaseModel):
         return v
 
 
+# Migration map for the legacy `rag_mode` enum (5 values reducible to 2 bools).
+_LEGACY_RAG_MODE: dict[str, tuple[bool, bool]] = {
+    "own_only":          (False, False),
+    "inherit_frontend":  (True,  False),
+    "combine_frontend":  (True,  False),
+    "inherit_all":       (True,  True),
+    "combine_all":       (True,  True),
+}
+
+
+def _migrate_legacy(entry: dict[str, Any]) -> dict[str, Any]:
+    """Translate legacy `rag_mode` strings into the new pair of bools.
+
+    Pydantic's default `extra="ignore"` silently drops unknown keys, so old
+    `companies.json` entries would lose their setting AND get the True/True
+    default — accidentally turning every "own_only" company into "combine_all".
+    Catch that here before validation runs.
+    """
+    if "rag_mode" in entry and "combine_frontend_rag" not in entry:
+        cf, cg = _LEGACY_RAG_MODE.get(entry["rag_mode"], (True, True))
+        entry["combine_frontend_rag"] = cf
+        entry["combine_global_rag"] = cg
+    entry.pop("rag_mode", None)
+    return entry
+
+
 def list_companies(frontend_id: str) -> list[Company]:
     data = read_json(companies_file(frontend_id), default=[])
     if not isinstance(data, list):
@@ -49,10 +107,15 @@ def list_companies(frontend_id: str) -> list[Company]:
         return []
     result: list[Company] = []
     for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        entry = _migrate_legacy(dict(entry))
         try:
             result.append(Company(**entry))
         except Exception as e:
             logger.warning(f"Skipping malformed company entry in {frontend_id}: {e}")
+    # Compare All entries first, then alphabetical by display_name (case-insensitive).
+    result.sort(key=lambda c: (0 if c.is_compare_all else 1, c.display_name.lower()))
     return result
 
 

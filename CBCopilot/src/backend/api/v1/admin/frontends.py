@@ -15,11 +15,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from src.api.v1.admin.auth import require_admin
-from src.services import branding_store, llm_override_store, orgs_override_store, resolvers, session_settings_store
+from src.services import (
+    branding_store,
+    llm_override_store,
+    orgs_override_store,
+    rag_settings_store,
+    resolvers,
+    session_settings_store,
+)
 from src.services.branding_store import Branding
 from src.services.frontend_registry import registry
-from src.services.llm_config_store import LLMConfig
+from src.services.llm_override_store import LLMOverride
 from src.services.orgs_override_store import OrgsOverride
+from src.services.rag_settings_store import RAGSettings
 from src.services.session_settings_store import SessionSettings
 
 logger = logging.getLogger("admin.frontends")
@@ -65,9 +73,8 @@ def _serialise(fe: dict[str, Any]) -> dict[str, Any]:
 # --- Registry CRUD ---
 
 class RegisterRequest(BaseModel):
-    frontend_id: str
     url: str
-    name: str = ""
+    name: str
 
 
 class UpdateRequest(BaseModel):
@@ -84,9 +91,11 @@ async def list_frontends(_admin: dict = Depends(require_admin)):
 
 @router.post("", status_code=201)
 async def register_frontend(req: RegisterRequest, _admin: dict = Depends(require_admin)):
-    if not req.frontend_id.strip():
-        raise HTTPException(400, "frontend_id is required")
-    fe = registry.register(frontend_id=req.frontend_id.strip(), url=req.url, name=req.name)
+    if not req.url.strip():
+        raise HTTPException(400, "url is required")
+    if not req.name.strip():
+        raise HTTPException(400, "name is required")
+    fe = registry.register(url=req.url.strip(), name=req.name.strip())
     return {"frontend": _serialise(fe)}
 
 
@@ -173,6 +182,29 @@ async def delete_session_settings(frontend_id: str, _admin: dict = Depends(requi
     return {"frontend_id": frontend_id, "removed": removed}
 
 
+# --- Per-frontend RAG settings ---
+
+@router.get("/{frontend_id}/rag-settings")
+async def get_rag_settings(frontend_id: str, _admin: dict = Depends(require_admin)):
+    _require_registered(frontend_id)
+    s = rag_settings_store.load(frontend_id)
+    return {"frontend_id": frontend_id, "settings": s.model_dump()}
+
+
+@router.put("/{frontend_id}/rag-settings")
+async def put_rag_settings(frontend_id: str, settings: RAGSettings, _admin: dict = Depends(require_admin)):
+    _require_registered(frontend_id)
+    rag_settings_store.save(frontend_id, settings)
+    return {"frontend_id": frontend_id, "settings": settings.model_dump()}
+
+
+@router.delete("/{frontend_id}/rag-settings")
+async def delete_rag_settings(frontend_id: str, _admin: dict = Depends(require_admin)):
+    _require_registered(frontend_id)
+    removed = rag_settings_store.delete(frontend_id)
+    return {"frontend_id": frontend_id, "removed": removed, "settings": rag_settings_store.load(frontend_id).model_dump()}
+
+
 # --- Per-frontend organizations override ---
 
 @router.get("/{frontend_id}/orgs")
@@ -200,19 +232,19 @@ async def delete_orgs_override(frontend_id: str, _admin: dict = Depends(require_
     return {"frontend_id": frontend_id, "removed": removed}
 
 
-# --- Per-frontend LLM override (D2=B: single file = full override; no file = inherit global) ---
+# --- Per-frontend LLM override (per-slot opt-in) ---
 
 @router.get("/{frontend_id}/llm")
 async def get_llm_override(frontend_id: str, _admin: dict = Depends(require_admin)):
     _require_registered(frontend_id)
-    cfg = llm_override_store.load(frontend_id)
-    return {"frontend_id": frontend_id, "override": cfg.model_dump() if cfg else None}
+    override = llm_override_store.load(frontend_id)
+    return {"frontend_id": frontend_id, "override": override.model_dump()}
 
 
 @router.put("/{frontend_id}/llm")
 async def put_llm_override(
     frontend_id: str,
-    cfg: LLMConfig,
+    cfg: LLMOverride,
     _admin: dict = Depends(require_admin),
 ):
     _require_registered(frontend_id)

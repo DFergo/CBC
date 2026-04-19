@@ -4,14 +4,10 @@ import type { Company } from '../api'
 import PromptsSection from '../sections/PromptsSection'
 import RAGSection from '../sections/RAGSection'
 
-const RAG_MODES: Company['rag_mode'][] = ['own_only', 'inherit_frontend', 'inherit_all', 'combine_frontend', 'combine_all']
-const PROMPT_MODES: Company['prompt_mode'][] = ['inherit', 'own', 'combine']
-
 export default function CompanyManagementPanel({ frontendId }: { frontendId: string }) {
   const [companies, setCompanies] = useState<Company[]>([])
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
-  const [newSlug, setNewSlug] = useState('')
   const [newName, setNewName] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
 
@@ -24,15 +20,14 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
   useEffect(reload, [frontendId])
 
   const add = async () => {
-    if (!newSlug.trim() || !newName.trim()) return
+    if (!newName.trim()) return
     setError('')
     try {
-      await createCompany(frontendId, { slug: newSlug.trim(), display_name: newName.trim() })
-      setNewSlug('')
+      const r = await createCompany(frontendId, { display_name: newName.trim() })
       setNewName('')
       reload()
-      setInfo('Added')
-      setTimeout(() => setInfo(''), 1500)
+      setInfo(`Added (slug: ${r.company.slug})`)
+      setTimeout(() => setInfo(''), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -73,17 +68,13 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
       {error && <p className="text-uni-red text-xs mb-2">{error}</p>}
 
       <div className="flex flex-wrap items-end gap-2 mb-4 pb-3 border-b border-gray-100">
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Slug (lowercase, a-z 0-9 -)</label>
-          <input value={newSlug} onChange={e => setNewSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
-            placeholder="amcor" className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40" />
-        </div>
-        <div>
+        <div className="flex-1 min-w-[14rem]">
           <label className="block text-xs text-gray-500 mb-1">Display name</label>
           <input value={newName} onChange={e => setNewName(e.target.value)}
-            placeholder="Amcor" className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-56" />
+            onKeyDown={e => { if (e.key === 'Enter' && newName.trim()) add() }}
+            placeholder="Amcor" className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm" />
         </div>
-        <button onClick={add} disabled={!newSlug.trim() || !newName.trim()}
+        <button onClick={add} disabled={!newName.trim()}
           className="text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50">
           + Add company
         </button>
@@ -117,30 +108,6 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
                   <button onClick={() => remove(c.slug)} className="text-xs text-uni-red hover:underline">Delete</button>
                 </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2">
-                <div>
-                  <label className="block text-[11px] text-gray-500">Sort order</label>
-                  <input type="number" value={c.sort_order}
-                    onChange={e => patch(c.slug, { sort_order: parseInt(e.target.value, 10) || 0 })}
-                    className="w-full border border-gray-200 rounded px-2 py-1 text-xs" />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-gray-500">Prompt mode</label>
-                  <select value={c.prompt_mode}
-                    onChange={e => patch(c.slug, { prompt_mode: e.target.value })}
-                    className="w-full border border-gray-200 rounded px-2 py-1 text-xs">
-                    {PROMPT_MODES.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] text-gray-500">RAG mode</label>
-                  <select value={c.rag_mode}
-                    onChange={e => patch(c.slug, { rag_mode: e.target.value })}
-                    className="w-full border border-gray-200 rounded px-2 py-1 text-xs">
-                    {RAG_MODES.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-              </div>
               <div className="mt-2">
                 <div className="flex items-center justify-between">
                   <label className="block text-[11px] text-gray-500">Country tags</label>
@@ -162,7 +129,12 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
               {expanded === c.slug && !c.is_compare_all && (
                 <div className="mt-4 pt-4 border-t border-gray-100 space-y-4">
                   <PromptsSection frontendId={frontendId} companySlug={c.slug} />
-                  <RAGSection frontendId={frontendId} companySlug={c.slug} />
+                  <RAGSection
+                    frontendId={frontendId}
+                    companySlug={c.slug}
+                    company={c}
+                    onCompanyChanged={reload}
+                  />
                 </div>
               )}
             </div>

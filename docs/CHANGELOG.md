@@ -1,5 +1,79 @@
 # CBC — Changelog
 
+## Per-frontend LLM: per-slot override mirroring the global UI (2026-04-19)
+
+- Per-frontend `LLM` panel rebuilt to match the global LLM editor 1:1: providers status (LM Studio + Ollama) at top, then a slot card for each of `Inference`, `Compressor`, `Summariser`, with a single **Override** checkbox in the slot header.
+  - Unchecked → slot shows the global value, all inputs disabled and the card greyed (`bg-gray-50` + `disabled:bg-gray-100`).
+  - Checked → snapshots the global slot into the override, makes the inputs editable. Save persists the override.
+- Compression and summary-routing always inherit from global at the frontend tier — not exposed in the per-frontend panel. (Easy to expose later if needed; for now the simpler 3-slot UX matches Daniel's spec.)
+- Backend `LLMOverride` model is now per-slot optional: `{inference, compressor, summariser}` each `SlotConfig | None`. `null` = inherit. `resolve_llm_config(fid)` merges per slot. Save with all-None deletes the file (intent and disk stay in sync).
+- Migration: legacy `llm_override.json` files (full LLMConfig with `compression` + `routing` blocks) load without error — the migration extracts just the three slots and drops the rest.
+- Extracted `SlotEditor` and `ProviderCard` to `src/admin/src/components/llm/` so both the global `LLMSection` and the per-frontend panel share the same widget. `SlotEditor` gains a `disabled` prop (greys + freezes inputs and skips model auto-correction) and a `headerRight` slot (used to mount the per-frontend Override checkbox).
+- Admin route `PUT /admin/api/v1/frontends/{fid}/llm` now accepts the `LLMOverride` shape; `GET` always returns one (no longer `null` — empty override means all slots inherited).
+
+## Companies: alphabetical sort, drop sort_order (2026-04-19)
+
+- Companies are now ordered automatically: **Compare All entries first, then alphabetical by display name** (case-insensitive). Sort applied in three places so wire order is canonical: backend `list_companies`, sidecar `/internal/companies`, plus a defensive sort on `CompanySelectPage` for any future endpoint that returns unsorted data.
+- Dropped the `Company.sort_order` field everywhere — model, request schemas, admin UI input, frontend types. Existing `companies.json` entries with `sort_order` still load (Pydantic `extra="ignore"`); the field is dropped on next save.
+- Cleaned the bundled sidecar `companies.json` to remove `sort_order`.
+- Defaults reminder: `combine_frontend_rag` and `combine_global_rag` both default to `true`, so a brand-new company sees both Combine RAG checkboxes ticked unless the admin unticks them.
+
+## Combine RAG: unified checkbox UX at frontend + company tiers (2026-04-19)
+
+- Both RAG sections (frontend + company tier) now have a **Combine RAG** subsection at the top:
+  - **Frontend RAG**: one checkbox `Global` — controls whether the cross-sector global RAG can be pulled into chat sessions served by this frontend.
+  - **Company RAG**: two checkboxes `Frontend` + `Global` — opt the company in or out of each higher tier independently.
+- Replaced the legacy 5-value `rag_mode` enum on `Company` with two booleans `combine_frontend_rag` / `combine_global_rag` (both default true). The five old values were already reducible to two bools — `inherit_X` and `combine_X` produced identical resolver behaviour. Migration handled in `company_registry.list_companies`: legacy entries are translated before Pydantic validates, so old `companies.json` entries don't get silently demoted to the True/True default.
+- Replaced `RAGSettings.global_rag_mode: "combine"|"ignore"` with `RAGSettings.combine_global_rag: bool` (default true). Migration in `rag_settings_store.load`. Resolver `_frontend_is_standalone` now reads the bool directly.
+- Dropped the per-company **RAG mode** dropdown from `CompanyManagementPanel` — that setting now lives next to the documents it controls inside `RAGSection`. The expanded company row is cleaner: just `Sort order`, then on expand the Prompts + RAG sections (with Combine RAG at the top).
+- `RAGSection` props extended with optional `company` + `onCompanyChanged` so the company-tier subsection can save Combine settings via `updateCompany` without refetching.
+- Resolver semantics unchanged on the wire — the same documents are returned for the same admin-intent. Just the field names and the UI changed.
+
+## Session settings overhaul: drop inherit/null, move RAG-standalone into RAG section (2026-04-19)
+
+- `SessionSettings` model rewritten: every field is concrete with a default — `auth_required: bool = True`, `disclaimer_enabled = True`, `instructions_enabled = True`, `compare_all_enabled = True`, `session_resume_hours = 48`, `auto_close_hours = 72`, `auto_destroy_hours = 0`. The previous `bool | None` / `int | None` "inherit" semantics are gone — admins always see a concrete value, defaults match the deployment_frontend.json baseline.
+- `rag_standalone` removed from session settings entirely. New per-frontend `rag_settings_store.py` (`RAGSettings.global_rag_mode: "combine" | "ignore"`, defaults to `combine`). Resolver `_frontend_is_standalone` now reads from there.
+- New admin routes `GET / PUT / DELETE /admin/api/v1/frontends/{fid}/rag-settings`. Backend-only — not pushed to the sidecar (sidecar doesn't need to know).
+- `SessionSettingsPanel` rebuilt: numeric inputs with inline help (session resume / auto-close / auto-destroy each get a one-sentence explanation), boolean toggles as plain checkboxes (default ON, no 3-way "inherit / true / false"). "Remove override" button renamed → "Reset to defaults" (deletes the file, panel falls back to defaults).
+- `RAGSection` at the **frontend tier** gains a "Global RAG mode" dropdown at the top with the same combine/ignore choice, plus a one-paragraph explanation of what each option means in resolution. Hidden at global and company tiers.
+- Loader is forgiving: existing session_settings.json files with `null` values or the legacy `rag_standalone` key are cleaned (Nones dropped, unknown keys filtered) before validation, so old data doesn't error out — it just falls back to defaults for any field that was inherit-style before.
+
+## Prompts: + summary.md, drop prompt_mode, hide compare_all/summary at company tier (2026-04-19)
+
+- New canonical prompt **`summary.md`** — runs at session end, takes the full conversation, produces the user-facing summary that gets emailed out. Default content shipped at `src/backend/prompts/summary.md` and seeded into `/app/data/prompts/` on backend startup.
+- Canonical prompt count is now 6 (core, guardrails, cba_advisor, compare_all, context_template, summary). Visible at all tiers except company, where compare_all (cross-company by definition) and summary (session-end, not company-scoped) are hidden — only core, guardrails, cba_advisor, context_template show on a company panel.
+- Dropped `Company.prompt_mode` everywhere — pure dead storage, no logic ever read it. Prompts are winner-takes-all (company → frontend → global) per the resolver, and that's already correct without a mode flag. Removed from: `services/company_registry.py`, `api/v1/admin/companies.py` (Create + Update request models), admin `Company` interface, `CompanyManagementPanel` (Sort/Prompt/RAG was a 3-col grid → now 2-col Sort/RAG). Existing companies.json carrying the field still loads (Pydantic ignores extras); the field is dropped on the next save.
+
+## Prompts UX: same menu at every tier, edit-and-save commits to the current tier (2026-04-19)
+
+- `PromptsSection` rewritten. Same UX at global, frontend, and company tier — the canonical 5 prompts (`core.md`, `guardrails.md`, `cba_advisor.md`, `compare_all.md`, `context_template.md`) are always visible. The previous "list per-tier overrides only + arbitrary new-prompt form" model is gone.
+- Each row shows a tier badge (gray/blue/purple ◆ when owned at the current tier) so the admin sees at a glance which prompts are inherited and which are owned here.
+- Editor pane shows the *effective* content (whatever the resolver picks). Save always writes at the current tier — creating an override on the spot. "Remove this-tier override (revert to {parent})" appears only when the current tier owns the file.
+- Company tier rule: only `cba_advisor.md` is editable per Daniel's spec. The other four show as read-only with an "Editable only at frontend / global tier" notice — UI hides save/remove and the textarea is disabled. Backend mirrors the rule: `PUT /admin/api/v1/frontends/{fid}/companies/{slug}/prompts/{name}` rejects non-`cba_advisor.md` writes with HTTP 400 so the rule isn't enforceable only client-side.
+- Implementation: on tier change, parallel `previewPromptResolution` for all 5 prompts populates the resolution map. The "Preview resolution" button is gone — the always-visible tier badge replaced it.
+
+## Company creation: display name only (slug auto-derived) (2026-04-19)
+
+- Same refactor as the frontend-registration one, applied to companies. Add-company form now asks only for **Display name**; the slug (storage key under `/app/data/campaigns/{frontend_id}/companies/{slug}/`) is derived server-side by slugifying the name with `-2`, `-3`, … appended on collision.
+- Backend: `company_registry._slugify` + `next_unique_slug` + `slug_for_name(frontend_id, name)`. `CreateCompanyRequest.slug` is now optional; the route auto-derives if absent.
+- Admin UI: Slug input removed from the add-company form. Pressing Enter in the name field submits. The slug chip on each row stays — admins use it when navigating `/app/data/campaigns/{frontend_id}/companies/{slug}/` on disk for direct file work or debugging. Toast on add now reports the assigned slug for visibility.
+- Internal callers (e.g. config restore) can still pass an explicit slug — the API just doesn't require it from admins.
+
+## Frontend registration: URL + name only (frontend_id auto-derived) (2026-04-19)
+
+- Admin's Register form now asks for **URL + display name** only. The internal `frontend_id` (the slug used to key `/app/data/campaigns/{frontend_id}/`) is derived by slugifying the name; collisions get `-2`, `-3`, … appended.
+- Backend `RegisterRequest`: `frontend_id` removed; `name` now required. `frontend_registry.register(url, name, frontend_id=None)` — optional `frontend_id` arg lets internal callers restore state explicitly, but admins go through the UI which never sends it.
+- Frontend containers are now fully anonymous: they don't need `CBC_FRONTEND_ID` either. The previous env-var injection still works for backwards compat (and remains useful if you want the sidecar's `/internal/config` to report a specific ID for diagnostics) but is no longer required for the backend to address the right config tree — the backend already knows which frontend it's polling because it's hitting that frontend's registered URL.
+- Admin UI: list rows drop the inline `<code>frontend_id</code>` chip — display name is the user-facing identifier everywhere. Unregister confirm uses the display name and explains that disk config survives and can be reclaimed by re-registering with the same name.
+- SPEC §4.9 + §9.1 rewritten to reflect the new model.
+
+## Multi-frontend support: env-var identity override (2026-04-19)
+
+- Sidecar now reads `CBC_FRONTEND_ID` from the container environment at startup and overrides the `frontend_id` field from the JSON baseline. With this, one image can be deployed N times by setting different env vars per container — no rebuild needed.
+- Demo: spun up a second frontend (`graphical-am`) on port 8191 alongside the existing `packaging-eu` on 8190 using `docker run -e CBC_FRONTEND_ID=graphical-am -p 8191:80 -v cbc-frontend-graphical-am-data:/app/data --network cbc-net cbcopilot-cbc-frontend`. Both `/internal/config` endpoints return distinct `frontend_id` values; backend reaches both over `cbc-net` (`http://cbc-frontend` and `http://cbc-frontend-graphical-am`).
+- SPEC §9.1 updated with the multi-frontend deployment recipe (the same recipe maps cleanly to a Portainer stack — one stack per frontend, env vars override identity + port + container/volume name).
+- Compose files left untouched for backwards compatibility — first frontend still defaults to `packaging-eu` from the baked-in JSON.
+
 ## Global branding defaults — collapsible card with chevron + 7 fields (2026-04-19)
 
 - Phase 2 of the branding overhaul: General-tab `Branding defaults` rebuilt as a collapsible card.

@@ -5,23 +5,33 @@ import { useEffect, useRef, useState } from 'react'
 import {
   listRAG, uploadRAG, deleteRAG, getRAGStats, reindexRAG,
   previewRAGResolution,
+  getFrontendRAGSettings, saveFrontendRAGSettings,
+  updateCompany,
 } from '../api'
-import type { RAGDocument, RAGStats, RAGResolutionResponse } from '../api'
+import type { RAGDocument, RAGStats, RAGResolutionResponse, Company } from '../api'
 
 interface Props {
   frontendId?: string
   companySlug?: string
+  // Required when companySlug is set — drives the "Combine RAG" subsection at
+  // company tier without RAGSection having to refetch the company itself.
+  company?: Company
+  onCompanyChanged?: () => void
 }
 
-export default function RAGSection({ frontendId, companySlug }: Props) {
+export default function RAGSection({ frontendId, companySlug, company, onCompanyChanged }: Props) {
   const [docs, setDocs] = useState<RAGDocument[]>([])
   const [stats, setStats] = useState<RAGStats | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [preview, setPreview] = useState<RAGResolutionResponse | null>(null)
+  const [combineGlobalAtFrontend, setCombineGlobalAtFrontend] = useState(true)
+  const [combineSaving, setCombineSaving] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const tierLabel = companySlug ? 'company' : frontendId ? 'frontend' : 'global'
+  const showFrontendCombine = tierLabel === 'frontend'
+  const showCompanyCombine = tierLabel === 'company' && !!company
 
   const refresh = async () => {
     try {
@@ -39,8 +49,43 @@ export default function RAGSection({ frontendId, companySlug }: Props) {
   useEffect(() => {
     setPreview(null)
     refresh()
+    if (showFrontendCombine && frontendId) {
+      getFrontendRAGSettings(frontendId)
+        .then(r => setCombineGlobalAtFrontend(r.settings.combine_global_rag))
+        .catch(e => setError(e instanceof Error ? e.message : String(e)))
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frontendId, companySlug])
+
+  const setFrontendCombineGlobal = async (next: boolean) => {
+    if (!frontendId) return
+    const previous = combineGlobalAtFrontend
+    setCombineGlobalAtFrontend(next)
+    setCombineSaving(true)
+    setError('')
+    try {
+      await saveFrontendRAGSettings(frontendId, { combine_global_rag: next })
+    } catch (e) {
+      setCombineGlobalAtFrontend(previous)
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCombineSaving(false)
+    }
+  }
+
+  const setCompanyCombine = async (patch: Partial<Pick<Company, 'combine_frontend_rag' | 'combine_global_rag'>>) => {
+    if (!frontendId || !companySlug) return
+    setCombineSaving(true)
+    setError('')
+    try {
+      await updateCompany(frontendId, companySlug, patch)
+      onCompanyChanged?.()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCombineSaving(false)
+    }
+  }
 
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -108,15 +153,56 @@ export default function RAGSection({ frontendId, companySlug }: Props) {
     : `Company RAG — ${frontendId} / ${companySlug}`
 
   const description = tierLabel === 'global'
-    ? 'Cross-sector reference documents (e.g. negotiation analysis). Companies with rag_mode=inherit_all pull these in alongside their own docs.'
+    ? 'Cross-sector reference documents (e.g. negotiation analysis). Pulled in by any company that has the Global checkbox ticked under Combine RAG.'
     : tierLabel === 'frontend'
-    ? 'Sector-wide documents. Companies inherit from here depending on rag_mode. Compare All pulls these in for cross-company queries.'
+    ? 'Sector-wide documents. Companies pull these in when they have the Frontend checkbox ticked under Combine RAG. Compare All sessions always include them.'
     : 'Company-specific CBAs and policies. Always loaded for this company\'s chat sessions.'
 
   return (
     <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
       <h3 className="text-lg font-semibold text-gray-800 mb-1">{heading}</h3>
       <p className="text-sm text-gray-500 mb-3">{description}</p>
+
+      {(showFrontendCombine || showCompanyCombine) && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4">
+          <div className="flex items-center justify-between mb-1">
+            <h4 className="text-sm font-semibold text-gray-700">Combine RAG</h4>
+            {combineSaving && <span className="text-xs text-gray-500">saving…</span>}
+          </div>
+          <p className="text-[11px] text-gray-500 mb-2">
+            {showFrontendCombine
+              ? 'Higher-tier RAG to include for this frontend\'s chat sessions. Uncheck Global to keep this frontend\'s sessions sealed off from the cross-sector documents.'
+              : 'Higher-tier RAG to include for this company\'s chat sessions. Uncheck either tier to exclude its documents from this company\'s resolution.'}
+          </p>
+          <div className="flex flex-wrap gap-4 pl-1">
+            {showCompanyCombine && (
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!company?.combine_frontend_rag}
+                  disabled={combineSaving}
+                  onChange={e => setCompanyCombine({ combine_frontend_rag: e.target.checked })}
+                  className="rounded border-gray-300"
+                />
+                <span className="text-gray-700">Frontend</span>
+              </label>
+            )}
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showCompanyCombine ? !!company?.combine_global_rag : combineGlobalAtFrontend}
+                disabled={combineSaving}
+                onChange={e => {
+                  if (showCompanyCombine) setCompanyCombine({ combine_global_rag: e.target.checked })
+                  else setFrontendCombineGlobal(e.target.checked)
+                }}
+                className="rounded border-gray-300"
+              />
+              <span className="text-gray-700">Global</span>
+            </label>
+          </div>
+        </div>
+      )}
 
       {stats && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 mb-4">

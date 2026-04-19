@@ -11,6 +11,12 @@ from src.services import prompt_store
 
 router = APIRouter(prefix="/admin/api/v1", tags=["admin-prompts"])
 
+# At the company tier admins can only override cba_advisor.md. The other four
+# canonical prompts (core, guardrails, compare_all, context_template) stay at
+# the frontend or global tier so guardrails and core behaviour can't drift
+# per-company without an explicit higher-tier change.
+COMPANY_EDITABLE_PROMPTS = {"cba_advisor.md"}
+
 
 class PromptSaveRequest(BaseModel):
     content: str
@@ -109,6 +115,11 @@ async def read_company(frontend_id: str, company_slug: str, name: str, _admin: d
 
 @router.put("/frontends/{frontend_id}/companies/{company_slug}/prompts/{name}")
 async def save_company(frontend_id: str, company_slug: str, name: str, req: PromptSaveRequest, _admin: dict = Depends(require_admin)):
+    if name not in COMPANY_EDITABLE_PROMPTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} can't be overridden at company tier. Editable at company: {sorted(COMPANY_EDITABLE_PROMPTS)}.",
+        )
     try:
         saved = prompt_store.write_prompt(name, req.content, frontend_id=frontend_id, company_slug=company_slug)
     except ValueError as e:

@@ -26,6 +26,17 @@ if os.path.exists(_config_path):
     with open(_config_path) as f:
         _base_config = json.load(f)
 
+# Env-var overrides take precedence over the JSON baseline. This is what lets
+# one image be deployed N times with different identities (Portainer pattern):
+# the same Docker image carries the JSON defaults, but each running container
+# reads CBC_FRONTEND_ID from its env to claim its own identity. Without this,
+# `frontend_id` would be baked into the image at build time and you'd need
+# one image per frontend.
+_env_frontend_id = os.environ.get("CBC_FRONTEND_ID")
+if _env_frontend_id:
+    _base_config["frontend_id"] = _env_frontend_id
+    logger.info(f"frontend_id overridden from env: {_env_frontend_id}")
+
 _COMPANIES_FILE = Path("/app/config/companies.json")
 
 # Pushed overrides from the backend cached on disk so they survive restarts.
@@ -152,7 +163,13 @@ async def get_companies():
         return {"companies": []}
     try:
         data = json.loads(_COMPANIES_FILE.read_text())
-        return {"companies": data if isinstance(data, list) else data.get("companies", [])}
+        items = data if isinstance(data, list) else data.get("companies", [])
+        # Compare All entries first, then alphabetical by display_name.
+        items.sort(key=lambda c: (
+            0 if c.get("is_compare_all") else 1,
+            (c.get("display_name") or c.get("slug") or "").lower(),
+        ))
+        return {"companies": items}
     except (json.JSONDecodeError, OSError) as e:
         logger.error(f"Failed to read companies.json: {e}")
         return {"companies": []}

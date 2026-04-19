@@ -1,5 +1,5 @@
 // NEW component — replaces HRDD's RoleSelectPage.
-// SPEC §3.2: vertical column of wide buttons, "Compare All" first, companies alphabetical by sort_order.
+// SPEC §3.2: vertical column of wide buttons, "Compare All" first, companies alphabetical.
 import { useEffect, useState } from 'react'
 import { t } from '../i18n'
 import type { LangCode, Company, DeploymentConfig } from '../types'
@@ -20,12 +20,11 @@ export default function CompanySelectPage({ lang, config, onSelect, onBack }: Pr
       .then(r => r.json())
       .then(data => {
         const list: Company[] = (data.companies || []).filter((c: Company) => c.enabled !== false)
-        // Compare All first, then by sort_order ascending, then alphabetical fallback.
+        // Backend already orders Compare All first + alphabetical, but we re-sort here
+        // in case a future endpoint returns unsorted data.
         list.sort((a, b) => {
           if (a.is_compare_all && !b.is_compare_all) return -1
           if (!a.is_compare_all && b.is_compare_all) return 1
-          const orderDiff = (a.sort_order ?? 0) - (b.sort_order ?? 0)
-          if (orderDiff !== 0) return orderDiff
           return a.display_name.localeCompare(b.display_name)
         })
         const filtered = config.compare_all_enabled === false

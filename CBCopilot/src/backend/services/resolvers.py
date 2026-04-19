@@ -28,7 +28,7 @@ from src.services import (
     branding_store,
     company_registry,
     orgs_override_store,
-    session_settings_store,
+    rag_settings_store,
 )
 from src.services._paths import (
     DOCUMENTS_DIR,
@@ -122,10 +122,8 @@ def _count_docs(d: Path) -> int:
 
 
 def _frontend_is_standalone(frontend_id: str) -> bool:
-    s = session_settings_store.load(frontend_id)
-    if not s or s.rag_standalone is None:
-        return False
-    return bool(s.rag_standalone)
+    """True when this frontend has globally opted out of the global RAG tier."""
+    return not rag_settings_store.load(frontend_id).combine_global_rag
 
 
 def _company_filter_by_scope(
@@ -203,7 +201,6 @@ def resolve_rag_paths(
     if not co:
         return RAGResolution(paths=[], frontend_standalone=standalone)
 
-    mode = co.rag_mode
     cp = _company_docs_dir(frontend_id, company_slug)
     out.append({
         "tier": "company",
@@ -211,9 +208,7 @@ def resolve_rag_paths(
         "path": str(cp),
         "doc_count": _count_docs(cp),
     })
-    inherits_frontend = mode in ("inherit_frontend", "inherit_all", "combine_frontend", "combine_all")
-    inherits_global = mode in ("inherit_all", "combine_all")
-    if inherits_frontend:
+    if co.combine_frontend_rag:
         fp = _frontend_docs_dir(frontend_id)
         out.append({
             "tier": "frontend",
@@ -221,7 +216,7 @@ def resolve_rag_paths(
             "path": str(fp),
             "doc_count": _count_docs(fp),
         })
-    if inherits_global and not standalone:
+    if co.combine_global_rag and not standalone:
         out.append({
             "tier": "global",
             "scope_key": "",

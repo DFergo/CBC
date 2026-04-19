@@ -1,21 +1,23 @@
 """Persistent registry of registered frontends.
 
-Adapted from HRDDHelper/src/backend/services/frontend_registry.py. Unlike HRDD,
-CBC frontends have a stable `frontend_id` in their deployment_frontend.json
-(e.g. "packaging-eu"). That's the natural key — same ID keys the
-/app/data/campaigns/{frontend_id}/ folder for all per-frontend config
-(companies, prompts, RAG, branding, session settings). No random hex ID.
+Adapted from HRDDHelper/src/backend/services/frontend_registry.py.
 
-Admin registers each frontend manually with:
-  - frontend_id (stable, e.g. "packaging-eu")
-  - url (where the sidecar lives, e.g. "http://packaging-eu.internal")
-  - name (human label, optional)
+Admin registers each frontend with just `url` + `name`. The backend
+auto-generates the internal `frontend_id` (slug from name, with a numeric
+suffix if it collides with an existing one). That ID is the key for the
+config tree under /app/data/campaigns/{frontend_id}/ — admins never see it
+in normal operation; the UI shows the human-readable name.
+
+Frontend containers themselves are anonymous: they don't need to know their
+backend-side ID. The backend already knows which frontend it's talking to
+because it's polling its registered URL.
 
 Registry tracks runtime status (online/offline/unknown) from the polling loop.
 
 Storage: /app/data/frontends.json (atomic writes).
 """
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,6 +30,17 @@ REGISTRY_FILE = DATA_DIR / "frontends.json"
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _slugify(name: str) -> str:
+    """Lowercase, hyphen-separated, alphanumeric-only. Used to derive
+    frontend_id from a display name. Falls back to 'frontend' if the result
+    would be empty.
+    """
+    slug = name.strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "frontend"
 
 
 class FrontendRegistry:
@@ -55,9 +68,26 @@ class FrontendRegistry:
     def get(self, frontend_id: str) -> dict[str, Any] | None:
         return self._frontends.get(frontend_id)
 
-    def register(self, frontend_id: str, url: str, name: str = "") -> dict[str, Any]:
-        """Register or update a frontend by its stable frontend_id."""
+    def _next_unique_id(self, base: str) -> str:
+        """Return `base`, or `base-2`, `base-3`, … until we find an unused one."""
+        if base not in self._frontends:
+            return base
+        n = 2
+        while f"{base}-{n}" in self._frontends:
+            n += 1
+        return f"{base}-{n}"
+
+    def register(self, url: str, name: str, frontend_id: str | None = None) -> dict[str, Any]:
+        """Register a new frontend. Auto-generates `frontend_id` from `name`
+        with a numeric suffix on collision (admins don't pick the ID).
+
+        If `frontend_id` is explicitly provided (e.g. internal callers
+        restoring state), it's used as-is and updates any existing entry.
+        """
         url = url.rstrip("/")
+        if frontend_id is None:
+            frontend_id = self._next_unique_id(_slugify(name))
+
         entry: dict[str, Any] = self._frontends.get(frontend_id, {})
         entry.update({
             "id": frontend_id,
