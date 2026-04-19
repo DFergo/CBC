@@ -73,21 +73,37 @@ This is the key architectural difference from HRDD Helper.
 
 **Level 3 — Company:** Within each frontend, each company button can have its own prompts and RAG documents. Can inherit from frontend level, ignore it, or combine.
 
-**Resolution order (prompts):**
-1. Company-level prompt exists → use it
-2. Else frontend-level prompt exists → use it
-3. Else global prompt → use it
+**Resolution order (prompts)** — **winner-takes-all, NOT stacked**:
+- **Normal role prompts** (core.md, guardrails.md, cba_advisor.md, context_template.md):
+  1. Company-level prompt exists → use it
+  2. Else frontend-level prompt exists → use it
+  3. Else global prompt → use it
+- **Compare All prompt** (compare_all.md): frontend → global. Company tier is skipped because Compare All is cross-company by definition.
 
-**Resolution order (RAG):**
-- Configurable per company: `rag_mode: "own_only" | "inherit_frontend" | "inherit_all" | "combine_frontend" | "combine_all"`
-- `own_only`: Only company RAG
-- `inherit_frontend`: Company + Frontend RAG
-- `inherit_all`: Company + Frontend + Global RAG
-- `combine_frontend`: Same as inherit_frontend (alias)
-- `combine_all`: Same as inherit_all (alias, default)
+The content of only one tier is sent to the model; tiers do not concatenate.
 
-**Resolution order (organizations list):**
-- Frontend can choose: `orgs_mode: "global" | "own" | "combine"`
+**Resolution order (RAG)** — **stackable**, controlled by `company.rag_mode` + `frontend.rag_standalone`:
+
+Single-company chat:
+- `rag_mode=own_only`: company docs only
+- `rag_mode=inherit_frontend` or `combine_frontend`: company + frontend docs
+- `rag_mode=inherit_all` or `combine_all` (default): company + frontend + global docs
+
+**Frontend autonomy:** if `frontend.rag_standalone = true`, the global tier is EXCLUDED from the stack even when a company sets `inherit_all`. This lets a sector-specific frontend be completely self-contained. Default is `false` (frontend supplements global).
+
+Compare All:
+- Union of company docs from all enabled companies of the frontend (filtered by the user's `comparison_scope`: national → only companies matching the user's country tag; global → all; regional → Sprint 5 wires region groupings)
+- + frontend docs
+- + global docs, unless `frontend.rag_standalone`
+
+**Resolution order (organizations list)** — `orgs_mode` per frontend:
+- `inherit` (default when no override): use the global list only
+- `own`: per-frontend list replaces the global list
+- `combine`: global + per-frontend, deduplicated by `name` (per-frontend wins on collision)
+
+**Resolution order (LLM config)** — per-frontend override is all-or-nothing:
+- No per-frontend override file: frontend uses the global LLM config (3 slots + compression + routing)
+- Override file present: that config is used in full for this frontend's chat sessions. The admin UI creates an override by snapshotting the current global config, then lets the admin edit it as a JSON file.
 
 ---
 
@@ -372,9 +388,16 @@ CBC does **not** auto-register: the sidecar never initiates contact with the bac
 - If the sidecar is offline at push time, the admin UI still saves successfully — the sidecar will re-read the pushed cache from its own local cache on next boot (pushed caches live in the frontend container's `/app/data/`)
 
 **Session settings fields (all optional — None means inherit from `deployment_frontend.json`):**
-`auth_required`, `session_resume_hours`, `auto_close_hours`, `auto_destroy_hours`, `disclaimer_enabled`, `instructions_enabled`, `compare_all_enabled`.
+`auth_required`, `session_resume_hours`, `auto_close_hours`, `auto_destroy_hours`, `disclaimer_enabled`, `instructions_enabled`, `compare_all_enabled`, `rag_standalone` (when `true`, global RAG docs are excluded from this frontend's resolution even when a company sets `rag_mode=inherit_all`; backend-only, not pushed to the sidecar).
 
-**Branding fields:** `app_title`, `logo_url`, `primary_color`, `secondary_color`. Empty branding = fall back to baseline from deployment config.
+**Branding fields:** `app_title`, `logo_url`, `primary_color`, `secondary_color`.
+
+**Branding precedence (HRDD-style — baseline lives in code, not in JSON):**
+1. Per-frontend override (admin saves on Frontends tab → Branding)
+2. Global default (admin saves on General tab → Branding defaults; backend fans out to every frontend without its own override)
+3. Hardcoded constant in `sidecar/main.py` (`_HARDCODED_BRANDING`) — UNI Global logo + title + UNI palette
+
+`deployment_frontend.json` does NOT carry branding fields. Per-deployment customisation happens through the admin UI.
 
 ### §4.10 Guardrails
 
@@ -422,9 +445,7 @@ Adapted from HRDD Helper. Directory of authorized end-user emails with profile m
 
 ### §5.1 Layout
 
-Single-page app with **two main tabs**:
-
-Three tabs: **General Configuration**, **Frontend Configuration**, **Registered Users**.
+Single-page app with **three tabs**: **General Configuration**, **Frontend Configuration**, **Registered Users**.
 
 **Tab 1 — General Configuration:**
 - Branding defaults (logo, colors, app title)
@@ -456,6 +477,7 @@ Three tabs: **General Configuration**, **Frontend Configuration**, **Registered 
       - Country tags
   - **Session settings:** auth_required, auto_close_hours, auto_destroy_hours, session_resume_hours
   - **Feature toggles:** disclaimer_enabled, instructions_enabled, compare_all_enabled
+  - **LLM override** — single "Override global config" toggle. When enabled, snapshots the current global LLM config (all three slots + compression + routing) into `/app/data/campaigns/{frontend_id}/llm.json`; from then on this frontend uses the override and is unaffected by global LLM edits. Each slot supports the same three provider types as the global tab (`lm_studio` | `ollama` | `api`, with API flavor + endpoint + key-env-var name). When the toggle is off, no override file exists and the frontend inherits the global config (D2=B in the architecture decisions: full-override or full-inherit, no partial merge).
 
 ### §5.2 Admin Auth
 

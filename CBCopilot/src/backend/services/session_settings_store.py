@@ -11,6 +11,11 @@ Fields covered:
     disclaimer_enabled     — show or skip the Disclaimer page
     instructions_enabled   — show or skip the Instructions page
     compare_all_enabled    — show or hide the "Compare All" button on CompanySelectPage
+    rag_standalone         — if true, global RAG docs are EXCLUDED from this
+                             frontend's resolution even when a company is set
+                             to inherit_all. Default false = frontend supplements
+                             global. Backend-only (NOT pushed to sidecar — the
+                             sidecar doesn't need to know; resolver uses it).
 
 Admin saves override → backend pushes to sidecar via POST /internal/session-settings
 (sidecar caches + merges into /internal/config).
@@ -34,6 +39,11 @@ class SessionSettings(BaseModel):
     disclaimer_enabled: bool | None = None
     instructions_enabled: bool | None = None
     compare_all_enabled: bool | None = None
+    rag_standalone: bool | None = None
+
+
+# Fields that are backend-only (resolver reads them; sidecar doesn't need to know).
+_BACKEND_ONLY_FIELDS = {"rag_standalone"}
 
 
 def _path(frontend_id: str) -> Path:
@@ -69,8 +79,12 @@ def to_push_payload(settings: SessionSettings | None) -> dict[str, Any]:
     """Body sent to the sidecar's POST /internal/session-settings.
 
     Empty dict = clear cache (fall back to deployment_frontend.json). Otherwise,
-    only non-None fields are sent so the sidecar knows which keys override.
+    only non-None fields are sent, AND backend-only fields (e.g. rag_standalone,
+    which affects resolver behaviour but is invisible to the sidecar) are stripped.
     """
     if settings is None:
         return {}
-    return {k: v for k, v in settings.model_dump().items() if v is not None}
+    return {
+        k: v for k, v in settings.model_dump().items()
+        if v is not None and k not in _BACKEND_ONLY_FIELDS
+    }

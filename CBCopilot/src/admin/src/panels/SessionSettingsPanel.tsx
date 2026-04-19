@@ -10,6 +10,7 @@ const EMPTY: FrontendSessionSettings = {
   disclaimer_enabled: null,
   instructions_enabled: null,
   compare_all_enabled: null,
+  rag_standalone: null,
 }
 
 export default function SessionSettingsPanel({ frontendId }: { frontendId: string }) {
@@ -96,6 +97,8 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
           onChange={v => update({ instructions_enabled: v })} />
         <BoolField label='"Compare All" button visible on CompanySelectPage' value={settings.compare_all_enabled}
           onChange={v => update({ compare_all_enabled: v })} />
+        <BoolField label='RAG standalone (exclude global docs even when a company picks inherit_all)' value={settings.rag_standalone}
+          onChange={v => update({ rag_standalone: v })} />
       </div>
 
       <div className="flex gap-2 mt-4">

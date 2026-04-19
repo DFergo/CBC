@@ -9,7 +9,7 @@ Statuses: `captured` → `triaged` → `planned` (→ Sprint N) → `shipped` / 
 ## LLM provider options: Ollama, LM Studio, API
 
 **Captured:** 2026-04-18 (Sprint 3)
-**Status:** planned → Sprint 3 (admin UI + config schema) and Sprint 6 (chat engine exercises all three); promoted via `/spec` on 2026-04-18. Spec landed in §4.7 + §5.1 + §8.3.
+**Status:** planned → Sprint 3 (admin UI + config schema) and Sprint 6 (chat engine exercises all three); promoted via `/spec` on 2026-04-18. Spec landed in §4.7 + §5.1 (Tab 1 global + Tab 2 per-frontend override) + §4.9 + §8.3. Code: `llm_config_store.py` already supports all three provider types; `PerFrontendLLMPanel.tsx` exposes the override toggle in Sprint 4B.
 **Candidate sprint:** 3 (LLM admin config UI) + 6 (chat engine actually uses it)
 **Context:** SPEC §4.7 currently lists "LM Studio, Ollama (OpenAI-compatible API)". Both are local providers on `host.docker.internal`. The admin LLM tab should offer three distinct provider types: Ollama, LM Studio, and "API" (remote cloud providers — Anthropic, OpenAI, etc.) as separate, first-class options.
 

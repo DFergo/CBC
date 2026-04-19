@@ -131,25 +131,29 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 - [x] `CBCopilot/src/backend/services/branding_store.py` — 4A
 - [x] `CBCopilot/src/backend/services/session_settings_store.py` — 4A
 - [x] Sidecar `/internal/branding` + `/internal/session-settings` push endpoints + `/internal/config` merge — 4A
-- [ ] Backend prompt resolution logic: company → frontend → global — 4B
-- [ ] Backend RAG resolution logic: configurable modes per company — 4B
-- [ ] Backend organizations resolution: global / own / combine per frontend — 4B
+- [x] Backend prompt resolution logic: company → frontend → global — 4B (winner-takes-all; compare_all.md skips company tier)
+- [x] Backend RAG resolution logic: configurable modes per company — 4B (+ frontend `rag_standalone` gate)
+- [x] Backend organizations resolution: global / own / combine per frontend — 4B
+- [x] `services/resolvers.py` + preview endpoints — 4B
+- [x] `services/orgs_override_store.py` + `services/llm_override_store.py` + `rag_standalone` in SessionSettings — 4B
+- [x] `PromptsSection` + `RAGSection` refactored tier-aware; per-company content shows inside `CompanyManagementPanel` collapsible rows — 4B
+- [x] `panels/PerFrontendOrgsPanel` + `panels/PerFrontendLLMPanel` — 4B
 
 ### Acceptance Criteria
 - [x] Backend polls sidecar and detects it as online (moved from Sprint 1 per ADR-007) — 4A
 - [x] Frontend dropdown shows all registered frontends — 4A
 - [x] Selecting a frontend loads its current config — 4A
 - [x] Can override branding per frontend — 4A
-- [ ] Can add/edit prompts per frontend (or toggle "inherit global") — 4B
-- [ ] Can upload RAG docs per frontend — 4B
+- [x] Can add/edit prompts per frontend (or toggle "inherit global") — 4B
+- [x] Can upload RAG docs per frontend — 4B
 - [x] Can manage company list (add, remove, rename, reorder, enable/disable) — 4A
-- [ ] Expanding a company shows prompt and RAG config — 4B
-- [x] Company rag_mode dropdown works (own_only, inherit_frontend, inherit_all, combine_*) — 4A (value persists; resolver lands 4B)
-- [ ] Organizations list per frontend: toggle global / own / combine — 4B
+- [x] Expanding a company shows prompt and RAG config — 4B
+- [x] Company rag_mode dropdown works (own_only, inherit_frontend, inherit_all, combine_*) — 4A (persist) + 4B (resolver honours it)
+- [x] Organizations list per frontend: toggle global / own / combine — 4B
 - [x] Session settings configurable per frontend (auth, auto_close, auto_destroy, resume) — 4A
 - [x] Feature toggles work (disclaimer, instructions, compare_all) — 4A
-- [ ] Prompt resolution: company prompt served when exists, falls back to frontend then global — 4B
-- [ ] RAG resolution: documents combined according to rag_mode setting — 4B
+- [x] Prompt resolution: company prompt served when exists, falls back to frontend then global — 4B
+- [x] RAG resolution: documents combined according to rag_mode setting — 4B (+ frontend standalone gate)
 
 ### Spec Sections Covered
 - §2.4 (Three-Tier Config), §4.4 (Company Registry), §4.9 (Frontend Registry — expanded in 4A), §5.1 (Admin Layout - Frontends Tab)

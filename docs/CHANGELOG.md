@@ -1,5 +1,92 @@
 # CBC — Changelog
 
+## Global branding defaults — collapsible card with chevron + 7 fields (2026-04-19)
+
+- Phase 2 of the branding overhaul: General-tab `Branding defaults` rebuilt as a collapsible card.
+  - Always visible: title (with chevron when defaults are active), short description, `Use custom branding defaults` toggle.
+  - Toggle ON → creates the `branding_defaults.json`, expands the form, and pushes the empty defaults to every frontend without its own override (admins fill the fields and Save to push real values).
+  - Toggle OFF → confirms, deletes the file, fans out the clear-payload, collapses the card.
+  - Chevron in the header lets the admin collapse the open form back without disabling the override (e.g. to clean up the General tab once configured). A `Collapse` button at the bottom of the form does the same. Reload restores the expanded state when defaults exist.
+- Same 7 fields as the per-frontend panel (Phase 3): App title, App owner (`org_name`), Logo URL, Primary color, Secondary color, Disclaimer text, Instructions text. Per-field merge already lives in the resolver, so empty fields here inherit the hardcoded sidecar baseline.
+- Per-frontend `Branding override` panel (Phase 3) left as-is for now — same chevron/collapse logic will be retrofitted later when we revisit the per-frontend tier.
+- Admin bundle hash bumped (`index-BFGkoWIW.js`); served by the rebuilt backend container.
+
+## Per-frontend branding override — collapsible panel + disclaimer/instructions text + per-field merge (2026-04-19)
+
+- Phase 3 of the branding overhaul: per-frontend override panel rebuilt as a collapsible card.
+  - **Collapsed** (override OFF): title + description + `Override branding for this frontend` toggle. That's it.
+  - **Expanded** (override ON): seven inputs — App title, App owner (`org_name`), Logo URL, Primary color, Secondary color, Disclaimer text (textarea), Instructions text (textarea). Save + push to the sidecar.
+- New per-field merge model for branding (replaces winner-takes-all):
+  - Backend `resolvers.resolve_branding(fid)` now merges global defaults + per-frontend override per field — deepest non-empty wins. `branding_push_payload` strips empty fields and pushes `{custom: True, ...non_empty_fields}` so that empty per-frontend fields inherit the global default → hardcoded baseline instead of clobbering it.
+  - Sidecar `/internal/config` merges pushed non-empty fields onto `_HARDCODED_BRANDING` (was: wholesale replacement). Empty pushed fields are dropped server-side, so they can never blank out the baseline.
+- Two new branding fields end-to-end:
+  - `disclaimer_text` — when non-empty, replaces the 3-section i18n disclaimer with a single custom block (still rendered via `whitespace-pre-line`, so `\n\n` paragraph breaks work).
+  - `instructions_text` — when non-empty, replaces the i18n `instructions_body`.
+  - Added to `Branding` Pydantic model, sidecar `_HARDCODED_BRANDING` (empty by default), `BrandingConfig` TS interface, `FrontendBranding` admin TS interface. `DisclaimerPage.tsx` and `InstructionsPage.tsx` prefer `branding.*_text` when present.
+- `BrandingSection.tsx` (global defaults panel) updated minimally: `EMPTY` constant carries the new fields so the type still validates. The full collapsible/textarea UI for the global tier is Phase 2 — coming next.
+- `localhost:8190/internal/config` now returns all 7 branding fields. Verified after a full backend + frontend Docker rebuild.
+
+## Default branding expanded — header logo + org_name + richer disclaimer/instructions (2026-04-19)
+
+- Phase 1 of the branding overhaul: make the **default** branding feel like a real app, not a placeholder. (Phases 2 + 3 — global override and per-frontend override surfacing the same fields — are next.)
+- New branding field `org_name` (e.g. "UNI Global Union"): added to `Branding` Pydantic model (`branding_store.py`), to `_HARDCODED_BRANDING` in the sidecar, and to `BrandingConfig` in `frontend/src/types.ts`. Defaults to "UNI Global Union".
+- `App.tsx` header: monochrome logo top-left (HRDD pattern: `h-8 brightness-0 invert`) + `branding.org_name` top-right (was hardcoded "UNI Global Union"). Footer copyright also reads `branding.org_name`.
+- `i18n.ts`: disclaimer (`disclaimer_what_body`, `disclaimer_data_body`, `disclaimer_legal_body`) and `instructions_body` rewritten with HRDD-equivalent depth, adapted to CBC's domain — bargaining research and CBA comparison instead of HRDD's labour-violation documentation. Each section now uses `\n\n` paragraph breaks + `-` bulleted lists (rendered via existing `whitespace-pre-line` styling on the page bodies).
+- `[DATA_PROTECTION_EMAIL]` placeholder kept in `disclaimer_legal_body` for now; resolution from config is on the backlog (HRDD Helper passes `dataProtectionEmail` as a prop).
+- Frontend build clean (`tsc && vite build`).
+- Smoke check pending: docker rebuild + visual diff on header/disclaimer/instructions.
+
+## SPEC §5.1 Tab 2 — per-frontend LLM override documented (2026-04-19)
+
+- Tab 2 (Frontend Configuration) was missing the `LLM override` bullet even though `PerFrontendLLMPanel.tsx` shipped with Sprint 4B. Added — describes the snapshot-on-enable toggle and the three provider types (`lm_studio` | `ollama` | `api`) inherited from the global tab.
+- Fixed §5.1 header self-contradiction ("two main tabs" / "Three tabs") → "three tabs".
+- IDEAS.md entry for "LLM provider options" updated to point at §5.1 Tab 2 + §4.9 + the existing `llm_config_store.py` / `PerFrontendLLMPanel.tsx` code that already lands the idea — no duplicate idea created.
+
+## Branding baseline moved from deployment_frontend.json to hardcoded sidecar constant (2026-04-19)
+
+- HRDD pattern: app branding lives in code, with the admin able to override globally or per-frontend.
+- Sidecar gains `_HARDCODED_BRANDING` constant (UNI Global logo, "Collective Bargaining Copilot" title, UNI palette `#003087` / `#E31837`).
+- New precedence (highest first): per-frontend override → global default → hardcoded constant.
+- `branding` block removed from `deployment_frontend.json` — that file no longer carries branding at all in CBC's model. Sidecar `/internal/config` falls back to the hardcoded constant when no overrides exist.
+- SPEC §4.9 updated with the new precedence + the "branding lives in code" rule.
+- Smoke-tested 4 cases: no overrides → hardcoded; cache wiped → still hardcoded (no JSON fallback); admin saves global default → override wins; admin deletes global default → falls back to hardcoded.
+
+## UNI Global logos shipped as frontend assets (2026-04-19)
+
+- New `CBCopilot/src/frontend/public/assets/` (Vite copies it verbatim into `dist/`):
+  - `uni-global-logo.png` — UNI Global landscape (10.5 KB), set as the default `logo_url` in `deployment_frontend.json`
+  - `uni-global-gp-logo.png` — Graphical & Packaging variant (42 KB), available for sectoral deployments
+- `deployment_frontend.json` baseline branding updated to use the UNI Global logo (no G&P) per Daniel's instruction for development. Title set to "Collective Bargaining Copilot", colors reset to UNI palette (`#003087` blue, `#E31837` red).
+- File-permissions fix: source PNGs came from iCloud with `0600`; chmod to `0644` so Nginx (running as `nginx` user) can serve them. Without this Nginx returned `403`.
+- Verified end-to-end: both logos return HTTP 200 from `localhost:8190/assets/...` after rebuild; sidecar `/internal/config` reports the new branding baseline.
+
+## Branding defaults — global tier + fan-out push (2026-04-19)
+
+- **Bug fix**: General tab's BrandingSection was a Sprint 1 placeholder that Sprint 4 never replaced. Now a real editor.
+- New `services/branding_defaults_store.py` storing `/app/data/branding_defaults.json`.
+- New `resolvers.resolve_branding(fid)` and `branding_push_payload(fid)`: per-frontend override > global defaults > None (sidecar falls back to its `deployment_frontend.json` baseline).
+- New `api/v1/admin/branding.py` router: `GET/PUT/DELETE /admin/api/v1/branding/defaults`. PUT/DELETE trigger a fan-out push to every registered frontend that does NOT have a per-frontend override; frontends with their own override are untouched.
+- Refactored per-frontend branding routes (`PUT/DELETE /admin/api/v1/frontends/{fid}/branding`) to use `resolvers.branding_push_payload(fid)` so the push always reflects the resolved tier (e.g. deleting a per-frontend override now sends the global default if one exists, instead of `{custom: False}`).
+- Admin UI: `BrandingSection.tsx` rewritten as a real editor with "Save + push to frontends" button reporting how many frontends were updated. `api.ts` adds `getBrandingDefaults / saveBrandingDefaults / deleteBrandingDefaults`.
+- Smoke-tested 3-tier flow: save defaults → 1 frontend pushed; create per-frontend override → wins; change defaults → 0 pushes (override unaffected); delete override → falls back to global; delete global defaults → falls back to baseline. All steps reflected immediately in `localhost:8190/internal/config`.
+
+## Sprint 4B — Per-frontend content overrides + 3-tier resolvers (2026-04-18)
+
+- **Resolvers** (`services/resolvers.py`): the functions the chat engine (Sprint 6) will call to pick the effective prompt / RAG / orgs for a given session. Preview endpoints under `/admin/api/v1/resolvers/*` let admins inspect resolution without running a chat.
+  - **Prompts = winner-takes-all** (NOT stacked). Normal role prompts: company → frontend → global. `compare_all.md` skips the company tier (cross-company by definition): frontend → global.
+  - **RAG = stackable** per `company.rag_mode` + `frontend.rag_standalone` (new backend-only session-settings field). Single-company chat stacks `company + frontend? + global?` with the `+ global` gated by `rag_standalone`. Compare All stacks all company docs (filtered by `comparison_scope` — `national` filters by user country tag, `regional` is a Sprint 5 placeholder) + frontend + (global unless `standalone`).
+  - **Orgs = mode-based** per frontend: `inherit` (default, uses global), `own` (replace global), `combine` (global + per-frontend deduped by name).
+  - **LLM = all-or-nothing** per frontend (new `services/llm_override_store.py`). When an override file exists, it fully replaces the global LLM config for that frontend; when absent, frontend inherits.
+- **Per-frontend stores**: `services/orgs_override_store.py` (mode + org list), `services/llm_override_store.py` (full LLMConfig snapshot). Both live under `/app/data/campaigns/{frontend_id}/`. `session_settings_store` gets a new `rag_standalone` field; sidecar push excludes it (backend-only).
+- **Admin routes**: `api/v1/admin/resolvers.py` (preview GET endpoints for prompts/RAG/orgs). `api/v1/admin/frontends.py` extended with `/{fid}/orgs` and `/{fid}/llm` CRUD.
+- **Admin UI refactor**: `PromptsSection` + `RAGSection` now accept optional `{frontendId, companySlug}`. Same component renders global (General tab), per-frontend (FrontendsTab), and per-company (expanded company row). Per-tier heading + description, plus "Preview resolution" button and "Delete this override" button (non-global only).
+- **New panels**: `PerFrontendOrgsPanel` (mode selector + JSON download/upload + preview), `PerFrontendLLMPanel` (override-global checkbox that snapshots from global on enable + JSON download/upload for editing).
+- **CompanyManagementPanel** expanded: each company row gets a "Show content" toggle that renders PromptsSection + RAGSection for that company (skipped for `is_compare_all=true` because compare_all doesn't have per-company content).
+- **SessionSettingsPanel** gains a `rag_standalone` toggle with per-field inherit dropdown.
+- **api.ts** refactor: `listPrompts/readPrompt/savePrompt/deletePrompt` accept `(frontendId?, companySlug?)` and route to the correct tier URL. `listRAG/uploadRAG/deleteRAG/getRAGStats/reindexRAG` accept the same and pass as query params. New clients for `getFrontendOrgsOverride/saveFrontendOrgsOverride/deleteFrontendOrgsOverride`, `getFrontendLLMOverride/saveFrontendLLMOverride/deleteFrontendLLMOverride`, `previewPromptResolution/previewRAGResolution/previewOrgsResolution`.
+- **Smoke-tested end-to-end**: no-override chat queries resolve to global; creating frontend-level `core.md` override flips all company queries for that frontend to `tier=frontend`; adding a company-level override for `amcor` flips only amcor to `tier=company`; `compare_all.md` with `compare_all=true` skips company tier as designed; RAG resolver stacks `[company, frontend, global]` by default and drops `global` when `rag_standalone=true` is pushed; orgs resolver returns `mode=inherit, count=7` by default.
+- **SPEC §2.4 rewritten** with exact resolution rules (prompts / RAG / orgs / LLM all documented). **§4.9** notes `rag_standalone`. **MILESTONES Sprint 4** all acceptance criteria green.
+
 ## CompanyManagementPanel polish — country_tags as read-only chips (2026-04-18)
 
 - `country_tags` is meant to be auto-derived from per-document RAG metadata (SPEC §4.2) once Sprint 5 lands. Instead of shipping a manual editor in Sprint 4A that Sprint 5 will replace with a computed field, the UI now shows the tags as read-only chips with a "auto-derived from document metadata (Sprint 5)" hint. Existing values (seeded from the Sprint 2 sidecar stub) are preserved. Backend PATCH still accepts the field so Sprint 5 can write to it programmatically when indexing documents.

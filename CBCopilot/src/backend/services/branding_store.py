@@ -18,9 +18,14 @@ logger = logging.getLogger("branding_store")
 
 class Branding(BaseModel):
     app_title: str = ""
+    org_name: str = ""  # shown in the top-right of the header + footer (e.g. "UNI Global Union")
     logo_url: str = ""
     primary_color: str = ""
     secondary_color: str = ""
+    # Free-text overrides that replace the i18n disclaimer/instructions for this
+    # tier. Empty string = no override at this tier (sidecar merges across tiers).
+    disclaimer_text: str = ""
+    instructions_text: str = ""
 
 
 def _path(frontend_id: str) -> Path:

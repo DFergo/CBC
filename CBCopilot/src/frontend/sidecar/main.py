@@ -33,6 +33,23 @@ _DATA_DIR = Path("/app/data")
 _BRANDING_CACHE = _DATA_DIR / "pushed_branding.json"
 _SESSION_SETTINGS_CACHE = _DATA_DIR / "pushed_session_settings.json"
 
+# Hardcoded branding baseline. Like HRDD, the app ships with a default look in
+# code; admins can override globally (Branding defaults in General tab) or
+# per-frontend (FrontendsTab → Branding). When all overrides are absent, this
+# wins. NOT read from deployment_frontend.json — that file shouldn't carry
+# branding at all in CBC's model.
+_HARDCODED_BRANDING: dict[str, str] = {
+    "app_title": "Collective Bargaining Copilot",
+    "org_name": "UNI Global Union",
+    "logo_url": "/assets/uni-global-logo.png",
+    "primary_color": "#003087",
+    "secondary_color": "#E31837",
+    # Empty in the baseline = use the i18n disclaimer/instructions text. Admins
+    # can override globally or per-frontend with a custom block.
+    "disclaimer_text": "",
+    "instructions_text": "",
+}
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -67,12 +84,18 @@ async def get_config():
     pushed_branding = _read_json(_BRANDING_CACHE)
     pushed_settings = _read_json(_SESSION_SETTINGS_CACHE)
 
-    # Branding: `custom=True` means the pushed payload fully overrides. Otherwise
-    # fall back to the baseline JSON's branding block.
+    # Branding: per-field merge of the hardcoded baseline with whatever the
+    # backend pushed. Backend already merged global defaults + per-frontend
+    # override (deepest non-empty wins) and stripped empty fields. We layer
+    # those non-empty fields on top of the baseline. Empty pushed fields are
+    # never sent, so they can never blank out the baseline. `custom=False`
+    # means no override at any tier — pure baseline.
+    branding = dict(_HARDCODED_BRANDING)
     if pushed_branding.get("custom"):
-        branding = {k: v for k, v in pushed_branding.items() if k != "custom"}
-    else:
-        branding = _base_config.get("branding", {})
+        for k, v in pushed_branding.items():
+            if k == "custom" or v in ("", None):
+                continue
+            branding[k] = v
 
     def pick(key: str, default: Any) -> Any:
         if key in pushed_settings and pushed_settings[key] is not None:
@@ -99,8 +122,10 @@ async def get_config():
 async def push_branding(body: dict[str, Any]):
     """Backend pushes branding here when admin saves changes.
 
-    Body: `{"custom": True, app_title, logo_url, primary_color, secondary_color}`
-          or `{"custom": False}` to clear the override and fall back to baseline.
+    Body: `{"custom": True, ...non_empty_fields}` — only non-empty fields are
+    sent, and they merge per-field on top of `_HARDCODED_BRANDING`. Empty
+    fields stay at the baseline.
+    Or: `{"custom": False}` to clear the cache and use pure baseline.
     """
     _write_json(_BRANDING_CACHE, body)
     logger.info(f"Branding pushed: custom={body.get('custom', False)}")

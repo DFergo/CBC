@@ -15,9 +15,13 @@ export type ComparisonScope = 'national' | 'regional' | 'global'
 
 export interface BrandingConfig {
   app_title?: string
+  org_name?: string
   logo_url?: string
   primary_color?: string
   secondary_color?: string
+  // Free-text overrides — when non-empty, replace the i18n disclaimer/instructions text.
+  disclaimer_text?: string
+  instructions_text?: string
 }
 
 export interface DeploymentConfig {

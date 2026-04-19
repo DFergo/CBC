@@ -15,9 +15,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from src.api.v1.admin.auth import require_admin
-from src.services import branding_store, session_settings_store
+from src.services import branding_store, llm_override_store, orgs_override_store, resolvers, session_settings_store
 from src.services.branding_store import Branding
 from src.services.frontend_registry import registry
+from src.services.llm_config_store import LLMConfig
+from src.services.orgs_override_store import OrgsOverride
 from src.services.session_settings_store import SessionSettings
 
 logger = logging.getLogger("admin.frontends")
@@ -130,7 +132,9 @@ async def get_branding(frontend_id: str, _admin: dict = Depends(require_admin)):
 async def put_branding(frontend_id: str, branding: Branding, _admin: dict = Depends(require_admin)):
     _require_registered(frontend_id)
     branding_store.save(frontend_id, branding)
-    await _push(frontend_id, "/internal/branding", branding_store.to_push_payload(branding))
+    # Push resolved (override wins here → sends override). Uses the resolver so the
+    # logic stays in one place.
+    await _push(frontend_id, "/internal/branding", resolvers.branding_push_payload(frontend_id))
     return {"frontend_id": frontend_id, "branding": branding.model_dump()}
 
 
@@ -138,7 +142,9 @@ async def put_branding(frontend_id: str, branding: Branding, _admin: dict = Depe
 async def delete_branding(frontend_id: str, _admin: dict = Depends(require_admin)):
     _require_registered(frontend_id)
     removed = branding_store.delete(frontend_id)
-    await _push(frontend_id, "/internal/branding", branding_store.to_push_payload(None))
+    # After deleting the override, resolver returns either global defaults (if set)
+    # or {custom: False} (sidecar falls back to its deployment_frontend.json baseline).
+    await _push(frontend_id, "/internal/branding", resolvers.branding_push_payload(frontend_id))
     return {"frontend_id": frontend_id, "removed": removed}
 
 
@@ -164,4 +170,58 @@ async def delete_session_settings(frontend_id: str, _admin: dict = Depends(requi
     _require_registered(frontend_id)
     removed = session_settings_store.delete(frontend_id)
     await _push(frontend_id, "/internal/session-settings", session_settings_store.to_push_payload(None))
+    return {"frontend_id": frontend_id, "removed": removed}
+
+
+# --- Per-frontend organizations override ---
+
+@router.get("/{frontend_id}/orgs")
+async def get_orgs_override(frontend_id: str, _admin: dict = Depends(require_admin)):
+    _require_registered(frontend_id)
+    o = orgs_override_store.load(frontend_id)
+    return {"frontend_id": frontend_id, "override": o.model_dump() if o else None}
+
+
+@router.put("/{frontend_id}/orgs")
+async def put_orgs_override(
+    frontend_id: str,
+    override: OrgsOverride,
+    _admin: dict = Depends(require_admin),
+):
+    _require_registered(frontend_id)
+    orgs_override_store.save(frontend_id, override)
+    return {"frontend_id": frontend_id, "override": override.model_dump()}
+
+
+@router.delete("/{frontend_id}/orgs")
+async def delete_orgs_override(frontend_id: str, _admin: dict = Depends(require_admin)):
+    _require_registered(frontend_id)
+    removed = orgs_override_store.delete(frontend_id)
+    return {"frontend_id": frontend_id, "removed": removed}
+
+
+# --- Per-frontend LLM override (D2=B: single file = full override; no file = inherit global) ---
+
+@router.get("/{frontend_id}/llm")
+async def get_llm_override(frontend_id: str, _admin: dict = Depends(require_admin)):
+    _require_registered(frontend_id)
+    cfg = llm_override_store.load(frontend_id)
+    return {"frontend_id": frontend_id, "override": cfg.model_dump() if cfg else None}
+
+
+@router.put("/{frontend_id}/llm")
+async def put_llm_override(
+    frontend_id: str,
+    cfg: LLMConfig,
+    _admin: dict = Depends(require_admin),
+):
+    _require_registered(frontend_id)
+    llm_override_store.save(frontend_id, cfg)
+    return {"frontend_id": frontend_id, "override": cfg.model_dump()}
+
+
+@router.delete("/{frontend_id}/llm")
+async def delete_llm_override(frontend_id: str, _admin: dict = Depends(require_admin)):
+    _require_registered(frontend_id)
+    removed = llm_override_store.delete(frontend_id)
     return {"frontend_id": frontend_id, "removed": removed}

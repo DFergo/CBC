@@ -121,9 +121,16 @@ export default function App() {
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <header className="bg-uni-blue text-white px-6 py-3 shadow-md flex items-center justify-between">
         <div className="flex items-center gap-3">
+          {branding?.logo_url && (
+            <img
+              src={branding.logo_url}
+              alt={branding.org_name || 'CBC'}
+              className="h-8 brightness-0 invert"
+            />
+          )}
           <h1 className="text-xl font-semibold">{branding?.app_title || 'Collective Bargaining Copilot'}</h1>
         </div>
-        <span className="text-sm opacity-75">UNI Global Union</span>
+        <span className="text-sm opacity-75">{branding?.org_name || 'UNI Global Union'}</span>
       </header>
 
       <main className="flex-1">
@@ -183,7 +190,7 @@ export default function App() {
       {showFooter && (
         <footer className="text-center text-xs text-gray-400 py-3 space-y-1">
           <p>{t('footer_disclaimer', lang)}</p>
-          <p>© 2026 UNI Global Union</p>
+          <p>© 2026 {branding?.org_name || 'UNI Global Union'}</p>
         </footer>
       )}
     </div>

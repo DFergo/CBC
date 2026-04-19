@@ -20,6 +20,8 @@ from src.api.v1.admin.llm import router as llm_router
 from src.api.v1.admin.smtp import router as smtp_router
 from src.api.v1.admin.contacts import router as contacts_router
 from src.api.v1.admin.frontends import router as frontends_router
+from src.api.v1.admin.resolvers import router as resolvers_router
+from src.api.v1.admin.branding import router as branding_router
 from src.services._paths import (
     ensure_dirs,
     PROMPTS_DIR,
@@ -78,6 +80,8 @@ app.include_router(knowledge_router)
 app.include_router(llm_router)
 app.include_router(smtp_router)
 app.include_router(contacts_router)
+app.include_router(resolvers_router)
+app.include_router(branding_router)
 
 ADMIN_DIST = Path("/app/admin/dist")
 

@@ -21,7 +21,7 @@ export default function InstructionsPage({ lang, onContinue, onBack, branding }:
         )}
         <h2 className="text-xl font-semibold text-gray-800 mb-4">{t('instructions_title', lang)}</h2>
         <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
-          {t('instructions_body', lang)}
+          {branding?.instructions_text || t('instructions_body', lang)}
         </div>
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 mb-4">
           {t('instructions_no_reload', lang)}

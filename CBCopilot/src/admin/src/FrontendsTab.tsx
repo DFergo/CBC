@@ -1,11 +1,15 @@
-// Sprint 4A: Frontend registry + per-frontend branding/session-settings/companies.
-// Sprint 4B will add: per-frontend prompts/RAG/orgs/LLM override UI.
+// Sprint 4B complete: registry + branding + session-settings + companies +
+// per-frontend prompts + RAG + orgs + LLM override.
 import { useEffect, useState } from 'react'
 import { listFrontends, registerFrontend, updateFrontend, deleteFrontend } from './api'
 import type { FrontendInfo } from './api'
 import BrandingPanel from './panels/BrandingPanel'
 import SessionSettingsPanel from './panels/SessionSettingsPanel'
 import CompanyManagementPanel from './panels/CompanyManagementPanel'
+import PerFrontendOrgsPanel from './panels/PerFrontendOrgsPanel'
+import PerFrontendLLMPanel from './panels/PerFrontendLLMPanel'
+import PromptsSection from './sections/PromptsSection'
+import RAGSection from './sections/RAGSection'
 
 const POLL_INTERVAL_MS = 10000  // refresh status every 10s
 
@@ -168,12 +172,11 @@ export default function FrontendsTab() {
         <div className="space-y-4">
           <BrandingPanel frontendId={selectedFrontend.frontend_id} />
           <SessionSettingsPanel frontendId={selectedFrontend.frontend_id} />
+          <PromptsSection frontendId={selectedFrontend.frontend_id} />
+          <RAGSection frontendId={selectedFrontend.frontend_id} />
+          <PerFrontendOrgsPanel frontendId={selectedFrontend.frontend_id} />
+          <PerFrontendLLMPanel frontendId={selectedFrontend.frontend_id} />
           <CompanyManagementPanel frontendId={selectedFrontend.frontend_id} />
-
-          <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-500">
-            Sprint 4B will add: per-frontend prompts, RAG documents, organizations override, LLM override.
-            The backend routes already exist (from Sprint 3); this tab will surface them next.
-          </div>
         </div>
       )}
     </div>

@@ -1,7 +1,52 @@
 # CBC — Project Status
 
-**Current Sprint:** 4B — Per-frontend content overrides + 3-tier resolvers
+**Current Sprint:** 5 — RAG Engine + File Watcher
 **Last Updated:** 2026-04-18
+
+Sprint 4 closed (4A + 4B). MILESTONES Sprint 4 acceptance criteria all green.
+
+---
+
+## Sprint 4B — COMPLETE
+
+**Decisions locked at start:**
+- D1 = A — `PromptsSection` + `RAGSection` refactored to accept optional `{frontendId, companySlug}`. Same UX across tiers.
+- D2 = B — Per-frontend LLM override = single "Override global config" checkbox that snapshots the global config into an editable JSON.
+- D3 = A — Per-company content lives in a collapsible row inside `CompanyManagementPanel`.
+- D4 = A — Preview endpoints + buttons in every tier-aware panel.
+- `rag_standalone: bool` added to `SessionSettings` (backend-only — not pushed to sidecar).
+
+**Resolver semantics (SPEC §2.4):**
+- Prompts = winner-takes-all (company → frontend → global). `compare_all.md` skips company tier.
+- RAG = stackable per `company.rag_mode` + `frontend.rag_standalone`.
+- Orgs = mode-based per frontend: inherit / own / combine.
+- LLM = all-or-nothing per frontend (snapshot of global when admin enables override).
+
+### Deliverables
+- [x] `services/resolvers.py` — `resolve_prompt`, `resolve_rag_paths`, `resolve_orgs`
+- [x] `services/orgs_override_store.py`
+- [x] `services/llm_override_store.py` (+ `resolve_llm_config(frontend_id)`)
+- [x] `SessionSettings.rag_standalone` field (backend-only; excluded from sidecar push)
+- [x] `api/v1/admin/resolvers.py` — preview endpoints for prompt / RAG / orgs
+- [x] `api/v1/admin/frontends.py` extended with orgs + LLM override CRUD
+- [x] `main.py` wires resolvers router
+- [x] Admin `api.ts` refactored: polymorphic `listPrompts/readPrompt/savePrompt/deletePrompt` + `listRAG/uploadRAG/deleteRAG/getRAGStats/reindexRAG` accept `(frontendId?, companySlug?)`. New clients for orgs override, LLM override, and previews
+- [x] `PromptsSection.tsx` + `RAGSection.tsx` accept tier props; heading/description/buttons per tier; "Preview resolution" button; "Delete override" button on non-global tiers
+- [x] `panels/PerFrontendOrgsPanel.tsx` (mode selector, JSON download/upload, preview resolution)
+- [x] `panels/PerFrontendLLMPanel.tsx` (override checkbox snapshots global; JSON download/upload for edits)
+- [x] `CompanyManagementPanel.tsx`: "Show content" row toggle renders PromptsSection + RAGSection with `{frontendId, companySlug}`
+- [x] `SessionSettingsPanel.tsx` gains `rag_standalone` toggle
+- [x] SPEC §2.4 rewritten; §4.9 notes `rag_standalone`; §6.2 unchanged
+- [x] MILESTONES Sprint 4 fully green
+
+### Acceptance tested (curl + admin UI build)
+- Prompt: no override → `tier=global`; create frontend-level override → `tier=frontend` for both frontend and company queries; add company-level override for amcor → `tier=company` for amcor, other companies still `tier=frontend`; `compare_all.md` with `compare_all=true` skips company tier
+- RAG: single-company amcor (default `combine_all`) → `[company, frontend, global]` stack; Compare All → `[company×N, frontend, global]`; toggle `rag_standalone=true` → `global` dropped from stack
+- Orgs: no override → `mode=inherit, count=7` (global list size)
+
+---
+
+## Sprint 4A — COMPLETE
 
 ---
 

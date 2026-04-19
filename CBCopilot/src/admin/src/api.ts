@@ -80,7 +80,7 @@ export async function deleteCompany(frontendId: string, slug: string): Promise<{
   })
 }
 
-// --- Prompts (global only for Sprint 3 UI) ---
+// --- Prompts (tier-aware: omit frontendId/companySlug for global) ---
 
 export interface PromptFile {
   name: string
@@ -88,22 +88,36 @@ export interface PromptFile {
   modified: number
 }
 
-export async function listGlobalPrompts(): Promise<{ prompts: PromptFile[] }> {
-  return request('/admin/api/v1/prompts')
+function promptsPath(frontendId?: string, companySlug?: string, suffix = ''): string {
+  if (frontendId && companySlug) {
+    return `/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/companies/${encodeURIComponent(companySlug)}/prompts${suffix}`
+  }
+  if (frontendId) {
+    return `/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/prompts${suffix}`
+  }
+  return `/admin/api/v1/prompts${suffix}`
 }
 
-export async function readGlobalPrompt(name: string): Promise<{ name: string; content: string }> {
-  return request(`/admin/api/v1/prompts/${encodeURIComponent(name)}`)
+export async function listPrompts(frontendId?: string, companySlug?: string): Promise<{ prompts: PromptFile[] }> {
+  return request(promptsPath(frontendId, companySlug))
 }
 
-export async function saveGlobalPrompt(name: string, content: string): Promise<PromptFile> {
-  return request(`/admin/api/v1/prompts/${encodeURIComponent(name)}`, {
+export async function readPrompt(name: string, frontendId?: string, companySlug?: string): Promise<{ name: string; content: string }> {
+  return request(promptsPath(frontendId, companySlug, `/${encodeURIComponent(name)}`))
+}
+
+export async function savePrompt(name: string, content: string, frontendId?: string, companySlug?: string): Promise<PromptFile> {
+  return request(promptsPath(frontendId, companySlug, `/${encodeURIComponent(name)}`), {
     method: 'PUT',
     body: JSON.stringify({ content }),
   })
 }
 
-// --- RAG (global for Sprint 3 UI) ---
+export async function deletePrompt(name: string, frontendId?: string, companySlug?: string): Promise<{ status: string }> {
+  return request(promptsPath(frontendId, companySlug, `/${encodeURIComponent(name)}`), { method: 'DELETE' })
+}
+
+// --- RAG (tier-aware via query params) ---
 
 export interface RAGDocument {
   name: string
@@ -117,15 +131,23 @@ export interface RAGStats {
   note: string
 }
 
-export async function listGlobalRAG(): Promise<{ documents: RAGDocument[] }> {
-  return request('/admin/api/v1/rag/documents')
+function ragQuery(frontendId?: string, companySlug?: string): string {
+  const params = new URLSearchParams()
+  if (frontendId) params.set('frontend_id', frontendId)
+  if (companySlug) params.set('company_slug', companySlug)
+  const qs = params.toString()
+  return qs ? `?${qs}` : ''
 }
 
-export async function uploadGlobalRAG(file: File): Promise<{ document: RAGDocument }> {
+export async function listRAG(frontendId?: string, companySlug?: string): Promise<{ documents: RAGDocument[] }> {
+  return request(`/admin/api/v1/rag/documents${ragQuery(frontendId, companySlug)}`)
+}
+
+export async function uploadRAG(file: File, frontendId?: string, companySlug?: string): Promise<{ document: RAGDocument }> {
   const token = localStorage.getItem('cbc_admin_token')
   const formData = new FormData()
   formData.append('file', file)
-  const res = await fetch('/admin/api/v1/rag/upload', {
+  const res = await fetch(`/admin/api/v1/rag/upload${ragQuery(frontendId, companySlug)}`, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: formData,
@@ -137,16 +159,16 @@ export async function uploadGlobalRAG(file: File): Promise<{ document: RAGDocume
   return res.json()
 }
 
-export async function deleteGlobalRAG(name: string): Promise<{ status: string }> {
-  return request(`/admin/api/v1/rag/documents/${encodeURIComponent(name)}`, { method: 'DELETE' })
+export async function deleteRAG(name: string, frontendId?: string, companySlug?: string): Promise<{ status: string }> {
+  return request(`/admin/api/v1/rag/documents/${encodeURIComponent(name)}${ragQuery(frontendId, companySlug)}`, { method: 'DELETE' })
 }
 
-export async function getGlobalRAGStats(): Promise<RAGStats> {
-  return request('/admin/api/v1/rag/stats')
+export async function getRAGStats(frontendId?: string, companySlug?: string): Promise<RAGStats> {
+  return request(`/admin/api/v1/rag/stats${ragQuery(frontendId, companySlug)}`)
 }
 
-export async function reindexGlobalRAG(): Promise<RAGStats> {
-  return request('/admin/api/v1/rag/reindex', { method: 'POST' })
+export async function reindexRAG(frontendId?: string, companySlug?: string): Promise<RAGStats> {
+  return request(`/admin/api/v1/rag/reindex${ragQuery(frontendId, companySlug)}`, { method: 'POST' })
 }
 
 // --- Knowledge ---
@@ -353,13 +375,30 @@ export async function deleteFrontend(frontendId: string): Promise<{ status: stri
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}`, { method: 'DELETE' })
 }
 
+// --- Global branding defaults ---
+
+export async function getBrandingDefaults(): Promise<{ defaults: FrontendBranding | null }> {
+  return request('/admin/api/v1/branding/defaults')
+}
+
+export async function saveBrandingDefaults(branding: FrontendBranding): Promise<{ defaults: FrontendBranding; pushed_to_frontends: number }> {
+  return request('/admin/api/v1/branding/defaults', { method: 'PUT', body: JSON.stringify(branding) })
+}
+
+export async function deleteBrandingDefaults(): Promise<{ removed: boolean; pushed_to_frontends: number }> {
+  return request('/admin/api/v1/branding/defaults', { method: 'DELETE' })
+}
+
 // --- Per-frontend branding ---
 
 export interface FrontendBranding {
   app_title: string
+  org_name: string
   logo_url: string
   primary_color: string
   secondary_color: string
+  disclaimer_text: string
+  instructions_text: string
 }
 
 export async function getFrontendBranding(frontendId: string): Promise<{ frontend_id: string; branding: FrontendBranding | null }> {
@@ -387,6 +426,7 @@ export interface FrontendSessionSettings {
   disclaimer_enabled: boolean | null
   instructions_enabled: boolean | null
   compare_all_enabled: boolean | null
+  rag_standalone: boolean | null
 }
 
 export async function getFrontendSessionSettings(frontendId: string): Promise<{ frontend_id: string; settings: FrontendSessionSettings | null }> {
@@ -402,6 +442,98 @@ export async function saveFrontendSessionSettings(frontendId: string, settings: 
 
 export async function deleteFrontendSessionSettings(frontendId: string): Promise<{ frontend_id: string; removed: boolean }> {
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/session-settings`, { method: 'DELETE' })
+}
+
+// --- Per-frontend organizations override ---
+
+export interface FrontendOrgsOverride {
+  mode: 'inherit' | 'own' | 'combine'
+  organizations: Organization[]
+}
+
+export async function getFrontendOrgsOverride(frontendId: string): Promise<{ frontend_id: string; override: FrontendOrgsOverride | null }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/orgs`)
+}
+
+export async function saveFrontendOrgsOverride(frontendId: string, override: FrontendOrgsOverride): Promise<{ frontend_id: string; override: FrontendOrgsOverride }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/orgs`, {
+    method: 'PUT',
+    body: JSON.stringify(override),
+  })
+}
+
+export async function deleteFrontendOrgsOverride(frontendId: string): Promise<{ frontend_id: string; removed: boolean }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/orgs`, { method: 'DELETE' })
+}
+
+// --- Per-frontend LLM override (D2=B: single file = full override; no file = inherit global) ---
+
+export async function getFrontendLLMOverride(frontendId: string): Promise<{ frontend_id: string; override: LLMConfig | null }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/llm`)
+}
+
+export async function saveFrontendLLMOverride(frontendId: string, cfg: LLMConfig): Promise<{ frontend_id: string; override: LLMConfig }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/llm`, {
+    method: 'PUT',
+    body: JSON.stringify(cfg),
+  })
+}
+
+export async function deleteFrontendLLMOverride(frontendId: string): Promise<{ frontend_id: string; removed: boolean }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/llm`, { method: 'DELETE' })
+}
+
+// --- Resolver preview ---
+
+export interface PromptResolution {
+  name: string
+  tier: 'global' | 'frontend' | 'company' | 'none'
+  path: string | null
+  content: string | null
+  found: boolean
+}
+
+export interface RAGResolutionEntry {
+  tier: 'global' | 'frontend' | 'company'
+  scope_key: string
+  path: string
+  doc_count: number
+}
+
+export interface RAGResolutionResponse {
+  paths: RAGResolutionEntry[]
+  frontend_standalone: boolean
+  total_docs: number
+}
+
+export interface OrgsResolutionResponse {
+  mode: 'inherit' | 'own' | 'combine'
+  organizations: Organization[]
+  count: number
+}
+
+export async function previewPromptResolution(name: string, frontendId?: string, companySlug?: string, compareAll = false): Promise<PromptResolution> {
+  const params = new URLSearchParams()
+  if (frontendId) params.set('frontend_id', frontendId)
+  if (companySlug) params.set('company_slug', companySlug)
+  if (compareAll) params.set('compare_all', 'true')
+  const qs = params.toString()
+  return request(`/admin/api/v1/resolvers/prompt/${encodeURIComponent(name)}${qs ? '?' + qs : ''}`)
+}
+
+export async function previewRAGResolution(frontendId: string, companySlug?: string, opts: { compareAll?: boolean; comparisonScope?: string; userCountry?: string } = {}): Promise<RAGResolutionResponse> {
+  const params = new URLSearchParams()
+  params.set('frontend_id', frontendId)
+  if (companySlug) params.set('company_slug', companySlug)
+  if (opts.compareAll) params.set('compare_all', 'true')
+  if (opts.comparisonScope) params.set('comparison_scope', opts.comparisonScope)
+  if (opts.userCountry) params.set('user_country', opts.userCountry)
+  return request(`/admin/api/v1/resolvers/rag?${params.toString()}`)
+}
+
+export async function previewOrgsResolution(frontendId?: string): Promise<OrgsResolutionResponse> {
+  const qs = frontendId ? `?frontend_id=${encodeURIComponent(frontendId)}` : ''
+  return request(`/admin/api/v1/resolvers/orgs${qs}`)
 }
 
 // --- Contacts (authorized users directory) ---

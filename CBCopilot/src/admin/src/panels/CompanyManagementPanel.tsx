@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { listCompanies, createCompany, updateCompany, deleteCompany } from '../api'
 import type { Company } from '../api'
+import PromptsSection from '../sections/PromptsSection'
+import RAGSection from '../sections/RAGSection'
 
 const RAG_MODES: Company['rag_mode'][] = ['own_only', 'inherit_frontend', 'inherit_all', 'combine_frontend', 'combine_all']
 const PROMPT_MODES: Company['prompt_mode'][] = ['inherit', 'own', 'combine']
@@ -11,6 +13,7 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
   const [info, setInfo] = useState('')
   const [newSlug, setNewSlug] = useState('')
   const [newName, setNewName] = useState('')
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   const reload = () => {
     listCompanies(frontendId)
@@ -50,6 +53,7 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
     setError('')
     try {
       await deleteCompany(frontendId, slug)
+      if (expanded === slug) setExpanded(null)
       reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -63,7 +67,7 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
         <span className="text-xs text-gray-500">{companies.length} total{info && <span className="ml-2">— {info}</span>}</span>
       </div>
       <p className="text-xs text-gray-500 mb-3">
-        Company buttons on the CompanySelectPage of this frontend. Per-company prompts and RAG documents are managed from the General tab endpoints — the admin UI for those lands in Sprint 4B.
+        Company buttons on the CompanySelectPage of this frontend. Click "Show content" on any company to manage its per-company prompts and RAG documents.
       </p>
 
       {error && <p className="text-uni-red text-xs mb-2">{error}</p>}
@@ -102,6 +106,14 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
                     <input type="checkbox" checked={c.enabled} onChange={e => patch(c.slug, { enabled: e.target.checked })} />
                     enabled
                   </label>
+                  {!c.is_compare_all && (
+                    <button
+                      onClick={() => setExpanded(expanded === c.slug ? null : c.slug)}
+                      className="text-xs border border-gray-300 rounded px-2 py-0.5 hover:bg-gray-50"
+                    >
+                      {expanded === c.slug ? 'Hide content' : 'Show content'}
+                    </button>
+                  )}
                   <button onClick={() => remove(c.slug)} className="text-xs text-uni-red hover:underline">Delete</button>
                 </div>
               </div>
@@ -146,6 +158,13 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
                   </div>
                 )}
               </div>
+
+              {expanded === c.slug && !c.is_compare_all && (
+                <div className="mt-4 pt-4 border-t border-gray-100 space-y-4">
+                  <PromptsSection frontendId={frontendId} companySlug={c.slug} />
+                  <RAGSection frontendId={frontendId} companySlug={c.slug} />
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -19,20 +19,31 @@ export default function DisclaimerPage({ lang, onAccept, onBack, branding }: Pro
           </div>
         )}
 
-        <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('disclaimer_what_heading', lang)}</h2>
-        <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
-          {t('disclaimer_what_body', lang)}
-        </div>
+        {branding?.disclaimer_text ? (
+          <>
+            <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('disclaimer_title', lang)}</h2>
+            <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
+              {branding.disclaimer_text}
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('disclaimer_what_heading', lang)}</h2>
+            <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
+              {t('disclaimer_what_body', lang)}
+            </div>
 
-        <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('disclaimer_data_heading', lang)}</h2>
-        <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
-          {t('disclaimer_data_body', lang)}
-        </div>
+            <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('disclaimer_data_heading', lang)}</h2>
+            <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
+              {t('disclaimer_data_body', lang)}
+            </div>
 
-        <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('disclaimer_legal_heading', lang)}</h2>
-        <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
-          {t('disclaimer_legal_body', lang)}
-        </div>
+            <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('disclaimer_legal_heading', lang)}</h2>
+            <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
+              {t('disclaimer_legal_body', lang)}
+            </div>
+          </>
+        )}
 
         <button
           onClick={onAccept}
