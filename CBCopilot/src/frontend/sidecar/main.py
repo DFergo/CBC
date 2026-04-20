@@ -396,6 +396,23 @@ _BACKEND_URL = os.environ.get("CBC_BACKEND_URL", "http://cbc-backend:8000")
 _UPLOAD_TIMEOUT = 30.0
 
 
+@app.get("/internal/guardrails/thresholds")
+async def guardrails_thresholds():
+    """Proxy the public backend guardrails endpoint. ChatShell reads this on
+    mount to show the amber-banner threshold + lock the input at end."""
+    url = f"{_BACKEND_URL}/api/v1/guardrails/thresholds"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(url)
+    except httpx.HTTPError:
+        # Fallback to HRDD-era defaults so the UI never breaks on the
+        # backend being slow / unreachable for this one call.
+        return {"warn_at": 2, "end_at": 5}
+    if r.status_code // 100 != 2:
+        return {"warn_at": 2, "end_at": 5}
+    return r.json()
+
+
 @app.get("/internal/session/{session_token}/recover")
 async def recover_session(session_token: str):
     """Proxy for the backend's recovery endpoint. The React SessionPage calls

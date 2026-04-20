@@ -29,7 +29,16 @@ class BackendConfig(BaseModel):
     prompts_path: str = "./data/prompts"
     campaigns_path: str = "./data/campaigns"
     guardrails_enabled: bool = True
-    guardrail_max_triggers: int = 3
+    # Sprint 7.5 thresholds (global; per-frontend overrides deferred):
+    #   `guardrail_warn_at`  — UI shows the amber banner once the session has
+    #                          accumulated this many violations.
+    #   `guardrail_max_triggers` — the session is ended backend-side once this
+    #                          many violations are reached. The LLM stops
+    #                          running on the session entirely.
+    # Defaults tuned for the CBC audience (trade-union delegates). Lift them
+    # via `deployment_backend.json` if real use needs more forgiveness.
+    guardrail_warn_at: int = 2
+    guardrail_max_triggers: int = 5
     file_max_size_mb: int = 25
     session_token_reuse_cooldown_days: int = 30
     # Sprint 7 (D2=A): when True, the backend auth flow only issues codes to

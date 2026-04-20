@@ -746,3 +746,21 @@ export async function copySessionUploadText(token: string, filename: string): Pr
   const text = await blob.text()
   await navigator.clipboard.writeText(text)
 }
+
+// --- Guardrails (Sprint 7.5) ---
+
+export interface GuardrailCategory {
+  category: string
+  label: string
+  patterns: string[]
+}
+
+export interface GuardrailsInfo {
+  categories: GuardrailCategory[]
+  thresholds: { warn_at: number; end_at: number }
+  sample_responses: { violation: string; session_ended: string }
+}
+
+export async function getGuardrailsInfo(language = 'en'): Promise<GuardrailsInfo> {
+  return request(`/admin/api/v1/guardrails?language=${encodeURIComponent(language)}`)
+}

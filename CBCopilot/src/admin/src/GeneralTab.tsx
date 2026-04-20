@@ -5,6 +5,7 @@ import GlossarySection from './sections/GlossarySection'
 import OrgsSection from './sections/OrgsSection'
 import LLMSection from './sections/LLMSection'
 import SMTPSection from './sections/SMTPSection'
+import GuardrailsSection from './sections/GuardrailsSection'
 
 export default function GeneralTab() {
   return (
@@ -16,6 +17,7 @@ export default function GeneralTab() {
       <OrgsSection />
       <LLMSection />
       <SMTPSection />
+      <GuardrailsSection />
     </div>
   )
 }

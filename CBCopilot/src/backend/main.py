@@ -22,8 +22,10 @@ from src.api.v1.admin.contacts import router as contacts_router
 from src.api.v1.admin.frontends import router as frontends_router
 from src.api.v1.admin.resolvers import router as resolvers_router
 from src.api.v1.admin.branding import router as branding_router
+from src.api.v1.admin.guardrails import router as admin_guardrails_router
 from src.api.v1.admin.sessions import router as admin_sessions_router
 from src.api.v1.auth import router as auth_router_v1
+from src.api.v1.guardrails import router as guardrails_router_v1
 from src.api.v1.sessions.uploads import router as session_uploads_router
 from src.services._paths import (
     ensure_dirs,
@@ -93,9 +95,11 @@ app.include_router(smtp_router)
 app.include_router(contacts_router)
 app.include_router(resolvers_router)
 app.include_router(branding_router)
+app.include_router(admin_guardrails_router)
 app.include_router(admin_sessions_router)
 app.include_router(session_uploads_router)
 app.include_router(auth_router_v1)
+app.include_router(guardrails_router_v1)
 
 ADMIN_DIST = Path("/app/admin/dist")
 

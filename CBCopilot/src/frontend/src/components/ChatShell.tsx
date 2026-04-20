@@ -16,8 +16,11 @@ import { t } from '../i18n'
 import type { BrandingConfig, LangCode, RecoveryData, SurveyData } from '../types'
 
 const SUMMARY_MARKER = 'summary'
-const VIOLATION_WARN_AT = 2
-const VIOLATION_END_AT = 5
+// Fallbacks used until /internal/guardrails/thresholds resolves. Match the
+// backend defaults so the UX is identical even when the sidecar proxy has
+// to synthesize a value (backend slow / unreachable).
+const DEFAULT_WARN_AT = 2
+const DEFAULT_END_AT = 5
 const STATUS_POLL_MS = 5000
 
 interface AttachmentChip {
@@ -79,6 +82,8 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
   const [summaryCopied, setSummaryCopied] = useState(false)
   const [violations, setViolations] = useState(recoveryData?.guardrail_violations ?? 0)
   const [attachments, setAttachments] = useState<AttachmentChip[]>([])
+  const [warnAt, setWarnAt] = useState(DEFAULT_WARN_AT)
+  const [endAt, setEndAt] = useState(DEFAULT_END_AT)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -87,7 +92,7 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
   const isSummaryStreamRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const bangedOnGuardrails = violations >= VIOLATION_END_AT
+  const bangedOnGuardrails = violations >= endAt
 
   // --- SSE connection ---
 
@@ -152,6 +157,21 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
       eventSourceRef.current = null
     }
   }, [openStream])
+
+  // Fetch live guardrail thresholds once. Sidecar proxies the backend; any
+  // failure falls back to DEFAULT_WARN_AT / DEFAULT_END_AT (backend defaults).
+  useEffect(() => {
+    let cancelled = false
+    fetch('/internal/guardrails/thresholds')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (cancelled || !data) return
+        if (typeof data.warn_at === 'number') setWarnAt(data.warn_at)
+        if (typeof data.end_at === 'number') setEndAt(data.end_at)
+      })
+      .catch(() => { /* keep defaults */ })
+    return () => { cancelled = true }
+  }, [])
 
   // --- Session status poll (guardrails + ended flag) ---
 
@@ -337,7 +357,7 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
       className="flex flex-col w-full max-w-4xl mx-auto mt-6 px-4 pb-6"
       onDragEnter={suppress} onDragOver={suppress} onDrop={onDrop}
     >
-      {violations >= VIOLATION_WARN_AT && !bangedOnGuardrails && (
+      {violations >= warnAt && !bangedOnGuardrails && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg px-4 py-2 text-xs text-amber-800 mb-3">
           {t('chat_guardrail_warning', lang)}
         </div>

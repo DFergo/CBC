@@ -1,9 +1,92 @@
 # CBC — Project Status
 
-**Current Sprint:** 7.5 — Guardrails Review
+**Current Sprint:** 8 — Polish, Testing & Deployment
 **Last Updated:** 2026-04-20
 
-Sprint 7 closed. Sessions persist, recover, auto-close + auto-destroy on a 5-min scanner; auth is backed by Contacts allowlist + SMTP (dev_code fallback when SMTP offline); admin has a Sessions tab with detail drawer. Next: the dedicated guardrails-trigger-list review Daniel flagged during 6B.
+Sprint 7.5 closed. Runtime guardrails now enforce backend-side (skip LLM on trigger, end session at threshold), thresholds configurable via `deployment_backend.json`, admin has a read-only viewer, test corpus lives in `docs/knowledge/`.
+
+---
+
+## Sprint 7.5 — COMPLETE
+
+### Decisions locked (2026-04-20)
+
+- **D1 = B** — No new `fabrication` category. Runtime patterns stay as they are. Rationale (Daniel): the tool is used by registered union delegates only; if someone tries to jailbreak the LLM, that's on them. The `guardrails.md` prompt layer already instructs the LLM to refuse fabrication.
+- **D2 = Global only** — `guardrail_warn_at` + `guardrail_max_triggers` live in `deployment_backend.json` / `core/config.py`. Per-frontend overrides can land later if needed.
+- **D3 = A (HRDD pattern)** — Enforce guardrails backend-side. On any triggered turn, **skip the LLM**, push the category-specific fixed response as the assistant turn, increment counter. When `violations >= guardrail_max_triggers`, push the session-ended message, stamp `status='completed'`, flag the session.
+- **D4 = A** — New `GuardrailsSection` mounted at the bottom of `GeneralTab`.
+- **D5 = A** — Markdown test corpus under `docs/knowledge/`.
+
+Pattern review: narrow the brittle `workers? from \w+ (?:are|should be) (?:fired|…)` — "fired" is common in legitimate CBA text ("workers from contract X are fired if…"); drop `fired` from that pattern's verb list, keep `deported|removed|eliminated` where the intent signal is clearer.
+
+## Sprint 7.5 — PLANNING (archived plan)
+
+**Goal (MILESTONES §Sprint 7.5):** reviewed runtime guardrails that actually fit CBC's domain (CBA research, not HRDD's labour-violation docs). Thresholds admin-configurable; session-end at threshold enforced backend-side; admin can see what's active.
+
+### What exists today (Sprint 6A shipped as-is)
+
+- `services/guardrails.py` — HRDD's hate-speech + prompt-injection regex tables, CBC-themed localised responses. Two categories.
+- `polling._process_turn` calls `guardrails.check()`, increments the session's counter, **logs only** — the LLM still runs on the turn.
+- `ChatShell.tsx` hardcoded `VIOLATION_WARN_AT = 2` / `VIOLATION_END_AT = 5`. Shows amber banner at 2, red "session ended" at 5. Backend never enforces the end.
+- No admin UI for inspecting active rules.
+
+### Deliverables
+
+**Backend**
+- `services/guardrails.py` — add `fabrication` category (CBA-specific jailbreak attempts). Review + slightly broaden injection list. Keep hate patterns (safety baseline). Expose `get_patterns()` + `get_thresholds()` for the admin viewer.
+- `core/config.py` — `guardrail_warn_at: int = 2` (exists: `guardrail_max_triggers` which we'll rename conceptually to end-threshold).
+- `polling._process_turn` — when `violations >= guardrail_max_triggers`, **skip the LLM call**: push the localised `session_ended` message as token + `done`, stamp `status='completed'`. Matches HRDD's Sprint 16 pattern.
+- `api/v1/admin/guardrails.py` (new) — `GET /admin/api/v1/guardrails` returns `{categories, thresholds, responses}` for the admin viewer.
+- Sidecar `/internal/config` — include `guardrail_warn_at` + `guardrail_end_at` in the response so ChatShell uses live values instead of hardcoded constants.
+
+**Frontend**
+- `types.ts` — `DeploymentConfig.guardrail_warn_at?` + `guardrail_end_at?`.
+- `ChatShell.tsx` — read thresholds from `config` prop; drop the hardcoded constants.
+
+**Admin**
+- `api.ts` — `getGuardrailsInfo()`.
+- `sections/GuardrailsSection.tsx` (new, read-only) — lists categories with their human-readable pattern strings, shows current thresholds, shows the localised response text.
+- `GeneralTab.tsx` — mounts the section near the LLM block.
+
+**Docs**
+- `docs/knowledge/guardrails-test-corpus.md` — small file with sample messages (triggering + non-triggering) that Daniel can paste into the chat to verify behaviour.
+- SPEC §4.10 — updated rule set.
+- CHANGELOG + STATUS close.
+
+### Decisions to lock
+
+- **D1 — New category for fabrication attempts.**
+  - A. Add `fabrication` category with regex like `pretend\s+the\s+(?:cba|agreement)\s+says`, `make\s+up\s+(?:a\s+)?clause`, `invent\s+(?:a\s+)?(?:wage|clause|figure)`. Same treatment as hate/injection (counts as violation, ended-session response). *(recommended — these are the CBC-specific traps the SPEC mentions)*
+  - B. Leave pattern tables as-is; rely on the `guardrails.md` prompt to reject fabrication requests.
+
+- **D2 — Per-frontend thresholds.**
+  - A. Global only in 7.5 (`guardrail_warn_at`, `guardrail_max_triggers` in `deployment_backend.json`). *(recommended — scope discipline. Per-frontend can land later if needed.)*
+  - B. Add both to `session_settings_store` with per-frontend override. More plumbing.
+
+- **D3 — Enforce session-end backend-side.**
+  - A. When `violations >= end_at`, skip the LLM entirely. Push a `token` event with the localised session-ended message, push `done`, stamp `status='completed'`. Matches HRDD's Sprint 16. *(recommended — closing the loop Daniel flagged; current state is UI-only)*
+  - B. Keep Sprint 6A behaviour (log-only + UI banner). Do not block the turn server-side.
+
+- **D4 — Admin viewer placement.**
+  - A. New `GuardrailsSection` mounted in `GeneralTab` near the LLM section. Single scroll. *(recommended — no new tab needed for a read-only block)*
+  - B. New top-level "Guardrails" tab. Feels heavy for a read-only viewer.
+
+- **D5 — Test corpus format.**
+  - A. Markdown file under `docs/knowledge/` with paste-ready examples. Daniel runs them manually through the chat. *(recommended — matches existing `lessons-learned.md` / `hrdd-helper-patterns.md` style)*
+  - B. Python test script that programmatically asserts each category fires on each sample. Proper unit testing. More work.
+
+### Implementation order
+
+1. Backend pattern review + `fabrication` category + `get_patterns()` helper.
+2. `guardrail_warn_at` + `guardrail_end_at` wiring (config → sidecar → frontend).
+3. Polling enforcement of session-end at threshold.
+4. Admin `GET /admin/api/v1/guardrails` + `GuardrailsSection` viewer.
+5. Test corpus doc + SPEC §4.10 update.
+6. Smoke: live chat → trigger injection pattern → see banner at 2 → at 5, chat locks with the localised message.
+
+### Risks
+- Pattern false-positives in legitimate CBA questions (e.g. user writes "workers from Spain are fired under the new agreement" — current pattern would catch that because "workers from \w+ (?:are|should be) fired"). Review-and-tune step is non-trivial — I'll narrow that one.
+- Thresholds too low for real use (2/5 might be too aggressive for real union delegates who don't know they're typing adjacent to a trigger). Default stays 2/5 but note the knob exists.
 
 ---
 

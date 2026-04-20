@@ -267,17 +267,17 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 **Goal:** Dedicated pass on the runtime guardrails behaviour. Sprint 6A copied HRDD's hate-speech + prompt-injection regex tables verbatim; Sprint 6B surfaces them in the chat UI. This sprint reviews whether they fire correctly for CBC's domain (CBA research, not HRDD's labour-violation docs) and tunes thresholds.
 
 ### Deliverables
-- [ ] Trigger list review — which HRDD patterns are irrelevant for CBC, which need additions (e.g. "fabricate a CBA clause", "represent me as my lawyer")
-- [ ] Threshold review — warn at N violations, end session at M (defaults: 2 / 5). Make admin-configurable per frontend.
-- [ ] Test corpus — a list of sample user messages (triggering + non-triggering) to confirm behaviour before changes ship.
-- [ ] Admin UI: editable trigger list (JSON) or at minimum a read-only viewer so the admin knows what's being filtered.
-- [ ] SPEC §4.10 updated with the final rule set.
+- [x] Trigger list reviewed — HRDD patterns kept; one CBC tweak: `fired` dropped from the "workers from X are [verb]" discriminatory pattern (false-positive risk in legitimate CBA discussions); `deported|removed|eliminated` kept where the intent signal is clearer.
+- [x] Threshold review — `guardrail_warn_at=2` + `guardrail_max_triggers=5` exposed via `core/config.BackendConfig` and `deployment_backend.json`. Global only (D2).
+- [x] Test corpus — `docs/knowledge/guardrails-test-corpus.md` (paste-ready triggering + non-triggering samples + recovery check + tuning notes).
+- [x] Admin UI — read-only `GuardrailsSection` at the bottom of General tab shows patterns per category, current thresholds, and the localised responses.
+- [x] SPEC §4.10 rewritten with the final rule set (two-layer model: prompt + runtime; enforcement pattern; thresholds).
 
 ### Acceptance Criteria
-- [ ] Every HRDD-inherited pattern has been reviewed and either kept / removed / modified.
-- [ ] CBC-specific patterns added (fabrication traps, legal-advice traps).
-- [ ] Thresholds tested end-to-end: user with 1 violation sees banner, user with 5 is session-ended with the localised message.
-- [ ] Admin can inspect the active trigger list in the panel.
+- [x] Every HRDD-inherited pattern reviewed (kept/modified); the one discriminatory-framing pattern was narrowed.
+- [x] No new `fabrication` category (D1=B). Rationale: authenticated user population + prompt-layer `guardrails.md` already covers it.
+- [x] Thresholds tested end-to-end: smoke with 5 triggered turns → `status=completed, flagged=true, violations=5, message_count=12` (1 survey + 5 user + 5 fixed responses + session-ended). UI banner fires at 2 via live-threshold fetch (fallback 2/5 when sidecar proxy fails).
+- [x] Admin can inspect the active trigger list at General tab → Runtime guardrails (or `GET /admin/api/v1/guardrails`).
 
 ### Spec Sections Covered
 - §4.10 (Guardrails)

@@ -19,7 +19,8 @@
   "prompts_path": "./data/prompts",
   "campaigns_path": "./data/campaigns",
   "guardrails_enabled": true,
-  "guardrail_max_triggers": 3,
+  "guardrail_warn_at": 2,
+  "guardrail_max_triggers": 5,
   "file_max_size_mb": 25,
   "session_token_reuse_cooldown_days": 30
 }

@@ -404,12 +404,50 @@ CBC does **not** auto-register: the sidecar never initiates contact with the bac
 
 ### §4.10 Guardrails
 
-Reuse from HRDD Helper with adapted rules:
-- No legal advice
-- No fabrication of CBA terms — only what's in the RAG
-- Redirect to union if query is outside scope
-- Flag sensitive topics (strikes, industrial action)
-- Max trigger count before session warning
+Two independent layers:
+
+**1. Prompt layer** — `guardrails.md` is injected into every system prompt.
+Instructs the LLM: no legal advice (redirect to the union's legal team), no
+fabrication of CBA clauses (must be grounded in the RAG), stay in scope,
+flag sensitive topics (strikes, industrial action), use the union's own
+escalation path.
+
+**2. Runtime layer** — `services/guardrails.py` inspects every user message
+before it reaches the LLM. Two pattern categories:
+- `hate_speech` — slurs, dehumanising language, explicit calls for
+  violence against groups, racial/ethnic supremacy framing, "workers
+  from {group} should be {deported|removed|eliminated}" (the `fired`
+  verb was dropped from that last pattern because legitimate CBA
+  discussions use it routinely).
+- `prompt_injection` — "ignore your instructions", identity-override
+  attempts, system-prompt extraction, DAN-style jailbreaks, debug-mode
+  traps.
+
+No separate `fabrication` category in v1 (Sprint 7.5 D1): CBC's authenticated
+trade-unionist population is low-risk, and the prompt layer already
+instructs the LLM to refuse fabrication.
+
+**Enforcement (Sprint 7.5 D3, HRDD Sprint 16 pattern)**: on any triggered
+message, the polling loop **skips the LLM call**, persists a fixed response
+as the assistant turn, and increments `session.guardrail_violations`. Once
+the count reaches `guardrail_max_triggers`, the session is flagged + marked
+`completed`; the user receives the localised "session ended" message.
+
+**Thresholds** live in `deployment_backend.json` / `core/config.BackendConfig`:
+- `guardrail_warn_at` — default 2. ChatShell shows the amber banner from
+  this count onwards.
+- `guardrail_max_triggers` — default 5. Hard stop threshold.
+
+Per-frontend overrides are deferred until tuning demand justifies the
+plumbing (Sprint 7.5 D2 = global only).
+
+**Admin visibility** — General tab hosts a read-only Guardrails section
+(`/admin/api/v1/guardrails`) showing current thresholds, every active
+pattern per category, and the localised response text the user sees.
+
+**Sidecar → ChatShell** — `/internal/guardrails/thresholds` proxies the
+public `/api/v1/guardrails/thresholds` backend endpoint so the UI reads
+live values (falls back to 2/5 when the proxy can't reach the backend).
 
 ### §4.11 Contacts (Authorized Users Directory)
 

@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 
+from src.core.config import config as backend_config
 from src.services import context_compressor, guardrails, llm_provider, prompt_assembler, resolvers, smtp_service
 from src.services.frontend_registry import registry
 from src.services.session_store import store as session_store
@@ -90,17 +91,41 @@ async def _process_turn(
 
     survey = session.get("survey") or {}
 
-    # Guardrails (count-only; UI warnings land in 6B)
+    # Persist the user's raw turn first so the conversation log reflects what
+    # they said regardless of what we do with it downstream. Attachments go
+    # in as a structured field (ChatShell re-renders chips on reload; the
+    # LLM-facing view decorates with "the user attached this turn: …").
+    session_store.add_message(session_token, "user", user_content, attachments=attachments)
+
+    # Guardrails (Sprint 7.5 D3=A, HRDD Sprint 16 pattern): on ANY triggered
+    # turn, skip the LLM entirely — we don't want the model to even see the
+    # jailbreak attempt. Push a fixed response as the assistant turn. If this
+    # push takes the violation counter past the configured threshold, end
+    # the session right here.
     guard = guardrails.check(user_content, language=language)
     if guard.triggered:
         violations = session_store.increment_guardrail_violations(session_token)
-        logger.info(f"[{session_token}] Guardrail triggered ({guard.category}); total={violations}")
-
-    # Persist user turn before we start streaming — if the LLM fails mid-stream
-    # the user's message is still in the conversation log. Attachments are
-    # stored as a structured field so the UI can re-render chips on reload and
-    # `get_llm_messages` can decorate the content signal for the LLM.
-    session_store.add_message(session_token, "user", user_content, attachments=attachments)
+        end_at = int(backend_config.guardrail_max_triggers)
+        logger.warning(
+            f"[{session_token}] Guardrail triggered ({guard.category}): "
+            f"violation {violations}/{end_at}"
+        )
+        if violations >= end_at:
+            ended_text = guardrails.session_ended_response(language)
+            session_store.add_message(session_token, "assistant", ended_text)
+            # Flag + close the session so the admin can spot it easily.
+            if not session.get("flagged"):
+                session_store.toggle_flag(session_token)
+            session_store.set_status(session_token, "completed")
+            await _push_chunk(client, url, session_token, "token", ended_text)
+            await _push_chunk(client, url, session_token, "done", "guardrail_ended")
+            logger.warning(f"[{session_token}] Session ended — guardrail threshold reached")
+            return
+        # Under threshold: just deliver the fixed response, keep the session alive.
+        session_store.add_message(session_token, "assistant", guard.response)
+        await _push_chunk(client, url, session_token, "token", guard.response)
+        await _push_chunk(client, url, session_token, "done", "")
+        return
 
     # Assemble + store system prompt for this turn. Fresh attachments are
     # force-injected into the RAG context so the model can't ignore them.

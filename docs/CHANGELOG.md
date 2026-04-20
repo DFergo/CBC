@@ -1,5 +1,17 @@
 # CBC — Changelog
 
+## Sprint 7.5 — Guardrails review + enforcement (2026-04-20)
+
+- **HRDD Sprint-16 enforcement pattern** (D3=A): `polling._process_turn` now **skips the LLM on any triggered turn**. The user's raw turn is persisted, guardrails fire, counter increments, and a fixed category-appropriate response is pushed as the assistant message. Once `violations >= guardrail_max_triggers`, the session is flagged + marked `completed`, the session-ended message is delivered, and subsequent turns would hit the same dead-end. No more "UI blocks but backend still answers" gap.
+- **Pattern review** (kept HRDD patterns; one CBC tweak): `fired` dropped from the "workers from {group} are [verb]" discriminatory-framing pattern — legitimate CBA contract text uses `fired` routinely, so it was the one high-false-positive pattern. `deported|removed|eliminated` remain as the intent signal. All other HRDD patterns kept verbatim.
+- **No new `fabrication` category** (D1=B): CBC's user population is authenticated trade-union delegates via the Contacts allowlist, and the `guardrails.md` prompt layer already instructs the LLM to refuse fabrication. If a delegate tries to jailbreak, that's on them — the runtime layer doesn't need the extra regex burden.
+- **Thresholds** (D2=global): `guardrail_warn_at` added to `core/config.BackendConfig` (default 2). `guardrail_max_triggers` kept (default now 5, was 3). Both surfaced in `deployment_backend.json`. Per-frontend overrides deferred.
+- **Sidecar → ChatShell** live thresholds: new public backend endpoint `GET /api/v1/guardrails/thresholds` returns `{warn_at, end_at}`; sidecar proxy `/internal/guardrails/thresholds` (with 2/5 fallback if the proxy call fails). ChatShell reads on mount; hardcoded `VIOLATION_WARN_AT` / `VIOLATION_END_AT` constants gone.
+- **Admin viewer** (D4=A): new `GET /admin/api/v1/guardrails` returns `{categories, thresholds, sample_responses}` for the authed admin. New `sections/GuardrailsSection.tsx` read-only viewer mounted at the bottom of General tab — shows the per-category pattern catalogue, the two thresholds, and the localised responses the user sees on trigger vs session-end.
+- **Test corpus** (D5=A): `docs/knowledge/guardrails-test-corpus.md` — paste-ready triggering + non-triggering samples per category, recovery check, and tuning notes. Known limitations documented (e.g. "ignore your previous instructions" doesn't match because of the double adjective).
+- **SPEC §4.10 rewritten**: two-layer model (prompt + runtime) explicit, enforcement pattern specified, thresholds documented, per-frontend override deferral called out.
+- Smoke: 5 triggered turns → `status=completed, flagged=true, violations=5, message_count=12`. Admin Sessions tab shows the session as ⚠️ completed + flagged. Public thresholds endpoint returns 2/5 as configured.
+
 ## SessionsTab polish — grouped by frontend + pinned summary + upload download/copy (2026-04-20)
 
 - **One table per frontend**: sessions are bucketed by `frontend_id`, each group gets its own card with a header (frontend name + session count) and its own table. Global filter tabs (all / active / completed / flagged) still apply across every group.
