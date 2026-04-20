@@ -221,15 +221,40 @@ class SurveySubmit(BaseModel):
 
 
 @app.post("/internal/queue")
-async def enqueue_message(msg: SurveySubmit):
+async def enqueue_survey(msg: SurveySubmit):
+    """Survey submission — enqueued for the backend to process on its next poll."""
     async with _queue_lock:
-        _queue.append({**msg.model_dump(), "created_at": time.time()})
+        _queue.append({"type": "survey", **msg.model_dump(), "created_at": time.time()})
     logger.info(
         f"Survey submitted: session={msg.session_token} "
         f"company={msg.survey.get('company_slug')} "
         f"country={msg.survey.get('country')} "
         f"query={(msg.survey.get('initial_query') or '')[:60]}..."
     )
+    return {"status": "queued"}
+
+
+class ChatMessage(BaseModel):
+    session_token: str
+    content: str
+    language: str = "en"
+
+
+@app.post("/internal/chat")
+async def enqueue_chat(msg: ChatMessage):
+    """Chat turn from the user. Backend dequeues, assembles prompt, streams
+    response back via /internal/stream/{session_token}/chunk."""
+    if not msg.content.strip():
+        return {"status": "empty"}
+    async with _queue_lock:
+        _queue.append({
+            "type": "chat",
+            "session_token": msg.session_token,
+            "content": msg.content,
+            "language": msg.language,
+            "created_at": time.time(),
+        })
+    logger.info(f"Chat message queued: session={msg.session_token} len={len(msg.content)}")
     return {"status": "queued"}
 
 
@@ -240,6 +265,76 @@ async def dequeue_messages():
         valid = [m for m in _queue if now - m["created_at"] < MESSAGE_TTL]
         _queue.clear()
     return {"messages": valid}
+
+
+# --- SSE stream channels (Sprint 6A) ---
+# Backend pushes tokens to POST /internal/stream/{token}/chunk; React reads
+# from GET /internal/stream/{token} with an EventSource. One queue per
+# session token (D1=A serial — second message queues behind first).
+
+_streams: dict[str, asyncio.Queue] = {}
+_streams_lock = asyncio.Lock()
+
+
+class StreamChunk(BaseModel):
+    event: str  # "token" | "done" | "error"
+    data: str
+
+
+async def _get_or_create_stream(token: str) -> asyncio.Queue:
+    async with _streams_lock:
+        if token not in _streams:
+            _streams[token] = asyncio.Queue()
+        return _streams[token]
+
+
+@app.post("/internal/stream/{session_token}/chunk")
+async def push_stream_chunk(session_token: str, chunk: StreamChunk):
+    """Backend pushes one SSE event (a token, done marker, or error)."""
+    q = await _get_or_create_stream(session_token)
+    await q.put({"event": chunk.event, "data": chunk.data})
+    if chunk.event in ("done", "error"):
+        # Let the consumer drain, then clean up the queue so a new turn starts fresh.
+        async def _cleanup():
+            await asyncio.sleep(5)
+            async with _streams_lock:
+                _streams.pop(session_token, None)
+        asyncio.create_task(_cleanup())
+    return {"status": "ok"}
+
+
+@app.get("/internal/stream/{session_token}")
+async def stream_sse(session_token: str):
+    """React EventSource endpoint. Emits `token` events during generation,
+    then a `done` (or `error`) event, then closes.
+    """
+    from fastapi.responses import StreamingResponse
+
+    q = await _get_or_create_stream(session_token)
+
+    async def event_generator():
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=30.0)
+                # SSE multi-line data: each line needs its own "data:" prefix
+                lines = event["data"].split("\n")
+                data_block = "\n".join(f"data: {line}" for line in lines)
+                yield f"event: {event['event']}\n{data_block}\n\n"
+                if event["event"] in ("done", "error"):
+                    break
+            except asyncio.TimeoutError:
+                # Keepalive comment so proxies / browsers don't drop the connection
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disables Nginx buffering if any
+        },
+    )
 
 
 # --- Session uploads (Sprint 5) ---

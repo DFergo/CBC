@@ -1,9 +1,113 @@
 # CBC — Project Status
 
-**Current Sprint:** 6 — Chat Engine & Prompt Assembly
+**Current Sprint:** 6B — React ChatShell + end-session flow
 **Last Updated:** 2026-04-20
 
-Sprint 5 closed. MILESTONES Sprint 5 acceptance criteria all green. Ready to start Sprint 6.
+Sprint 6A closed. Backend chat loop + sidecar SSE verified end-to-end via curl: LLM streams real tokens grounded in company RAG back through the sidecar to an EventSource reader. Sprint 6B adds the React UI layer.
+
+---
+
+## Sprint 6A — COMPLETE
+
+**Goal (MILESTONES §Sprint 6):** Full chat works end-to-end — user submits survey → chat starts with initial query → AI streams response grounded in RAG + knowledge + survey context.
+
+### Deliverables (all ✓)
+
+- [x] `services/session_store.py` — disk-backed (`session.json` + `conversation.jsonl`), in-memory cache, atomic writes, `destroy_session` rmtrees the whole session tree (ADR-005).
+- [x] `services/llm_provider.py` — OpenAI-compatible streaming for lm_studio / ollama / api (anthropic | openai | openai_compatible). Per-slot circuit breaker (3 fails in 60 s → 300 s cooldown). Fallback cascade per Daniel's rule: `[own, summariser, inference, compressor]` deduplicated → inference falls back `inference → summariser → compressor`.
+- [x] `services/prompt_assembler.py` — 7-layer assembly using Sprint 4B resolvers + Sprint 5 RAG queries. Layers: core → guardrails → role (cba_advisor.md or compare_all.md) → context_template (survey vars incl. derived `comparison_scope_line` and `identity_block`) → glossary → organizations → RAG chunks. Session RAG is queried alongside permanent scopes when `session_token` is provided.
+- [x] `services/polling.py` — replaces Sprint 4A's health-only loop. Every 2 s: per-frontend health check + queue drain. Dispatches by message `type`: `survey` → init session + inject initial_query; `chat` → dispatch turn. Turn handler: guardrails check → persist user msg → assemble prompt → persist system_prompt → stream LLM → relay tokens to sidecar → persist assistant msg → push `done`.
+- [x] `services/guardrails.py` — HRDD hate-speech + prompt-injection regex patterns, CBC-themed localised responses (en/es/fr/de/pt). Log-only in 6A; violations counter in session metadata. Daniel flagged the rules for post-smoke tuning.
+- [x] `services/context_compressor.py` — stub with `should_compress` + `compress` signatures so the import graph is stable. Real implementation is 6B.
+- [x] Sidecar: `POST /internal/chat` (chat turn enqueue), `POST /internal/stream/{token}/chunk` (backend pushes SSE events), `GET /internal/stream/{token}` (React EventSource endpoint with 30 s keepalive comments). One asyncio.Queue per session token (D1=A serial; second message queues behind first).
+- [x] `main.py` swaps `polling_loop` → `polling`; old `polling_loop.py` deleted.
+
+### Acceptance tested end-to-end
+
+- Submitted a survey via `POST http://localhost:8190/internal/queue` for session `SPRINT6A-SMOKE` with `company=amcor, country=AU, initial_query="What does the Amcor Australia CBA say about overtime?"`.
+- Opened SSE reader: `curl -N http://localhost:8190/internal/stream/SPRINT6A-SMOKE`. **60+ `token` events streamed in real time** from LM Studio's `google/gemma-4-26b-a4b` via the backend.
+- Response grounds in the company RAG — **cites `amcor_au_2024.txt`** as the source (the metadata-tagged AU doc uploaded in Sprint 5).
+- `session.json` dumped: 12 588-char `system_prompt` with all 7 layers present; conversation.jsonl has both turns (`user` + `assistant`); survey + frontend_id persisted; `initial_query_injected: true` so polling won't re-inject.
+- Fixed a template bug mid-smoke: `context_template.md` uses `{comparison_scope_line}` and `{identity_block}` as optional blocks; renderer now computes these from survey fields (empty when anonymous / not Compare All) and collapses blank lines.
+
+### Deviations from plan
+
+- `context_template.md` template vars (`comparison_scope_line`, `identity_block`) weren't originally in my flat-substitution list — caught during smoke test, fixed. Template still uses naive `{var}` replacement (no Jinja).
+- Circuit breaker + fallback cascade are implemented but the happy-path smoke doesn't exercise them (LM Studio was online throughout). A deliberate fault-injection test is future work.
+
+---
+
+**Why split:** Sprint 6 touches 7+ services + sidecar + React UI (~3400 LoC of HRDD source to adapt). Keeping the backend/SSE loop in one sprint (6A) lets us verify the engine via curl before layering the chat UI (6B). Sprint 4 followed the same split-for-verifiability pattern.
+
+### Decisions locked (2026-04-20)
+
+- **D1 = A** — SSE keyed by `session_token` (serial: one response at a time per session; parallel messages queue).
+- **D2 = A** — Send full conversation history to the LLM. Context compressor lands in 6B; demo conversations won't hit 20 k tokens.
+- **D3 = Modified A** — Fallback cascade by slot. Daniel's rule: for the `inference` slot, fallback is `inference → summariser → compressor` (summariser is more capable and handles chat better; in prod everything runs on Ollama). Generalised: every slot's chain is `[own, summariser, inference, compressor]` deduplicated → so `summariser` falls back `summariser → inference → compressor`, `compressor` falls back `compressor → summariser → inference`.
+- **D4 = A** — HRDD asyncio.Queue per session + POST chunk + GET stream. (Only pull-inverse-safe option — dropped as "decision" in future planning.)
+- **D5 = A** — Backend auto-injects the survey's `initial_query` as the first user message when it first polls a new session (HRDD pattern).
+- **D6 = A** — 6A skips end-session entirely. Sessions stay `active`; 6B adds End-session button + user summary generation.
+- **D7 = C** — Full HRDD-style runtime guardrails (`services/guardrails.py`): regex rules copied from HRDD as the starting point, Daniel will review + tune the trigger list after smoke tests. Reasoning: CBC is lower-risk than HRDD (research tool, not public-facing), but keeping the runtime belt-and-suspenders layer is cheap and already-proven code.
+
+### Decision options (for reference)
+
+### 6A deliverables
+
+**Backend (adapted from HRDDHelper/src/backend/services/):**
+- `services/session_store.py` — per-token session metadata + conversation.jsonl append log. Atomic writes. Integrates with `session_rag.destroy_session` on auto-destroy.
+- `services/llm_provider.py` — 3-slot (inference/compressor/summariser) OpenAI-compatible streaming. Circuit breaker per slot. Fallback cascade (inference → compressor → summariser) on health failures. Reads per-frontend override via Sprint 4B `llm_override_store.resolve_llm_config(fid)`.
+- `services/prompt_assembler.py` — rewrite from HRDD's 2-tier → 3-tier using Sprint 4B `resolvers.resolve_prompt`. Assembles: `core + guardrails + role_prompt + context_template(survey vars) + glossary + orgs + RAG_chunks`. Compare All uses `compare_all.md` at role slot and stacks company RAG queries.
+- `services/polling.py` — replace Sprint 4A health-only loop. Adds: dequeue messages per registered frontend, dispatch to LLM pipeline, push SSE tokens back. Initial-query injection on first poll (D5=A).
+- `services/guardrails.py` — keyword/pattern checks (no legal advice, no CBA-term fabrication). Count triggers per session; surface via session metadata for 6B UI warning.
+- `services/context_compressor.py` — stub in 6A (import + hook). Real compression lands alongside summariser in 6B or Sprint 7.
+
+**Sidecar (adapted from HRDDHelper/src/frontend/sidecar/main.py):**
+- `POST /internal/stream/{session_token}/chunk` — backend pushes a token chunk to the session's SSE queue.
+- `GET /internal/stream/{session_token}` — React EventSource connects here; sidecar streams queued tokens with `text/event-stream` media type. One open stream per token.
+- `POST /internal/queue` extension — accepts `{session_token, message, language}` for chat turns (not just surveys).
+
+**Curl-testable smoke (6A acceptance):**
+- `curl POST /internal/queue` (survey) → backend polls → session_store creates session → initial_query enqueued → prompt assembled with RAG → LLM streams → sidecar SSE endpoint emits tokens observable with `curl -N`.
+
+### 6B deliverables (follow-up sprint)
+
+- `frontend/src/components/ChatShell.tsx` — adapted from HRDD. EventSource connection, streaming render, message send, "End session" button.
+- End-session flow — summariser slot generates user summary; stored in session + (stubbed) emailed. Real SMTP lands Sprint 7.
+- Context compressor real implementation (progressive thresholds from LLM settings).
+- Guardrails UI: warning banner when trigger count exceeds threshold.
+
+### Decisions to lock before 6A kickoff
+
+- **D1 — SSE keying.** `session_token` (one stream per session at a time; second message from same session queues behind first) vs client-generated `message_id` (parallel streams). *Recommend A = session_token; matches HRDD, chat is serial by nature.*
+
+- **D2 — Conversation history window.** Send ALL history to LLM + rely on context compression (A), fixed N-turn window (B), token-count estimate (C). *Recommend A; compressor already budgeted for 6B. Demo conversations won't exceed 20k tokens.*
+
+- **D3 — LLM fallback cascade.** Copy HRDD's `inference → compressor → summariser` cascade on health failures (A) vs error-out when configured slot fails (B). *Recommend A; proven pattern, handles "local LLM died mid-chat" gracefully.*
+
+- **D4 — SSE relay pattern.** Copy HRDD's asyncio.Queue per session + POST chunk + GET stream (A). No alternatives worth considering; WebSockets / direct-server-stream break the pull-inverse rule. *Default A.*
+
+- **D5 — Initial query handling.** Backend auto-injects survey's `initial_query` as the first user message when it first polls a new session (A) vs React submits survey AND separately sends the message (B). *Recommend A; matches SPEC "initial query injection", one network round-trip, cleaner UX.*
+
+- **D6 — End-session flow scope for 6A.** Skip entirely — session stays `active`, 6B adds End-session button + summary generation (A). Or stub: add `POST /api/v1/sessions/{token}/close` that just marks state='completed' without summary (B). *Recommend A; keeps 6A tight. User summary lands with 6B where it's visible in the UI.*
+
+- **D7 — Guardrails rules source.** Hardcode rules in `guardrails.py` (A, HRDD pattern) vs JSON-configurable rules (B). *Recommend A; v1 rules are stable. Admin-configurable rules are Sprint 8+ if needed.*
+
+### Implementation order (6A)
+
+1. **Phase A — session_store** (adapt HRDD). Smoke: create session, append messages, destroy.
+2. **Phase B — llm_provider** (adapt HRDD streaming). Smoke: `await provider.stream_chat(messages, slot)` against LM Studio returns tokens.
+3. **Phase C — prompt_assembler** (3-tier rewrite). Smoke: render for a fake session → inspect assembled prompt text.
+4. **Phase D — sidecar SSE endpoints**. Smoke: `curl -N` on `/internal/stream/{token}` stays open; `curl -X POST /internal/stream/{token}/chunk` delivers.
+5. **Phase E — polling.py** (rewrite). Smoke: queue a survey → backend processes → SSE observable from sidecar.
+6. **Phase F — guardrails + context_compressor stub**. Add hooks; real rule-firing UI in 6B.
+7. **Phase G — docs** (SPEC confirm, CHANGELOG, STATUS).
+
+### Risks / open questions
+- **Pitfall 2** (message TTL): default 300s; if LLM is slow + polling interval 2s we have headroom. Monitor.
+- **Pitfall 4** (circuit breaker): adapt HRDD's cleanly; 3 fails in 60s → 300s cooldown.
+- **Pitfall 5** (prompt order): core + guardrails ALWAYS first, even when company-tier overrides role_prompt. Enforce in `prompt_assembler.assemble()`.
+- **Pitfall 10** (Compare All context blowup): deferred — Sprint 6A's RAG top-k is 5 per scope; Compare All with 5 companies = 25 chunks + history. Well within 20k-token window for v1. Revisit if chat blows up.
+- SSE connection resilience: browser reconnect on network blip. HRDD handles this via EventSource's automatic reconnect; we inherit it. Sidecar cleans up queues when GET stream exits.
 
 ---
 

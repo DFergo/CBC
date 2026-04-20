@@ -30,7 +30,7 @@ from src.services._paths import (
     GLOSSARY_FILE,
     ORGANIZATIONS_FILE,
 )
-from src.services.polling_loop import polling_loop
+from src.services.polling import polling_loop
 from src.services.smtp_service import check_smtp_health
 
 logging.basicConfig(level=logging.INFO)

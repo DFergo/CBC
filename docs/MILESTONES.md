@@ -193,23 +193,29 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 
 ## Sprint 6 — Chat Engine & Prompt Assembly
 
+**Scope split:** Sprint 6 is delivered in two halves. **6A** = backend chat loop + sidecar SSE (curl-testable end-to-end). **6B** = React ChatShell + end-session user summary + real context compressor.
+
 **Goal:** Full chat works: user sends message, backend processes with assembled prompt + RAG, streams response.
 
 ### Deliverables
-- [ ] `CBCopilot/src/backend/services/prompt_assembler.py` — 3-tier prompt assembly
-- [ ] `CBCopilot/src/backend/services/llm_provider.py` — Adapted (2 slots)
-- [ ] `CBCopilot/src/backend/services/polling.py` — Adapted from HRDD Helper
-- [ ] `CBCopilot/src/backend/services/guardrails.py` — Adapted rules
-- [ ] `CBCopilot/src/backend/services/context_compressor.py` — Reused
-- [ ] `CBCopilot/src/frontend/src/components/ChatShell.tsx` — Chat UI with streaming
-- [ ] Sidecar SSE streaming endpoint
-- [ ] Initial query injection (survey query → first chat message)
+- [x] `CBCopilot/src/backend/services/prompt_assembler.py` — 3-tier prompt assembly — 6A
+- [x] `CBCopilot/src/backend/services/llm_provider.py` — 3 slots + fallback cascade (Daniel's D3 order) — 6A
+- [x] `CBCopilot/src/backend/services/polling.py` — replaces Sprint 4A health-only loop — 6A
+- [x] `CBCopilot/src/backend/services/guardrails.py` — HRDD patterns copied, CBC-themed responses — 6A
+- [x] `CBCopilot/src/backend/services/context_compressor.py` — stub (real compression lands 6B) — 6A
+- [x] `CBCopilot/src/backend/services/session_store.py` — disk-backed + cache, destroy_session rmtree — 6A
+- [x] Sidecar `POST /internal/chat` + `POST /internal/stream/{token}/chunk` + `GET /internal/stream/{token}` — 6A
+- [x] Initial query injection (survey query → first chat message) — 6A
+- [ ] `CBCopilot/src/frontend/src/components/ChatShell.tsx` — Chat UI with streaming — 6B
+- [ ] End-session UI + user summary via summariser slot — 6B
 
 ### Acceptance Criteria
-- [ ] User submits survey → enters chat → initial query appears as first message
-- [ ] AI responds to initial query with streamed response
-- [ ] Response uses appropriate RAG context (company-specific or Compare All)
-- [ ] Prompt assembly includes: core + guardrails + role prompt + context + knowledge + RAG
+- [x] User submits survey → backend polling picks it up → initial query injected as first user message — 6A (curl-verified end-to-end)
+- [x] AI responds to initial query with streamed response — 6A (SSE tokens observed via `curl -N`)
+- [x] Response uses appropriate RAG context (company-specific or Compare All) — 6A (amcor docs cited in the response: `amcor_au_2024.txt`)
+- [x] Prompt assembly includes: core + guardrails + role prompt + context + knowledge + RAG — 6A (all 7 layers present in session.json, 12.5k chars)
+- [ ] React ChatShell renders streamed tokens end-to-end — 6B
+- [ ] End-session flow: user summary generated and displayed — 6B
 - [ ] Guardrails fire on out-of-scope queries
 - [ ] Context compression kicks in when conversation exceeds threshold
 - [ ] Streaming works (tokens appear incrementally, not all at once)
