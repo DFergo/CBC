@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from src.api.v1.admin.auth import require_admin
 from src.services import company_registry as registry
+from src.services import polling
 from src.services.company_registry import Company
 
 router = APIRouter(prefix="/admin/api/v1/frontends", tags=["admin-companies"])
@@ -52,6 +53,7 @@ async def create_company(frontend_id: str, req: CreateCompanyRequest, _admin: di
         created = registry.create_company(frontend_id, company)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    polling.invalidate_companies_pushed(frontend_id)
     return {"company": created.model_dump()}
 
 
@@ -64,6 +66,7 @@ async def update_company(frontend_id: str, slug: str, req: UpdateCompanyRequest,
         raise HTTPException(status_code=404, detail=f"Company {slug!r} not found")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    polling.invalidate_companies_pushed(frontend_id)
     return {"company": updated.model_dump()}
 
 
@@ -72,4 +75,5 @@ async def delete_company(frontend_id: str, slug: str, _admin: dict = Depends(req
     removed = registry.delete_company(frontend_id, slug)
     if not removed:
         raise HTTPException(status_code=404, detail=f"Company {slug!r} not found")
+    polling.invalidate_companies_pushed(frontend_id)
     return {"status": "deleted", "slug": slug}

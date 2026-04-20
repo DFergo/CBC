@@ -49,6 +49,7 @@ _COMPANIES_FILE = Path("/app/config/companies.json")
 _DATA_DIR = Path("/app/data")
 _BRANDING_CACHE = _DATA_DIR / "pushed_branding.json"
 _SESSION_SETTINGS_CACHE = _DATA_DIR / "pushed_session_settings.json"
+_COMPANIES_CACHE = _DATA_DIR / "pushed_companies.json"
 
 # Hardcoded branding baseline. Like HRDD, the app ships with a default look in
 # code; admins can override globally (Branding defaults in General tab) or
@@ -166,24 +167,44 @@ async def push_session_settings(body: dict[str, Any]):
     return {"status": "ok"}
 
 
-# --- Companies (Sprint 2: sidecar-local stub; Sprint 3 backend replaces this) ---
+# --- Companies (pull-inverse: backend pushes per-frontend list during poll) ---
+# The sidecar prefers the pushed list (admin-edited, per-frontend). Falls back
+# to the image-shipped /app/config/companies.json only while the backend hasn't
+# pushed yet (first boot, or if the frontend isn't registered in the backend).
+
+@app.post("/internal/companies")
+async def push_companies(body: dict[str, Any]):
+    """Backend pushes this frontend's company list on every poll cycle (or
+    after admin CRUD). Body: {"companies": [...]}. Cached to disk so the list
+    survives sidecar restarts even if the backend is briefly offline."""
+    companies = body.get("companies")
+    if not isinstance(companies, list):
+        raise HTTPException(400, "body.companies must be a list")
+    _write_json(_COMPANIES_CACHE, {"companies": companies})
+    logger.info(f"Companies pushed: {len(companies)} entries")
+    return {"status": "ok"}
+
 
 @app.get("/internal/companies")
 async def get_companies():
-    if not _COMPANIES_FILE.exists():
-        return {"companies": []}
-    try:
-        data = json.loads(_COMPANIES_FILE.read_text())
-        items = data if isinstance(data, list) else data.get("companies", [])
-        # Compare All entries first, then alphabetical by display_name.
-        items.sort(key=lambda c: (
-            0 if c.get("is_compare_all") else 1,
-            (c.get("display_name") or c.get("slug") or "").lower(),
-        ))
-        return {"companies": items}
-    except (json.JSONDecodeError, OSError) as e:
-        logger.error(f"Failed to read companies.json: {e}")
-        return {"companies": []}
+    # Prefer the admin-edited list pushed by the backend.
+    cached = _read_json(_COMPANIES_CACHE)
+    if isinstance(cached.get("companies"), list):
+        items = list(cached["companies"])
+    elif _COMPANIES_FILE.exists():
+        try:
+            data = json.loads(_COMPANIES_FILE.read_text())
+            items = data if isinstance(data, list) else data.get("companies", [])
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"Failed to read companies.json: {e}")
+            items = []
+    else:
+        items = []
+    items.sort(key=lambda c: (
+        0 if c.get("is_compare_all") else 1,
+        (c.get("display_name") or c.get("slug") or "").lower(),
+    ))
+    return {"companies": items}
 
 
 # --- Auth (Sprint 7: relay to backend for SMTP + Contacts allowlist) ---

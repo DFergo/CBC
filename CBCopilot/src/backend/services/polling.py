@@ -32,6 +32,7 @@ import httpx
 
 from src.core.config import config as backend_config
 from src.services import (
+    company_registry,
     context_compressor,
     guardrails,
     llm_provider,
@@ -58,10 +59,24 @@ PUSH_TIMEOUT = 5.0
 # (see guardrails.invalidate_pushed_thresholds()).
 _thresholds_pushed: set[str] = set()
 
+# Track which frontends have had the current company list pushed. Invalidated
+# per-frontend from the admin company CRUD endpoints so changes land on the
+# next poll (≤ POLL_INTERVAL_SECONDS seconds).
+_companies_pushed: set[str] = set()
+
 
 def invalidate_thresholds_pushed() -> None:
     """Call from admin when thresholds change so next poll re-pushes."""
     _thresholds_pushed.clear()
+
+
+def invalidate_companies_pushed(frontend_id: str | None = None) -> None:
+    """Call from admin CRUD endpoints so next poll re-pushes the list.
+    Pass frontend_id to target one frontend; omit to clear all."""
+    if frontend_id is None:
+        _companies_pushed.clear()
+    else:
+        _companies_pushed.discard(frontend_id)
 
 
 async def _check_health(client: httpx.AsyncClient, url: str) -> str:
@@ -84,6 +99,29 @@ async def _drain_queue(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
     except httpx.HTTPError as e:
         logger.warning(f"Drain queue at {url} failed: {e}")
         return {}
+
+
+async def _push_companies_if_needed(client: httpx.AsyncClient, url: str, fid: str) -> None:
+    """Push the admin-edited per-frontend company list to the sidecar once
+    (HRDD branding-push pattern). Sidecar caches to disk; CompanySelectPage
+    reads via /internal/companies. Invalidated on admin CRUD.
+    """
+    if fid in _companies_pushed:
+        return
+    companies = [c.model_dump() for c in company_registry.list_companies(fid)]
+    try:
+        r = await client.post(
+            f"{url.rstrip('/')}/internal/companies",
+            json={"companies": companies},
+            timeout=PUSH_TIMEOUT,
+        )
+        if r.status_code // 100 != 2:
+            logger.warning(f"Push companies to {fid}: HTTP {r.status_code}")
+            return
+    except httpx.HTTPError as e:
+        logger.warning(f"Push companies to {fid} failed: {e}")
+        return
+    _companies_pushed.add(fid)
 
 
 async def _push_thresholds_if_needed(client: httpx.AsyncClient, url: str, fid: str) -> None:
@@ -562,6 +600,9 @@ async def _tick(client: httpx.AsyncClient) -> None:
         # 2. Push guardrails thresholds once per frontend (pull-inverse —
         #    sidecar caches; ChatShell reads on mount).
         await _push_thresholds_if_needed(client, url, fid)
+
+        # 2b. Push per-frontend company list (admin-edited; invalidated on CRUD).
+        await _push_companies_if_needed(client, url, fid)
 
         # 3. Queue drain (messages + recovery_requests)
         drained = await _drain_queue(client, url)
