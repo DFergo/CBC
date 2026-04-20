@@ -113,10 +113,20 @@ class SessionStore:
         }
         atomic_write_json(d / "session.json", meta)
 
-    def _append_message(self, token: str, role: str, content: str, timestamp: str) -> None:
+    def _append_message(
+        self,
+        token: str,
+        role: str,
+        content: str,
+        timestamp: str,
+        attachments: list[str] | None = None,
+    ) -> None:
         d = _session_dir(token)
         d.mkdir(parents=True, exist_ok=True)
-        line = json.dumps({"role": role, "content": content, "timestamp": timestamp}, ensure_ascii=False)
+        entry: dict[str, Any] = {"role": role, "content": content, "timestamp": timestamp}
+        if attachments:
+            entry["attachments"] = list(attachments)
+        line = json.dumps(entry, ensure_ascii=False)
         with open(d / "conversation.jsonl", "a") as f:
             f.write(line + "\n")
 
@@ -164,14 +174,29 @@ class SessionStore:
         self._ensure_loaded()
         return token in self._cache
 
-    def add_message(self, token: str, role: str, content: str) -> None:
-        """Append a message to the session (memory + disk)."""
+    def add_message(
+        self,
+        token: str,
+        role: str,
+        content: str,
+        attachments: list[str] | None = None,
+    ) -> None:
+        """Append a message to the session (memory + disk).
+
+        When `attachments` is set, the raw filenames are stored alongside the
+        message so the UI can render chips on the user bubble AND the LLM
+        message-builder can decorate the content with an "attached this turn"
+        signal (see `get_llm_messages`).
+        """
         self._ensure_loaded()
         self._ensure_session(token)
         now = _now()
-        self._cache[token]["messages"].append({"role": role, "content": content, "timestamp": now})
+        entry: dict[str, Any] = {"role": role, "content": content, "timestamp": now}
+        if attachments:
+            entry["attachments"] = list(attachments)
+        self._cache[token]["messages"].append(entry)
         self._cache[token]["last_activity"] = now
-        self._append_message(token, role, content, now)
+        self._append_message(token, role, content, now, attachments=attachments)
         self._save_meta(token)
 
     def _ensure_session(self, token: str) -> None:
@@ -194,7 +219,14 @@ class SessionStore:
 
     def get_llm_messages(self, token: str) -> list[dict[str, str]]:
         """Messages formatted for LLM input: system prompt first, then history
-        (role + content only — timestamps stripped)."""
+        (role + content only — timestamps stripped).
+
+        When a user turn carries `attachments`, the content is decorated with
+        a short "User attached this turn: …" prefix so the model knows a new
+        file arrived with this message. The raw content on disk stays clean.
+        `assistant_summary` is coerced to `assistant` so the LLM sees a normal
+        conversation history.
+        """
         self._ensure_loaded()
         self._ensure_session(token)
         session = self._cache[token]
@@ -202,7 +234,12 @@ class SessionStore:
         if session["system_prompt"]:
             out.append({"role": "system", "content": session["system_prompt"]})
         for msg in session["messages"]:
-            out.append({"role": msg["role"], "content": msg["content"]})
+            content = msg["content"]
+            role = msg["role"]
+            if role == "user" and msg.get("attachments"):
+                files = ", ".join(msg["attachments"])
+                content = f"[The user attached this turn: {files}]\n\n{content}"
+            out.append({"role": "assistant" if role == "assistant_summary" else role, "content": content})
         return out
 
     def get_session(self, token: str) -> dict[str, Any] | None:
@@ -294,22 +331,28 @@ class SessionStore:
 
     def destroy_session(self, token: str) -> bool:
         """ADR-005 privacy wipe: rm -rf `/app/data/sessions/{token}/`. Also
-        drops the session_rag cache entry. Returns True if anything existed."""
+        drops the session_rag + context_compressor caches. Returns True if
+        anything existed."""
         self._cache.pop(token, None)
         # session_rag stores under the same tree — single rmtree covers both
         d = _session_dir(token)
-        if not d.exists():
-            return False
-        shutil.rmtree(d, ignore_errors=True)
-        # Belt-and-suspenders: clear the rag_service cache too (rag indexes the
-        # session's uploads folder; no longer valid)
+        existed = d.exists()
+        if existed:
+            shutil.rmtree(d, ignore_errors=True)
+        # Belt-and-suspenders: clear in-memory caches held by other services
         try:
             from src.services import session_rag
             session_rag.destroy_session(token)
         except Exception:
             pass
-        logger.info(f"Session destroyed (full wipe): {token}")
-        return True
+        try:
+            from src.services import context_compressor
+            context_compressor.forget_session(token)
+        except Exception:
+            pass
+        if existed:
+            logger.info(f"Session destroyed (full wipe): {token}")
+        return existed
 
 
 # Singleton

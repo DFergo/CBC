@@ -1,9 +1,8 @@
-"""Session-scoped uploads — used by the chat UI in Sprint 6.
+"""Session-scoped endpoints — uploads (Sprint 5) + read-only status (Sprint 6B).
 
-Sprint 5 ships the pipeline + a curl-testable endpoint. The sidecar relays
-multipart uploads here; we save the file under the session's tree and add
-it to the session's RAG index. No auth on this route in v1 — it's
-internal-network only (only sidecars on `cbc-net` can reach the backend).
+Sidecars on `cbc-net` relay user uploads here; ChatShell polls status to
+refresh the guardrails-violation counter. No auth in v1 — the frontend
+network perimeter is the trust boundary.
 """
 import logging
 
@@ -11,6 +10,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from src.core.config import config
 from src.services import session_rag
+from src.services.session_store import store as session_store
 
 logger = logging.getLogger("api.sessions.uploads")
 
@@ -52,3 +52,19 @@ async def destroy_session(token: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"token": token, "removed": removed}
+
+
+@router.get("/{token}/status")
+async def get_session_status(token: str):
+    """Lightweight poll target for the chat UI — no conversation payload.
+    Returns the bits that drive UI state: status, violation count, last activity."""
+    sess = session_store.get_session(token)
+    if not sess:
+        raise HTTPException(status_code=404, detail=f"Session {token!r} not found")
+    return {
+        "token": token,
+        "status": sess.get("status", "active"),
+        "guardrail_violations": int(sess.get("guardrail_violations", 0)),
+        "message_count": len(sess.get("messages", [])),
+        "last_activity": sess.get("last_activity"),
+    }

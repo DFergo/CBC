@@ -10,6 +10,7 @@ import AuthPage from './components/AuthPage'
 import InstructionsPage from './components/InstructionsPage'
 import CompanySelectPage from './components/CompanySelectPage'
 import SurveyPage from './components/SurveyPage'
+import ChatShell from './components/ChatShell'
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>('loading')
@@ -40,7 +41,7 @@ export default function App() {
 
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {
-      if (phase === 'survey' || phase === 'placeholder') e.preventDefault()
+      if (phase === 'survey' || phase === 'chat') e.preventDefault()
     }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
@@ -96,9 +97,9 @@ export default function App() {
         }),
       })
     } catch {
-      // Silent — placeholder page will still show so the user isn't blocked
+      // Silent — chat UI still renders so the user isn't blocked
     }
-    navigateTo('placeholder')
+    navigateTo('chat')
   }
 
   const goBack = {
@@ -115,7 +116,7 @@ export default function App() {
   }
 
   const branding = config?.branding
-  const showFooter = phase !== 'loading' && phase !== 'placeholder'
+  const showFooter = phase !== 'loading' && phase !== 'chat'
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -174,16 +175,8 @@ export default function App() {
           />
         )}
 
-        {phase === 'placeholder' && survey && (
-          <div className="max-w-4xl mx-auto mt-8 p-6">
-            <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
-              <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('placeholder_title', lang)}</h2>
-              <p className="text-sm text-gray-600 mb-4">{t('placeholder_body', lang)}</p>
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-xs font-mono text-gray-700 whitespace-pre-wrap overflow-auto">
-                {JSON.stringify({ session_token: sessionToken, survey }, null, 2)}
-              </div>
-            </div>
-          </div>
+        {phase === 'chat' && survey && (
+          <ChatShell lang={lang} sessionToken={sessionToken} survey={survey} branding={branding} />
         )}
       </main>
 

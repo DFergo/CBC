@@ -112,6 +112,37 @@ def ingest_upload(token: str, filename: str, content: bytes) -> SessionUpload:
     return SessionUpload(name=filename, size=len(content))
 
 
+def get_chunks_for_files(token: str, filenames: list[str]) -> list[dict[str, Any]]:
+    """Return every indexed chunk whose source file is in `filenames`.
+
+    Used by the chat-turn handler when the user attaches one or more files
+    in *this* turn — we bypass semantic retrieval and inject the full file
+    content directly, so the model can't miss it regardless of how vague
+    the user's text message is.
+    """
+    if not filenames:
+        return []
+    wanted = set(filenames)
+    idx = _get_index(token)
+    if idx is None:
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        for node in idx.docstore.docs.values():
+            fname = node.metadata.get("file_name")
+            if fname and fname in wanted:
+                out.append({
+                    "text": node.text,
+                    "score": 1.0,  # forced inclusion
+                    "source": fname,
+                    "tier": "session",
+                    "scope_key": f"session-{token}",
+                })
+    except Exception as e:
+        logger.warning(f"Failed to enumerate session chunks for {token}: {e}")
+    return out
+
+
 def query(token: str, query_text: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Top-k chunks from the session's uploaded files. [] when no uploads."""
     idx = _get_index(token)

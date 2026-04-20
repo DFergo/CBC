@@ -238,6 +238,28 @@ class ChatMessage(BaseModel):
     session_token: str
     content: str
     language: str = "en"
+    attachments: list[str] = []  # filenames already ingested via /internal/upload
+
+
+class CloseSession(BaseModel):
+    session_token: str
+    language: str = "en"
+
+
+@app.post("/internal/close-session")
+async def enqueue_close(msg: CloseSession):
+    """End-session signal. Backend dequeues, runs the summariser slot on the
+    conversation, streams the summary back via /internal/stream, then marks
+    the session status='completed'."""
+    async with _queue_lock:
+        _queue.append({
+            "type": "close",
+            "session_token": msg.session_token,
+            "language": msg.language,
+            "created_at": time.time(),
+        })
+    logger.info(f"Close session queued: session={msg.session_token}")
+    return {"status": "queued"}
 
 
 @app.post("/internal/chat")
@@ -252,9 +274,13 @@ async def enqueue_chat(msg: ChatMessage):
             "session_token": msg.session_token,
             "content": msg.content,
             "language": msg.language,
+            "attachments": msg.attachments,
             "created_at": time.time(),
         })
-    logger.info(f"Chat message queued: session={msg.session_token} len={len(msg.content)}")
+    logger.info(
+        f"Chat message queued: session={msg.session_token} len={len(msg.content)}"
+        + (f" attachments={msg.attachments}" if msg.attachments else "")
+    )
     return {"status": "queued"}
 
 

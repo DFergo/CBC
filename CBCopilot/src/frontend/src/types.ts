@@ -7,7 +7,7 @@ export type Phase =
   | 'instructions'
   | 'company_select'
   | 'survey'
-  | 'placeholder'
+  | 'chat'
 
 export type LangCode = 'en' | 'es' | 'fr' | 'de' | 'pt'
 

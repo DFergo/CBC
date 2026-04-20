@@ -206,16 +206,19 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 - [x] `CBCopilot/src/backend/services/session_store.py` — disk-backed + cache, destroy_session rmtree — 6A
 - [x] Sidecar `POST /internal/chat` + `POST /internal/stream/{token}/chunk` + `GET /internal/stream/{token}` — 6A
 - [x] Initial query injection (survey query → first chat message) — 6A
-- [ ] `CBCopilot/src/frontend/src/components/ChatShell.tsx` — Chat UI with streaming — 6B
-- [ ] End-session UI + user summary via summariser slot — 6B
+- [x] `CBCopilot/src/frontend/src/components/ChatShell.tsx` — Chat UI with streaming — 6B
+- [x] End-session UI + user summary via summariser slot — 6B
+- [x] Real context compressor with progressive thresholds — 6B
+- [x] Guardrails UI banner (warn ≥2, end-session at ≥5) — 6B
+- [x] File upload chips in chat (uses Sprint 5 /internal/upload) — 6B
 
 ### Acceptance Criteria
 - [x] User submits survey → backend polling picks it up → initial query injected as first user message — 6A (curl-verified end-to-end)
 - [x] AI responds to initial query with streamed response — 6A (SSE tokens observed via `curl -N`)
 - [x] Response uses appropriate RAG context (company-specific or Compare All) — 6A (amcor docs cited in the response: `amcor_au_2024.txt`)
 - [x] Prompt assembly includes: core + guardrails + role prompt + context + knowledge + RAG — 6A (all 7 layers present in session.json, 12.5k chars)
-- [ ] React ChatShell renders streamed tokens end-to-end — 6B
-- [ ] End-session flow: user summary generated and displayed — 6B
+- [x] React ChatShell renders streamed tokens end-to-end — 6B
+- [x] End-session flow: user summary generated and displayed inline (with Copy button); SMTP send deferred to Sprint 7 — 6B
 - [ ] Guardrails fire on out-of-scope queries
 - [ ] Context compression kicks in when conversation exceeds threshold
 - [ ] Streaming works (tokens appear incrementally, not all at once)
@@ -254,6 +257,28 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 
 ### Spec Sections Covered
 - §4.5 (Session Store), §4.6 (Session Lifecycle), §4.8 (SMTP), §8.2 (Session Privacy)
+
+---
+
+## Sprint 7.5 — Guardrails Review (between 7 and 8)
+
+**Goal:** Dedicated pass on the runtime guardrails behaviour. Sprint 6A copied HRDD's hate-speech + prompt-injection regex tables verbatim; Sprint 6B surfaces them in the chat UI. This sprint reviews whether they fire correctly for CBC's domain (CBA research, not HRDD's labour-violation docs) and tunes thresholds.
+
+### Deliverables
+- [ ] Trigger list review — which HRDD patterns are irrelevant for CBC, which need additions (e.g. "fabricate a CBA clause", "represent me as my lawyer")
+- [ ] Threshold review — warn at N violations, end session at M (defaults: 2 / 5). Make admin-configurable per frontend.
+- [ ] Test corpus — a list of sample user messages (triggering + non-triggering) to confirm behaviour before changes ship.
+- [ ] Admin UI: editable trigger list (JSON) or at minimum a read-only viewer so the admin knows what's being filtered.
+- [ ] SPEC §4.10 updated with the final rule set.
+
+### Acceptance Criteria
+- [ ] Every HRDD-inherited pattern has been reviewed and either kept / removed / modified.
+- [ ] CBC-specific patterns added (fabrication traps, legal-advice traps).
+- [ ] Thresholds tested end-to-end: user with 1 violation sees banner, user with 5 is session-ended with the localised message.
+- [ ] Admin can inspect the active trigger list in the panel.
+
+### Spec Sections Covered
+- §4.10 (Guardrails)
 
 ---
 

@@ -1,5 +1,32 @@
 # CBC — Changelog
 
+## Attachment-aware turns — force-include newly uploaded files (2026-04-20)
+
+- **Bug fix** reported during Sprint 6B smoke: attaching a file + sending a vague text ("what do you think?") made the assistant respond as if no file was there, because semantic retrieval on the vague text didn't pull the file's chunks.
+- Frontend now sends `attachments: [filename]` in the `/internal/chat` POST body when ready chips ride along with a turn.
+- Sidecar `ChatMessage` model gains an `attachments: list[str] = []` field; the queued chat item carries the list to the backend.
+- `session_store.add_message` accepts an optional `attachments` list and persists it alongside the message (both in memory cache + conversation.jsonl). `get_llm_messages` decorates the user content with `[The user attached this turn: foo.pdf]\n\n…` so the LLM sees a clear signal. Raw content on disk stays clean.
+- `session_rag.get_chunks_for_files(token, filenames)` — iterates the session's LlamaIndex docstore and returns every chunk whose source matches one of the named files. Used for forced inclusion in the prompt context.
+- `prompt_assembler.assemble` gains a `fresh_attachments` arg. When set, those files' chunks are force-injected (score = 1.0) into the RAG context independently of the semantic top-k query, and dedup'd against the normal session-RAG pass so we don't duplicate the same chunk.
+- `polling._process_turn` accepts `attachments`, passes them to both `session_store.add_message` (for persistence + LLM content decoration) and `prompt_assembler.assemble` (for forced chunk inclusion).
+- File-only turns supported: user drops a PDF without typing anything, backend seeds the text with `"Please examine the files I just attached: …"` so the LLM has a pivot.
+- Verified end-to-end: vague turn with attached `draft_cba.txt` now produces a response that references the attached draft's provisions.
+
+## Sprint 6B — React ChatShell + end-session + context compressor (2026-04-20)
+
+- **Chat is live in the browser.** Survey submission now navigates into a real chat view: initial query appears instantly as the first user bubble, assistant response streams in, multi-turn works, End-session runs the summariser slot and drops an inline "Session summary" block with a Copy-to-clipboard button.
+- `frontend/src/components/ChatShell.tsx` (~350 LoC, adapted from HRDD): EventSource subscription, ReactMarkdown + remark-gfm rendering, textarea auto-resize, Enter-to-send, attachment chips, End-session confirm modal, guardrails banner.
+- `App.tsx` now has a `chat` phase (`placeholder` retired). `beforeunload` warning extends to the chat phase.
+- i18n strings for all chat UI (send, thinking, end-confirm, summary, guardrail warning, attachment chips) in English; fallback for other languages until Sprint 8 translations.
+- Backend `POST /internal/close-session` (sidecar) + `close`-type handler in `polling.py`: resolves `summary.md` via Sprint 4B resolver, runs the **summariser** slot, streams tokens through the existing SSE channel, marks session `status='completed'`. SMTP send is logged as a TODO for Sprint 7.
+- Backend `GET /api/v1/sessions/{token}/status` — lightweight poll target for violation count + status (drives the chat UI banner + end-of-session lock).
+- **Real context compressor** (`services/context_compressor.py`): progressive thresholds (`first_threshold + step_size * n`), keeps the last 4 turns verbatim, folds the older prefix into a single system summary via the **compressor** slot. Per-session cache (in-memory), cleared on `destroy_session`. Token estimate is `chars/4` — good enough to trigger at 20 k / 35 k / 50 k; the LLM has the final word on billing.
+- `polling.py`'s `_process_turn` calls `context_compressor.compress_if_needed` right before the inference streamer.
+- `session_store.destroy_session` additionally drops `context_compressor` + `session_rag` in-memory caches so the ADR-005 privacy wipe leaves nothing behind.
+- **Guardrails UI**: ChatShell polls `/status` every 5 s; banner shows at `violations ≥ 2` (amber), red "session ended" state at `violations ≥ 5`. Thresholds are hard-coded in 6B — **Sprint 7.5 "Guardrails Review"** added to MILESTONES for a dedicated trigger-list tuning + admin-configurable thresholds.
+- **File upload chips in chat**: drag-drop or button click routes files through the Sprint 5 sidecar `POST /internal/upload`. Chips show `uploading → ready → sent` states; ready chips ride along with the next turn and appear as file pills on the user bubble; session RAG picks them up automatically (Sprint 5 pipeline unchanged).
+- `react-markdown` + `remark-gfm` added to frontend deps (matches HRDD).
+
 ## Sprint 6A — Backend chat engine + sidecar SSE (2026-04-20)
 
 - **Full chat loop wired end-to-end** (curl-tested): survey POSTed to sidecar → backend polls → session initialised → initial_query injected as first user turn → prompt assembled with all 7 layers → LLM streams → tokens relayed to sidecar SSE queue → `curl -N` on the EventSource endpoint sees real tokens in real time, with responses citing the correct company-tier RAG sources.

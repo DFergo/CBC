@@ -165,8 +165,16 @@ def _resolve_rag(
     survey: dict[str, Any],
     query_text: str,
     session_token: str | None,
+    fresh_attachments: list[str] | None = None,
 ) -> tuple[list[rag_service.Chunk], list[dict[str, Any]]]:
-    """Run the Sprint 5 query stack. Returns (chunks, raw_paths_for_debug)."""
+    """Run the Sprint 5 query stack. Returns (chunks, raw_paths_for_debug).
+
+    When `fresh_attachments` is set, chunks from those specific files are
+    **force-included** (score=1.0) so the model sees them regardless of how
+    the user phrased their turn. This matters because the user might type
+    just "what do you think?" alongside the attachment and expect CBC to
+    read the file.
+    """
     if not frontend_id:
         return [], []
     paths = resolvers.resolve_rag_paths(
@@ -178,11 +186,32 @@ def _resolve_rag(
     )
     scope_keys = [p["scope_key"] or "global" for p in paths.paths]
     chunks = rag_service.query_scopes(scope_keys, query_text, top_k_per_scope=RAG_TOP_K_PER_SCOPE)
-    # Plus the session's own uploads, if any
+
+    # Session RAG — two passes:
+    # (a) force-include every chunk from the files the user just attached
+    # (b) top-k semantic retrieval across everything else
     if session_token:
+        forced_sources: set[str] = set()
+        if fresh_attachments:
+            try:
+                for c in session_rag.get_chunks_for_files(session_token, fresh_attachments):
+                    chunks.append(
+                        rag_service.Chunk(
+                            text=c["text"],
+                            score=c["score"],
+                            source=c["source"],
+                            tier="session",
+                            scope_key=c["scope_key"],
+                        )
+                    )
+                    forced_sources.add(c["source"])
+            except Exception as e:
+                logger.warning(f"Forced-inject session chunks failed for {session_token}: {e}")
         try:
-            session_chunks = session_rag.query(session_token, query_text, top_k=RAG_TOP_K_PER_SCOPE)
-            for c in session_chunks:
+            for c in session_rag.query(session_token, query_text, top_k=RAG_TOP_K_PER_SCOPE):
+                # Don't duplicate chunks we already force-included
+                if c["source"] in forced_sources:
+                    continue
                 chunks.append(
                     rag_service.Chunk(
                         text=c["text"],
@@ -194,7 +223,8 @@ def _resolve_rag(
                 )
         except Exception as e:
             logger.warning(f"Session RAG query failed for {session_token}: {e}")
-    # Rerank: sort by score desc
+
+    # Rerank: sort by score desc (forced chunks at 1.0 float to the top)
     chunks.sort(key=lambda c: c.score, reverse=True)
     return chunks, [
         {"tier": p["tier"], "scope_key": p["scope_key"], "doc_count": p["doc_count"]}
@@ -222,11 +252,15 @@ def assemble(
     query_text: str | None = None,
     session_token: str | None = None,
     max_rag_chunks: int = 20,
+    fresh_attachments: list[str] | None = None,
 ) -> AssembledPrompt:
     """Build the system prompt for a session's next LLM call.
 
     `query_text` drives the RAG retrieval — typically the user's latest turn.
     For the first turn (initial query injection), pass `survey.initial_query`.
+    `fresh_attachments` is the list of filenames the user attached in *this*
+    turn — those files' chunks are force-included in the RAG context so the
+    model can't miss them even when the text message is vague.
     """
     company_slug = survey.get("company_slug") or None
     is_compare_all = bool(survey.get("is_compare_all"))
@@ -249,6 +283,7 @@ def assemble(
         survey=survey,
         query_text=q,
         session_token=session_token,
+        fresh_attachments=fresh_attachments,
     )
     rag_text = _render_chunks(chunks, max_chunks=max_rag_chunks)
 

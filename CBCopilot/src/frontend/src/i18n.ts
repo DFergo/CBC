@@ -32,6 +32,14 @@ type TranslationKeys =
   | 'survey_comparison_scope' | 'scope_national' | 'scope_regional' | 'scope_global'
   | 'survey_submit'
   | 'placeholder_title' | 'placeholder_body'
+  | 'chat_placeholder' | 'chat_send' | 'chat_thinking' | 'chat_error'
+  | 'chat_end_session' | 'chat_end_confirm_title' | 'chat_end_confirm_body'
+  | 'chat_end_confirm_yes' | 'chat_end_confirm_no'
+  | 'chat_summary_heading' | 'chat_summary_copy' | 'chat_summary_copied'
+  | 'chat_session_ended_title' | 'chat_session_ended_body'
+  | 'chat_guardrail_warning' | 'chat_session_ended_guardrails'
+  | 'chat_attach_button' | 'chat_attach_dragdrop' | 'chat_attach_uploading'
+  | 'chat_attach_ready' | 'chat_attach_failed' | 'chat_attach_remove'
 
 type Translations = Partial<Record<TranslationKeys, string>>
 
@@ -103,6 +111,29 @@ const EN: Translations = {
 
   placeholder_title: 'Survey submitted',
   placeholder_body: 'Chat interface arrives in Sprint 6. Your survey data is queued in the sidecar and visible in the logs.',
+
+  chat_placeholder: 'Ask about CBA clauses, benchmarks, or comparisons…',
+  chat_send: 'Send',
+  chat_thinking: 'Thinking…',
+  chat_error: 'Something went wrong. Try again.',
+  chat_end_session: 'End session',
+  chat_end_confirm_title: 'End this session?',
+  chat_end_confirm_body: 'I\'ll generate a summary of everything we covered. You can copy it before you close the tab. Once ended, the chat is read-only.',
+  chat_end_confirm_yes: 'Yes, end and summarise',
+  chat_end_confirm_no: 'Keep chatting',
+  chat_summary_heading: 'Session summary',
+  chat_summary_copy: 'Copy summary',
+  chat_summary_copied: 'Copied',
+  chat_session_ended_title: 'Session ended',
+  chat_session_ended_body: 'The summary above is the record of this session. You can copy it; re-loading this page starts a new session.',
+  chat_guardrail_warning: 'Some recent messages were flagged by the usage policy. CBC stays available for CBA research; please avoid legal-advice requests or content that targets groups.',
+  chat_session_ended_guardrails: 'This session has been ended due to repeated policy violations. Please start a new session for CBA research.',
+  chat_attach_button: 'Attach file',
+  chat_attach_dragdrop: 'Drop files here to attach',
+  chat_attach_uploading: 'Uploading',
+  chat_attach_ready: 'Ready',
+  chat_attach_failed: 'Failed',
+  chat_attach_remove: 'Remove',
 }
 
 // Sprint 2: non-EN languages silently fall back to EN.

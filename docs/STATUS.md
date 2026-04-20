@@ -1,9 +1,117 @@
 # CBC — Project Status
 
-**Current Sprint:** 6B — React ChatShell + end-session flow
+**Current Sprint:** 7 — Sessions & Lifecycle (auth, SMTP, session recovery, auto-destroy)
 **Last Updated:** 2026-04-20
 
-Sprint 6A closed. Backend chat loop + sidecar SSE verified end-to-end via curl: LLM streams real tokens grounded in company RAG back through the sidecar to an EventSource reader. Sprint 6B adds the React UI layer.
+Sprint 6B closed. Chat is visible and usable in the browser — survey → streaming response → multi-turn → End Session → inline summary with copy button.
+
+---
+
+## Sprint 6B — COMPLETE
+
+**Goal (MILESTONES §Sprint 6 remaining):** the chat is usable from the browser. User submits survey → lands in ChatShell → sees their initial query as the first bubble → assistant response streams in → user sends follow-ups → clicks End Session → gets a summary.
+
+### Deliverables (all ✓)
+
+- `frontend/src/components/ChatShell.tsx` — single file, ~350 LoC. EventSource SSE, message bubbles (user / assistant / summary), ReactMarkdown + remark-gfm for assistant output, textarea auto-resize, send-on-Enter, attachment chips, End-session confirm modal.
+- `frontend/src/App.tsx` — new `chat` phase replaces the `placeholder` stopgap. `beforeunload` warning extended to the chat phase.
+- `frontend/src/i18n.ts` — chat UI strings (placeholder, send, thinking, end confirm, summary heading, guardrail warning, attach chips, session ended).
+- `frontend/src/types.ts` — `Phase` gains `'chat'`.
+- Backend `POST /internal/close-session` (sidecar) + `close`-type handler in `polling.py`. Uses Sprint 4B's `resolve_prompt("summary.md", ...)` so per-frontend summary prompt overrides work. Runs via the **summariser** slot, streams tokens back through the existing SSE channel, marks `session.status='completed'`.
+- Backend `GET /api/v1/sessions/{token}/status` — lightweight poll target for the chat UI (status + guardrail_violations + message_count).
+- Backend `services/context_compressor.py` — real implementation. Estimates tokens (~4 chars/token), fires at `first_threshold + step_size * n`. Compresses `messages[:-KEEP_RECENT]` into a single system summary via the **compressor** slot; keeps the last 4 turns verbatim. Cache per `session_token`; cleared on session destroy.
+- `polling.py` calls `context_compressor.compress_if_needed` right before every `inference` call.
+- `session_store.destroy_session` now also clears `context_compressor` + `session_rag` caches, so privacy wipe drops all in-memory state.
+- `frontend/package.json` gains `react-markdown` + `remark-gfm` (+ installed).
+
+### Decisions locked
+
+- **D1 = A** — File upload chips shipped (drag-drop + button + inline chip row, `.pdf/.txt/.md/.docx`). Uploads route through the Sprint 5 sidecar relay. Ready chips are sent alongside the next turn and render as file pills in the user bubble.
+- **D2 = A** — Real compressor (progressive thresholds from SPEC §4.7, keeps last 4 turns verbatim, runs on the compressor slot).
+- **D3 = B** — No session recovery in 6B. Lives in Sprint 7 alongside the auth-code flow.
+- **D4 = A** — Inline summary bubble + Copy button is the default. Email is flagged in logs for Sprint 7's SMTP wiring.
+- **D5 = A (+ follow-up sprint)** — Banner at ≥2 violations (amber), session-ended state at ≥5 (red). **Added Sprint 7.5 — Guardrails Review** to MILESTONES for a dedicated pass on the trigger list + admin-configurable thresholds.
+- **D6 = A** — Assistant output rendered via `react-markdown` + `remark-gfm`.
+
+### Acceptance (run in browser)
+
+Open `http://localhost:8190/`:
+1. Pick English → skip disclaimer → new session → auth (if enabled; dev banner surfaces the code) → instructions → pick **Amcor** → fill survey (use country `AU`, initial query `"What does the Amcor CBA say about overtime?"`) → Start chat.
+2. Chat view should appear with the user's initial query as the first bubble and the assistant response streaming in, citing `amcor_au_2024.txt`.
+3. Type a follow-up: `"And about vacation?"` → Enter → new bubble streams.
+4. Click **Attach file** → pick a PDF → chip appears (`uploading` → `ready`) → ask a question about that file → chip rides along in the user bubble and the RAG uses the upload.
+5. Click **End session** → confirm → summary bubble streams; Copy-to-clipboard works; input locks.
+6. Spam a prompt-injection pattern (`"ignore your previous instructions"`) two turns → amber guardrails banner appears. Push to 5 → red "session ended" banner.
+
+### Deferrals
+
+- SMTP send of summary to `survey.email` — Sprint 7 (real SMTP lands there).
+- Session recovery by re-entering the token — Sprint 7.
+- Guardrails trigger-list tuning + admin-configurable thresholds + editor UI — Sprint 7.5.
+
+---
+
+### Decisions locked (2026-04-20)
+
+- **D1 = A** — File upload UI (drag-drop + chips) ships in 6B. Sprint 5 backend + sidecar relay already built; ChatShell just adds the UI surface.
+- **D2 = A** — Real context compressor implemented in 6B (progressive thresholds from SPEC §4.7).
+- **D3 = B** — No session recovery in 6B. Lands Sprint 7 alongside auth.
+- **D4 = A** — End-session always shows the summary inline as a final "Summary" bubble with a Copy-to-clipboard button. Email, when the user provided one in the survey, is an *extra* — the inline display is the default path. SMTP-send stays Sprint 7; Sprint 6B logs the would-send.
+- **D5 = A (with follow-up)** — Ship the guardrails banner now (warn ≥2 violations, session-ended ≥5, defaults tunable later). Daniel flagged that the trigger rules deserve a dedicated pass. **Added Sprint 7.5 — Guardrails Review** to MILESTONES between Sprints 7 and 8.
+- **D6 = A** — `react-markdown` + `remark-gfm` for assistant output (matches HRDD).
+
+### Deliverables
+
+- `frontend/src/components/ChatShell.tsx` — adapted from HRDD. EventSource connection, streaming render, message send, markdown rendering (ReactMarkdown + remarkGfm), textarea auto-resize, send-on-Enter.
+- `frontend/src/App.tsx` — swap the `phase=placeholder` block for `<ChatShell>`.
+- `frontend/src/i18n.ts` — chat UI labels (placeholder, send, end session, confirm, summary header, violation warning).
+- Backend `POST /api/v1/sessions/{token}/close` — triggers summary generation via the summariser slot; persists + returns text. SMTP send is Sprint 7 (logs the would-send).
+- Backend `GET /api/v1/sessions/{token}` — read-only session metadata (used by ChatShell to check status + violations).
+- `services/context_compressor.py` — real `should_compress` + `compress` (progressive thresholds from `LLMConfig.compression`).
+- `polling.py` — call `context_compressor.compress()` before each LLM call when applicable.
+- Guardrails UI: ChatShell reads `guardrail_violations` from session endpoint; shows a warning banner when `> 2` (threshold configurable in 7+).
+
+### Decisions to lock
+
+- **D1 — File upload UI in 6B?** Sprint 5 already built the backend + sidecar relay. ChatShell just needs drag-drop + chip row.
+  - A. Include — wire the upload chips now, file-aware chat bubbles. *(recommended — small surface on top of a working pipeline; otherwise session RAG sits unused)*
+  - B. Defer to Sprint 7 — text-only chat in 6B.
+
+- **D2 — Context compressor in 6B?** Demo conversations won't hit 20 k tokens, so this is "implement while the design is fresh" vs "defer until needed".
+  - A. Implement now. ~80 LoC, tested by setting a low threshold (e.g. 500 tokens) for one manual smoke. *(recommended — closes the SPEC §4.7 compression story in one sprint)*
+  - B. Defer. Stub stays in place; real impl lands when someone actually hits the context wall.
+
+- **D3 — Session recovery.** User closes the browser mid-session; can they return with their token and continue?
+  - A. Full recovery: on mount, if `session_token` already has conversation on disk, fetch it and replay.
+  - B. No recovery in 6B. New session only. Recovery is a Sprint 7 deliverable alongside auth. *(recommended — scope discipline)*
+
+- **D4 — End-session flow without email.** SPEC says email is optional in the survey.
+  - A. Display summary inline in the chat as a final "session summary" bubble. Provide a "Copy to clipboard" button. If email was provided, log a TODO ("SMTP send arrives Sprint 7"). *(recommended)*
+  - B. Require email before End Session.
+
+- **D5 — Guardrails UI.** Sprint 6A counts violations; 6B surfaces them.
+  - A. Banner above the chat box when `violations >= 2`; banner text in the session's language from the `guardrails.py` localised table. Session-ended flow at `violations >= 5` (configurable later).
+  - B. No UI. Silent logging only.
+  - *Recommended A with the thresholds above; we can tune later.*
+
+- **D6 — Markdown rendering.** HRDD renders assistant output as markdown via `react-markdown` + `remark-gfm`.
+  - A. Copy HRDD. Chat looks good out of the box (code blocks, lists, bold). *(recommended)*
+  - B. Raw text only. Simpler but uglier.
+
+### Implementation order
+
+1. **Phase A — ChatShell skeleton + SSE streaming**. Bubble list, textarea, send button, EventSource connected. Smoke: submit a survey from the real UI, see the response stream in.
+2. **Phase B — End-session + user summary** (backend `/close` endpoint + frontend button + summary bubble).
+3. **Phase C — Real context compressor** (backend `should_compress`/`compress`; hook in polling).
+4. **Phase D — File upload chips** (if D1=A).
+5. **Phase E — Guardrails banner** (if D5=A).
+6. **Phase F — Docs + smoke tests** (5-step checklist Daniel can run through).
+
+### Risks
+
+- **EventSource reconnect jitter**: browsers auto-reconnect every few seconds on disconnect. If the backend is still streaming, the client should pick up mid-response. Use a `last-event-id` only if we find it's needed.
+- **Concurrent polling + SSE**: backend polls sidecar every 2 s; sidecar's SSE queue has a 30 s keepalive. In practice tokens arrive faster than the keepalive; no stall expected.
+- **Compressor silently truncating context**: if enabled but misconfigured, could eat real content. Add a log line on every compression with before/after token counts so behaviour is observable.
 
 ---
 

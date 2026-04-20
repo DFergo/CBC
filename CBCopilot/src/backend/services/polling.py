@@ -29,7 +29,7 @@ from typing import Any
 
 import httpx
 
-from src.services import guardrails, llm_provider, prompt_assembler
+from src.services import context_compressor, guardrails, llm_provider, prompt_assembler, resolvers
 from src.services.frontend_registry import registry
 from src.services.session_store import store as session_store
 
@@ -79,6 +79,7 @@ async def _process_turn(
     session_token: str,
     user_content: str,
     language: str,
+    attachments: list[str] | None = None,
 ) -> None:
     """Run one user turn end-to-end: guardrails → prompt assembly → stream."""
     session = session_store.get_session(session_token)
@@ -96,16 +97,20 @@ async def _process_turn(
         logger.info(f"[{session_token}] Guardrail triggered ({guard.category}); total={violations}")
 
     # Persist user turn before we start streaming — if the LLM fails mid-stream
-    # the user's message is still in the conversation log.
-    session_store.add_message(session_token, "user", user_content)
+    # the user's message is still in the conversation log. Attachments are
+    # stored as a structured field so the UI can re-render chips on reload and
+    # `get_llm_messages` can decorate the content signal for the LLM.
+    session_store.add_message(session_token, "user", user_content, attachments=attachments)
 
-    # Assemble + store system prompt for this turn
+    # Assemble + store system prompt for this turn. Fresh attachments are
+    # force-injected into the RAG context so the model can't ignore them.
     assembled = prompt_assembler.assemble(
         survey=survey,
         frontend_id=frontend_id,
         language=language,
         query_text=user_content,
         session_token=session_token,
+        fresh_attachments=attachments,
     )
     session_store.init_session(
         token=session_token,
@@ -123,6 +128,10 @@ async def _process_turn(
 
     # Stream LLM response → relay each token to the sidecar
     messages = session_store.get_llm_messages(session_token)
+    # Context compression: swap in a shortened message list when we've passed
+    # the progressive thresholds. Returns `messages` unchanged when disabled
+    # or below threshold.
+    messages = await context_compressor.compress_if_needed(session_token, messages, frontend_id)
     accumulated: list[str] = []
     try:
         async for token_text in llm_provider.stream_chat(messages, slot="inference", frontend_id=frontend_id):
@@ -174,15 +183,91 @@ async def _process_message(client: httpx.AsyncClient, fe: dict[str, Any], msg: d
     if kind == "chat":
         content = (msg.get("content") or "").strip()
         language = msg.get("language", "en")
+        attachments = list(msg.get("attachments") or [])
+        # File-only turn (user attached files with empty text): seed a minimal
+        # prompt so the history has a readable pivot and the LLM knows the
+        # user's intent is to have the assistant examine the files.
+        if not content and attachments:
+            content = f"Please examine the files I just attached: {', '.join(attachments)}."
         if not content:
             return
         await _process_turn(
             client, url, frontend_id, frontend_name,
             session_token, content, language,
+            attachments=attachments or None,
         )
         return
 
+    if kind == "close":
+        language = msg.get("language", "en")
+        await _process_close(client, url, frontend_id, session_token, language)
+        return
+
     logger.warning(f"Unknown queue message type {kind!r}: {msg}")
+
+
+async def _process_close(
+    client: httpx.AsyncClient,
+    url: str,
+    frontend_id: str,
+    session_token: str,
+    language: str,
+) -> None:
+    """Generate the end-session user summary via the summariser slot, stream
+    it back, then mark the session `completed`. SMTP send is Sprint 7 — for
+    now the summary is only surfaced to the user inline in the chat.
+    """
+    session = session_store.get_session(session_token)
+    if not session:
+        await _push_chunk(client, url, session_token, "error", "Session not found")
+        return
+    history = session.get("messages") or []
+    if not history:
+        await _push_chunk(client, url, session_token, "error", "Nothing to summarise")
+        return
+
+    # Build a lightweight message list: summariser system prompt + the
+    # conversation transcript formatted as context. Reads `summary.md` via the
+    # Sprint 4B resolver so per-frontend / per-company overrides work.
+    summary_prompt = resolvers.resolve_prompt(
+        "summary.md", frontend_id, session.get("survey", {}).get("company_slug"),
+    )
+    system = (summary_prompt.content or "Produce a structured summary of the conversation.").strip()
+    transcript_lines: list[str] = []
+    for m in history:
+        role = m.get("role", "user")
+        who = "User" if role == "user" else "Assistant"
+        transcript_lines.append(f"### {who}\n{m.get('content', '')}")
+    transcript = "\n\n".join(transcript_lines)
+
+    prompt_messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Conversation transcript (language: {language}):\n\n{transcript}"},
+    ]
+
+    accumulated: list[str] = []
+    try:
+        async for token_text in llm_provider.stream_chat(
+            prompt_messages, slot="summariser", frontend_id=frontend_id,
+        ):
+            accumulated.append(token_text)
+            await _push_chunk(client, url, session_token, "token", token_text)
+    except Exception as e:
+        logger.exception(f"[{session_token}] Summary generation failed: {e}")
+        await _push_chunk(client, url, session_token, "error", f"Summary error: {e}")
+        return
+
+    summary_text = "".join(accumulated).strip()
+    if summary_text:
+        session_store.add_message(session_token, "assistant_summary", summary_text)
+    session_store.set_status(session_token, "completed")
+    logger.info(
+        f"[{session_token}] session closed; summary {len(summary_text)} chars "
+        f"(email={session.get('survey', {}).get('email') or '(none)'} — SMTP send lands Sprint 7)"
+    )
+    # Tell the client the session has ended so the UI can lock the input.
+    # `data` carries the completion reason ("summary" or "error") for future use.
+    await _push_chunk(client, url, session_token, "done", "summary")
 
 
 async def _tick(client: httpx.AsyncClient) -> None:
