@@ -53,13 +53,18 @@ export default function CompanySelectPage({ lang, config, onSelect, onBack }: Pr
               <button
                 key={c.slug}
                 onClick={() => onSelect(c)}
-                className={`w-full rounded-lg px-6 py-4 text-left font-medium transition-colors border ${
+                className={`w-full rounded-lg px-6 py-4 text-left font-medium transition-all border-2 bg-uni-blue text-white hover:opacity-90 ${
                   c.is_compare_all
-                    ? 'bg-uni-blue text-white border-uni-blue hover:opacity-90'
-                    : 'bg-white text-gray-800 border-gray-300 hover:border-uni-blue hover:bg-blue-50'
+                    ? 'border-white/40 ring-2 ring-uni-blue/30 shadow-md'
+                    : 'border-uni-blue hover:shadow-md'
                 }`}
               >
                 <span className="text-base">{c.display_name}</span>
+                {c.is_compare_all && (
+                  <span className="block text-xs text-white/80 font-normal mt-1">
+                    {t('company_select_subtitle', lang)}
+                  </span>
+                )}
               </button>
             ))}
           </div>

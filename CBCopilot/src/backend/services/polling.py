@@ -101,14 +101,40 @@ async def _drain_queue(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
         return {}
 
 
+def _ensure_compare_all_entry(companies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prepend a synthetic Compare All entry if the admin didn't create one
+    explicitly. The per-frontend `compare_all_enabled` setting is handled on
+    the React side, so we always ship the entry — the UI hides it when the
+    toggle is off.
+    """
+    if any(c.get("is_compare_all") for c in companies):
+        return companies
+    synthetic = {
+        "slug": "compare-all",
+        "display_name": "Compare All",
+        "enabled": True,
+        "is_compare_all": True,
+        "combine_frontend_rag": True,
+        "combine_global_rag": True,
+        "country_tags": [],
+        "metadata": {},
+    }
+    return [synthetic, *companies]
+
+
 async def _push_companies_if_needed(client: httpx.AsyncClient, url: str, fid: str) -> None:
     """Push the admin-edited per-frontend company list to the sidecar once
     (HRDD branding-push pattern). Sidecar caches to disk; CompanySelectPage
     reads via /internal/companies. Invalidated on admin CRUD.
+
+    We also make sure a Compare All entry exists at the top — if the admin
+    didn't create one, we ship a synthetic one so the UI can always show
+    the cross-company option when `compare_all_enabled` is on.
     """
     if fid in _companies_pushed:
         return
     companies = [c.model_dump() for c in company_registry.list_companies(fid)]
+    companies = _ensure_compare_all_entry(companies)
     try:
         r = await client.post(
             f"{url.rstrip('/')}/internal/companies",
