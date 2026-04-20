@@ -13,7 +13,10 @@ openpyxl>=3.1
 llama-index-core>=0.12,<0.15
 llama-index-readers-file>=0.4
 llama-index-embeddings-huggingface>=0.5
-llama-index-retrievers-bm25>=0.5
+# BM25 retriever for hybrid search (Sprint 9 overhaul). The pin is intentionally
+# loose because 0.5.x bumps the llama-index-core minimum and we're on 0.12–0.14;
+# 0.4 is the sweet spot. Brings in `rank_bm25` as a pure-Python dependency.
+llama-index-retrievers-bm25>=0.4,<0.5
 sentence-transformers>=2.2
 docx2txt>=0.8
 watchdog>=4.0

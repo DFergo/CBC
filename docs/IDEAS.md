@@ -6,6 +6,36 @@ Statuses: `captured` → `triaged` → `planned` (→ Sprint N) → `shipped` / 
 
 ---
 
+## ChromaDB as vector store (drop SimpleVectorStore when scale demands it)
+
+**Captured:** 2026-04-21 (Sprint 9)
+**Status:** captured
+**Candidate sprint:** TBD — trigger on one of (100+ empresas con docs / latencia de query > 50 ms / consumo de RAM por multi-scope noticeable)
+**Context:** Sprint 9 overhauled the RAG quality (BGE-M3 + rerank + optional Contextual Retrieval). Persistence + framework choice were reviewed in the same breath. LlamaIndex's default `SimpleVectorStore` persists fine on disk, but it's brute-force cosine search and each scope is a separate index file — that's fine for now, becomes a problem as CBC scales to 200+ CBAs across many frontends.
+
+**Idea:** Migrate the vector store layer to **ChromaDB embedded** (no server) via `llama-index-vector-stores-chroma`. Three concrete wins:
+
+1. HNSW indexing → sub-10 ms queries at 100k+ vectors instead of tens of ms with brute-force.
+2. Native metadata filtering — let `scope_key` become a filter on one big collection rather than N separate indexes. Simplifies `rag_service._indexes` bookkeeping and cuts RAM use when many scopes are warm.
+3. Drop-in replacement in LlamaIndex — swap `VectorStoreIndex(nodes)` for `VectorStoreIndex.from_vector_store(ChromaVectorStore(...))`. ~30 lines in `rag_service.py`.
+
+**Open questions:**
+- One collection with `scope_key` metadata, or one collection per frontend? Per-frontend gives natural multi-tenancy for when CBC runs N campaigns; single collection is simpler code.
+- Migration from current `SimpleVectorStore` persist dirs — one-shot script that reads each scope's existing index and re-ingests into Chroma.
+- Embedding re-compute not needed — we can read BGE-M3 vectors out of the old index and write them into Chroma directly.
+- Backup story: Chroma stores SQLite + Parquet under the hood. Already volume-backed, so nothing new, but worth documenting in INSTALL.md.
+- Qdrant (separate container, HNSW + better filtering + hybrid native) as the NEXT upgrade when CBC runs 500k+ vectors or multiple backend hosts.
+
+**Prerequisite work:**
+- Nothing — Sprint 9's BGE-M3 embeddings + hybrid retrieval already live comfortably in any vector store.
+- Decision gate is measurement, not code readiness. Watch query latency + RAM as corpus grows; migrate when `SimpleVectorStore` hurts.
+
+**Rejected alternatives (for context):**
+- SQLite-vec: minimalism is its only selling point; gains over `SimpleVectorStore` for CBC are marginal and LlamaIndex integration is less mature.
+- Qdrant today: overkill. Add the container dependency only when we genuinely outgrow Chroma embedded.
+
+---
+
 ## LLM provider options: Ollama, LM Studio, API
 
 **Captured:** 2026-04-18 (Sprint 3)

@@ -14,6 +14,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Minimal build toolchain for any pip dependency that compiles C/C++ extensions
+# (PyStemmer, some sentence-transformers transitive deps). Without this the
+# python:3.11-slim image can't build wheels that don't ship pre-built binaries,
+# and pip install fails with exit code 1. Removed from the final image size
+# via the pip --no-cache-dir; apt cache is also scrubbed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install PyTorch CPU-only first so sentence-transformers doesn't drag in
 # the ~5 GB CUDA/NVIDIA stack (HRDD pattern). Must come BEFORE requirements.txt.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
