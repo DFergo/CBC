@@ -171,12 +171,28 @@ async def push_session_settings(body: dict[str, Any]):
 # The sidecar prefers the pushed list (admin-edited, per-frontend). Falls back
 # to the image-shipped /app/config/companies.json only while the backend hasn't
 # pushed yet (first boot, or if the frontend isn't registered in the backend).
+#
+# Compare All is a frontend-level concept — it is NOT a registered company.
+# The sidecar prepends a synthetic button entry when listing so the UI can
+# render it; the backend is responsible for routing is_compare_all=True to
+# the compare_all.md prompt + combined RAG (see resolvers.py).
+
+_COMPARE_ALL_ENTRY = {
+    "slug": "compare-all",
+    "display_name": "Compare All",
+    "enabled": True,
+    "is_compare_all": True,
+}
+
 
 @app.post("/internal/companies")
 async def push_companies(body: dict[str, Any]):
     """Backend pushes this frontend's company list on every poll cycle (or
     after admin CRUD). Body: {"companies": [...]}. Cached to disk so the list
-    survives sidecar restarts even if the backend is briefly offline."""
+    survives sidecar restarts even if the backend is briefly offline.
+
+    The backend ships only real (admin-registered) companies — Compare All is
+    synthesised by the sidecar on read, not cached here."""
     companies = body.get("companies")
     if not isinstance(companies, list):
         raise HTTPException(400, "body.companies must be a list")
@@ -200,11 +216,14 @@ async def get_companies():
             items = []
     else:
         items = []
-    items.sort(key=lambda c: (
-        0 if c.get("is_compare_all") else 1,
-        (c.get("display_name") or c.get("slug") or "").lower(),
-    ))
-    return {"companies": items}
+    # Drop any stray is_compare_all entries the admin might have registered
+    # accidentally — Compare All lives outside the company registry.
+    items = [c for c in items if not c.get("is_compare_all")]
+    items.sort(key=lambda c: (c.get("display_name") or c.get("slug") or "").lower())
+    # Always prepend the synthetic Compare All button. The React
+    # CompanySelectPage hides it when the `compare_all_enabled` deployment
+    # flag is off.
+    return {"companies": [dict(_COMPARE_ALL_ENTRY), *items]}
 
 
 # --- Auth (Sprint 7: relay to backend for SMTP + Contacts allowlist) ---
