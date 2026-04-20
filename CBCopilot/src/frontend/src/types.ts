@@ -57,3 +57,18 @@ export interface SurveyData {
   initial_query: string
   uploaded_filename?: string
 }
+
+export interface RecoveryMessage {
+  role: 'user' | 'assistant' | 'assistant_summary' | string
+  content: string
+  attachments?: string[]
+}
+
+export interface RecoveryData {
+  token: string
+  status: 'active' | 'completed' | 'destroyed' | string
+  survey: SurveyData
+  language: LangCode
+  messages: RecoveryMessage[]
+  guardrail_violations: number
+}

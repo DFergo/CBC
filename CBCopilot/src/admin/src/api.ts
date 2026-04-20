@@ -665,3 +665,52 @@ export async function importContacts(file: File, scope: string): Promise<{ added
   }
   return res.json()
 }
+
+// --- Admin sessions (Sprint 7) ---
+
+export interface SessionSummary {
+  token: string
+  frontend_id: string
+  frontend_name: string
+  company_slug: string
+  company_display_name: string
+  is_compare_all: boolean
+  country: string
+  message_count: number
+  status: string
+  flagged: boolean
+  guardrail_violations: number
+  created_at: string | null
+  last_activity: string | null
+  completed_at: string | null
+}
+
+export interface SessionMessage {
+  role: string
+  content: string
+  timestamp: string | null
+  attachments: string[]
+}
+
+export interface SessionDetail extends SessionSummary {
+  survey: Record<string, unknown>
+  language: string
+  messages: SessionMessage[]
+  uploads: { name: string; size: number }[]
+}
+
+export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
+  return request('/admin/api/v1/sessions')
+}
+
+export async function getAdminSession(token: string): Promise<SessionDetail> {
+  return request(`/admin/api/v1/sessions/${encodeURIComponent(token)}`)
+}
+
+export async function toggleSessionFlag(token: string): Promise<{ token: string; flagged: boolean }> {
+  return request(`/admin/api/v1/sessions/${encodeURIComponent(token)}/flag`, { method: 'POST' })
+}
+
+export async function destroySession(token: string): Promise<{ token: string; removed: boolean }> {
+  return request(`/admin/api/v1/sessions/${encodeURIComponent(token)}`, { method: 'DELETE' })
+}

@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { t } from '../i18n'
-import type { BrandingConfig, LangCode, SurveyData } from '../types'
+import type { BrandingConfig, LangCode, RecoveryData, SurveyData } from '../types'
 
 const SUMMARY_MARKER = 'summary'
 const VIOLATION_WARN_AT = 2
@@ -44,23 +44,40 @@ interface Props {
   sessionToken: string
   survey: SurveyData
   branding?: BrandingConfig
+  recoveryData?: RecoveryData | null
 }
 
-export default function ChatShell({ lang, sessionToken, survey, branding: _branding }: Props) {
+function mapRecovery(rec: RecoveryData | null | undefined): ChatMessage[] {
+  if (!rec) return []
+  return rec.messages.map(m => ({
+    role: m.role === 'assistant_summary' ? 'summary' : (m.role === 'user' ? 'user' : 'assistant'),
+    content: m.content,
+    attachments: (m.attachments && m.attachments.length) ? m.attachments : undefined,
+  }))
+}
+
+export default function ChatShell({ lang, sessionToken, survey, branding: _branding, recoveryData }: Props) {
   const initialQuery = (survey.initial_query || '').trim()
+  const recoveredMessages = mapRecovery(recoveryData)
+  const isRecovering = recoveredMessages.length > 0
 
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    initialQuery ? [{ role: 'user', content: initialQuery }] : [],
+    isRecovering
+      ? recoveredMessages
+      : (initialQuery ? [{ role: 'user', content: initialQuery }] : []),
   )
   const [input, setInput] = useState('')
-  const [isStreaming, setIsStreaming] = useState<boolean>(!!initialQuery)
+  // A new session is still streaming when we mount (backend is generating the
+  // first response). A recovered session is NOT streaming — everything is on
+  // disk; we only open the SSE for future turns.
+  const [isStreaming, setIsStreaming] = useState<boolean>(!isRecovering && !!initialQuery)
   const [streamingText, setStreamingText] = useState('')
   const [isSummaryStream, setIsSummaryStream] = useState(false)
   const [error, setError] = useState('')
-  const [sessionEnded, setSessionEnded] = useState(false)
+  const [sessionEnded, setSessionEnded] = useState(recoveryData?.status === 'completed')
   const [showEndConfirm, setShowEndConfirm] = useState(false)
   const [summaryCopied, setSummaryCopied] = useState(false)
-  const [violations, setViolations] = useState(0)
+  const [violations, setViolations] = useState(recoveryData?.guardrail_violations ?? 0)
   const [attachments, setAttachments] = useState<AttachmentChip[]>([])
 
   const chatEndRef = useRef<HTMLDivElement>(null)

@@ -32,6 +32,13 @@ class BackendConfig(BaseModel):
     guardrail_max_triggers: int = 3
     file_max_size_mb: int = 25
     session_token_reuse_cooldown_days: int = 30
+    # Sprint 7 (D2=A): when True, the backend auth flow only issues codes to
+    # emails present in the Contacts directory (global + per-frontend). Set
+    # to False during bootstrap / demos to let any email receive a code.
+    auth_allowlist_enabled: bool = True
+    # How long an issued auth code stays valid before the user has to
+    # request a new one.
+    auth_code_ttl_seconds: int = 900  # 15 minutes
 
 
 def load_config() -> BackendConfig:

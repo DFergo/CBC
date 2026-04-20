@@ -29,7 +29,7 @@ from typing import Any
 
 import httpx
 
-from src.services import context_compressor, guardrails, llm_provider, prompt_assembler, resolvers
+from src.services import context_compressor, guardrails, llm_provider, prompt_assembler, resolvers, smtp_service
 from src.services.frontend_registry import registry
 from src.services.session_store import store as session_store
 
@@ -261,13 +261,41 @@ async def _process_close(
     if summary_text:
         session_store.add_message(session_token, "assistant_summary", summary_text)
     session_store.set_status(session_token, "completed")
-    logger.info(
-        f"[{session_token}] session closed; summary {len(summary_text)} chars "
-        f"(email={session.get('survey', {}).get('email') or '(none)'} — SMTP send lands Sprint 7)"
-    )
+
+    # Email the summary to the user if they provided an email AND SMTP is
+    # configured. Fire-and-forget so the SSE close event lands regardless.
+    user_email = (session.get("survey", {}).get("email") or "").strip()
+    if summary_text and user_email and smtp_service.is_configured():
+        asyncio.create_task(_email_summary(session_token, user_email, summary_text, language))
+    else:
+        logger.info(
+            f"[{session_token}] session closed; summary {len(summary_text)} chars; "
+            f"email_send=skipped (user_email={'set' if user_email else 'none'}, "
+            f"smtp={'configured' if smtp_service.is_configured() else 'offline'})"
+        )
+
     # Tell the client the session has ended so the UI can lock the input.
     # `data` carries the completion reason ("summary" or "error") for future use.
     await _push_chunk(client, url, session_token, "done", "summary")
+
+
+async def _email_summary(session_token: str, to_email: str, summary: str, language: str) -> None:
+    """Non-blocking delivery of the user summary. Runs after _process_close
+    pushes the `done` event so UI responsiveness doesn't depend on SMTP."""
+    subjects = {
+        "en": "Your Collective Bargaining Copilot session summary",
+        "es": "Resumen de tu sesión con Collective Bargaining Copilot",
+        "fr": "Résumé de votre session avec Collective Bargaining Copilot",
+        "de": "Zusammenfassung Ihrer Sitzung mit Collective Bargaining Copilot",
+        "pt": "Resumo da sua sessão com Collective Bargaining Copilot",
+    }
+    subject = subjects.get(language, subjects["en"])
+    body = f"{summary}\n\n—\nSession: {session_token}"
+    try:
+        await smtp_service.send_email(to_address=to_email, subject=subject, body=body)
+        logger.info(f"[{session_token}] summary emailed to {to_email}")
+    except Exception as e:
+        logger.warning(f"[{session_token}] summary email to {to_email} failed: {e}")
 
 
 async def _tick(client: httpx.AsyncClient) -> None:

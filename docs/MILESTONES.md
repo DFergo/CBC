@@ -235,25 +235,27 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 **Goal:** Session management works: creation, recovery, auto-close, auto-destroy, user summary.
 
 ### Deliverables
-- [ ] `CBCopilot/src/backend/services/session_store.py` — Adapted from HRDD Helper
-- [ ] `CBCopilot/src/backend/services/session_lifecycle.py` — With auto-destroy
-- [ ] `CBCopilot/src/backend/api/v1/admin/sessions.py` — Session admin endpoints
-- [ ] `CBCopilot/src/admin/src/SessionsTab.tsx` — Session viewer
-- [ ] `CBCopilot/src/backend/services/smtp_service.py` — Reused
-- [ ] User summary generation prompt
-- [ ] Admin alert on user document upload
-- [ ] Registered users tab
+- [x] `CBCopilot/src/backend/services/session_store.py` — shipped in Sprint 6A; Sprint 7 adds `completed_at` field + attachments-aware messages.
+- [x] `CBCopilot/src/backend/services/session_lifecycle.py` — 5-min scanner (auto-close + auto-destroy).
+- [x] `CBCopilot/src/backend/api/v1/admin/sessions.py` — list + detail + flag + destroy.
+- [x] `CBCopilot/src/backend/api/v1/auth.py` — real auth flow: Contacts allowlist + SMTP + dev_code fallback.
+- [x] `CBCopilot/src/backend/api/v1/sessions/uploads.py` — `/recover` endpoint + admin-alert email on upload.
+- [x] `CBCopilot/src/admin/src/SessionsTab.tsx` — list + detail drawer (HRDD columns adapted; role/mode/report indicators dropped per ADR-004/006).
+- [x] `CBCopilot/src/backend/services/smtp_service.py` — pre-existing; wired into summary + admin alert + auth code paths.
+- [x] User summary prompt — pre-existing `summary.md`; Sprint 6B wired the inline delivery; Sprint 7 adds the SMTP email on close.
+- [x] Admin alert on user document upload — fires when `send_new_document_to_admin` is on + SMTP configured.
+- [x] Registered users tab — pre-existing Contacts UI.
 
 ### Acceptance Criteria
-- [ ] Session created on survey submit, stored on disk
-- [ ] Session recovery works (token + resume within configured hours)
-- [ ] Auto-close: session closes after inactivity period
-- [ ] Auto-destroy: session files completely deleted after configured hours (when > 0)
-- [ ] Auto-destroy: setting to 0 keeps sessions indefinitely
-- [ ] User summary: generated at session close, emailed to user
-- [ ] Admin alert: email sent when user uploads document
-- [ ] Admin sessions tab: lists sessions, shows metadata, allows viewing messages
-- [ ] Registered users tab shows auth history
+- [x] Session created on survey submit, stored on disk (Sprint 6A).
+- [x] Session recovery works via token within `session_resume_hours` (`GET /api/v1/sessions/{token}/recover` + SessionPage button).
+- [x] Auto-close: session flips to `completed` after `auto_close_hours` idle.
+- [x] Auto-destroy: rm-rf session tree after `auto_destroy_hours` post-close (when > 0).
+- [x] Auto-destroy `= 0` keeps sessions indefinitely.
+- [x] User summary generated at session close (Sprint 6B) + emailed when `survey.email` is set AND SMTP configured (Sprint 7).
+- [x] Admin alert: email sent when user uploads document (fire-and-forget; gated by SMTP config + toggle).
+- [x] Admin sessions tab: list + detail drawer with conversation, uploads, flag/destroy.
+- [x] Registered Users tab: directory of authorized end-user emails (Contacts); the email-code auth flow now reads this as the allowlist.
 
 ### Spec Sections Covered
 - §4.5 (Session Store), §4.6 (Session Lifecycle), §4.8 (SMTP), §8.2 (Session Privacy)

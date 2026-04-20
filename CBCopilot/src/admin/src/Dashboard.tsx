@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import GeneralTab from './GeneralTab'
 import FrontendsTab from './FrontendsTab'
+import SessionsTab from './SessionsTab'
 import RegisteredUsersTab from './RegisteredUsersTab'
 
-type Tab = 'general' | 'frontends' | 'users'
+type Tab = 'general' | 'frontends' | 'sessions' | 'users'
 
 interface Props {
   onLogout: () => void
@@ -35,6 +36,9 @@ export default function Dashboard({ onLogout }: Props) {
           <TabButton active={tab === 'frontends'} onClick={() => setTab('frontends')}>
             Frontends
           </TabButton>
+          <TabButton active={tab === 'sessions'} onClick={() => setTab('sessions')}>
+            Sessions
+          </TabButton>
           <TabButton active={tab === 'users'} onClick={() => setTab('users')}>
             Registered Users
           </TabButton>
@@ -44,6 +48,7 @@ export default function Dashboard({ onLogout }: Props) {
       <main className="p-6">
         {tab === 'general' && <GeneralTab />}
         {tab === 'frontends' && <FrontendsTab />}
+        {tab === 'sessions' && <SessionsTab />}
         {tab === 'users' && <RegisteredUsersTab />}
       </main>
     </div>

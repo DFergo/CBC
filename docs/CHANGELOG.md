@@ -1,5 +1,16 @@
 # CBC — Changelog
 
+## Sprint 7 — Sessions & Lifecycle (2026-04-20)
+
+- **Session lifecycle scanner** (`services/session_lifecycle.py`): 5-min background loop. Auto-closes sessions idle past `auto_close_hours`; rm -rf session trees that have been `completed` for longer than `auto_destroy_hours` (`=0` means never). `session_store.set_status("completed")` stamps `completed_at` to drive the destroy timer. Wired into `main.py` lifespan alongside polling + rag_watcher.
+- **Real auth flow** (`api/v1/auth.py`): `POST /api/v1/auth/request-code` + `verify-code`. Contacts allowlist check (SPEC §4.11) when `auth_allowlist_enabled=true` (default, togglable in `deployment_backend.json` for bootstrap). SMTP send via `smtp_service.send_email` when configured; `dev_code` returned inline when SMTP offline so AuthPage bootstrap stays smooth (D7=A). 15-min TTL, one-shot codes, in-memory store. Sidecar `/internal/auth/*` rewritten as thin relays — the HRDD dev-stub generator is gone.
+- **Session recovery** (`GET /api/v1/sessions/{token}/recover` + sidecar proxy + SessionPage button): replays the persisted conversation into the chat view (D1=B — no in-flight stream re-attach). Honours `session_resume_hours`; HTTP 410 past the window. SessionPage grows a "Resume existing session" path with token input + error handling (not-found / expired / network). ChatShell accepts `recoveryData`, skips the initial-query bubble when replaying, seeds violation count + session-ended state.
+- **SMTP summary on close** (`polling._process_close`): after the inline summary streams, schedules a non-blocking `send_email` to `survey.email` when provided AND SMTP is configured. UI close-flow is unchanged if either precondition is missing.
+- **SMTP admin alert on upload** (`api/v1/sessions/uploads.py`): fire-and-forget notification to `smtp_service.resolve_admin_emails(frontend_id)` when the user drops a file in chat. Gated by the `send_new_document_to_admin` toggle + SMTP configured.
+- **Admin Sessions tab** (`admin/src/SessionsTab.tsx`): list with filter tabs (all / active / completed / flagged), 10-s auto-refresh, columns distilled from HRDD — Token, Frontend, Company, Country, Status, Msgs, Violations, Last activity, Flag, Destroy (dropped role/mode/report indicators per ADR-004/006). Detail drawer shows survey + conversation (markdown-rendered via react-markdown + remark-gfm) + uploads list + flag/destroy actions. Backend: `api/v1/admin/sessions.py` list/detail/flag/destroy.
+- **Dashboard**: Sessions tab added between Frontends and Registered Users (4 tabs total).
+- Deps: `email-validator>=2.0` in backend (for `pydantic.EmailStr`); `react-markdown` + `remark-gfm` in admin (for the detail drawer conversation view).
+
 ## Attachment-aware turns — force-include newly uploaded files (2026-04-20)
 
 - **Bug fix** reported during Sprint 6B smoke: attaching a file + sending a vague text ("what do you think?") made the assistant respond as if no file was there, because semantic retrieval on the vague text didn't pull the file's chunks.

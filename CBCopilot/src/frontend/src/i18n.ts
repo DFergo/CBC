@@ -19,6 +19,8 @@ type TranslationKeys =
   | 'disclaimer_legal_heading' | 'disclaimer_legal_body'
   | 'disclaimer_accept'
   | 'session_title' | 'session_new' | 'session_token_label' | 'session_token_save' | 'session_continue'
+  | 'session_resume' | 'session_resume_title' | 'session_resume_label' | 'session_resume_button'
+  | 'session_resume_cancel' | 'session_resume_not_found' | 'session_resume_expired' | 'session_resume_error'
   | 'auth_title' | 'auth_email_label' | 'auth_send_code'
   | 'auth_code_label' | 'auth_code_sent_to' | 'auth_placeholder'
   | 'auth_verify' | 'auth_invalid_code' | 'auth_max_retries' | 'auth_contact_admin'
@@ -68,6 +70,15 @@ const EN: Translations = {
   session_token_label: 'Your session token',
   session_token_save: 'Save this token if you want to resume this session later.',
   session_continue: 'Continue',
+
+  session_resume: 'Resume existing session',
+  session_resume_title: 'Resume session',
+  session_resume_label: 'Paste your session token',
+  session_resume_button: 'Resume',
+  session_resume_cancel: 'Cancel',
+  session_resume_not_found: 'No session found with that token.',
+  session_resume_expired: 'This session is past the resume window. Please start a new session.',
+  session_resume_error: 'Could not reach the backend. Try again in a moment.',
 
   auth_title: 'Verify your email',
   auth_email_label: 'Email address',

@@ -175,9 +175,7 @@ async def get_companies():
         return {"companies": []}
 
 
-# --- Auth (Sprint 2 stub — real SMTP via backend arrives Sprint 7) ---
-
-_auth_codes: dict[str, str] = {}
+# --- Auth (Sprint 7: relay to backend for SMTP + Contacts allowlist) ---
 
 
 class AuthRequestCode(BaseModel):
@@ -190,21 +188,43 @@ class AuthVerifyCode(BaseModel):
     code: str
 
 
+async def _backend_call(method: str, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
+    url = f"{os.environ.get('CBC_BACKEND_URL', 'http://cbc-backend:8000').rstrip('/')}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.request(method, url, json=json_body)
+    except httpx.HTTPError as e:
+        logger.warning(f"Backend call to {url} failed: {e}")
+        raise HTTPException(502, f"Backend unreachable: {e}")
+    if r.status_code == 403:
+        raise HTTPException(403, r.json().get("detail", "Not authorized"))
+    if r.status_code // 100 != 2:
+        raise HTTPException(r.status_code, r.text[:300])
+    return r.json()
+
+
 @app.post("/internal/auth/request-code")
 async def request_auth_code(req: AuthRequestCode):
-    code = f"{random.randint(0, 999999):06d}"
-    _auth_codes[req.session_token] = code
-    logger.info(f"[DEV STUB] Auth code for {req.email} ({req.session_token}): {code}")
-    return {"status": "code_sent", "dev_code": code}
+    """Relay to backend. Backend handles SMTP + Contacts allowlist. Sprint 7."""
+    body = {
+        "session_token": req.session_token,
+        "email": req.email,
+        "language": "en",  # sidecar doesn't know the user's language yet
+        "frontend_id": _base_config.get("frontend_id", ""),
+    }
+    data = await _backend_call("POST", "/api/v1/auth/request-code", body)
+    logger.info(
+        f"Auth code requested via backend: email={req.email} session={req.session_token} "
+        + ("(SMTP)" if "dev_code" not in data else "(dev fallback)")
+    )
+    return data
 
 
 @app.post("/internal/auth/verify-code")
 async def verify_auth_code(req: AuthVerifyCode):
-    expected = _auth_codes.get(req.session_token)
-    if expected and req.code == expected:
-        _auth_codes.pop(req.session_token, None)
-        return {"status": "verified"}
-    return {"status": "invalid_code"}
+    """Relay to backend. Sprint 7."""
+    body = {"session_token": req.session_token, "code": req.code}
+    return await _backend_call("POST", "/api/v1/auth/verify-code", body)
 
 
 # --- Survey queue (Sprint 2) ---
@@ -374,6 +394,22 @@ from fastapi import File, HTTPException, UploadFile  # noqa: E402
 
 _BACKEND_URL = os.environ.get("CBC_BACKEND_URL", "http://cbc-backend:8000")
 _UPLOAD_TIMEOUT = 30.0
+
+
+@app.get("/internal/session/{session_token}/recover")
+async def recover_session(session_token: str):
+    """Proxy for the backend's recovery endpoint. The React SessionPage calls
+    this when the user pastes a session token and clicks Resume."""
+    url = f"{_BACKEND_URL}/api/v1/sessions/{session_token}/recover"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(url)
+    except httpx.HTTPError as e:
+        logger.warning(f"Recovery relay to {url} failed: {e}")
+        raise HTTPException(502, f"Backend unreachable: {e}")
+    if r.status_code // 100 != 2:
+        raise HTTPException(r.status_code, r.text[:300])
+    return r.json()
 
 
 @app.post("/internal/upload")

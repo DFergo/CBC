@@ -1,9 +1,132 @@
 # CBC — Project Status
 
-**Current Sprint:** 7 — Sessions & Lifecycle (auth, SMTP, session recovery, auto-destroy)
+**Current Sprint:** 7.5 — Guardrails Review
 **Last Updated:** 2026-04-20
 
-Sprint 6B closed. Chat is visible and usable in the browser — survey → streaming response → multi-turn → End Session → inline summary with copy button.
+Sprint 7 closed. Sessions persist, recover, auto-close + auto-destroy on a 5-min scanner; auth is backed by Contacts allowlist + SMTP (dev_code fallback when SMTP offline); admin has a Sessions tab with detail drawer. Next: the dedicated guardrails-trigger-list review Daniel flagged during 6B.
+
+---
+
+## Sprint 7 — COMPLETE
+
+### Deliverables (all ✓)
+- `services/session_lifecycle.py` — background scanner (5 min interval): auto-close idle sessions after `auto_close_hours`, rm -rf session trees after `auto_destroy_hours` post-close. `auto_destroy_hours=0` means never. Wired into `main.py` lifespan.
+- `services/session_store.py` — new `completed_at` field persisted on status flip. `set_status("completed")` stamps it automatically; drives the auto-destroy timer.
+- `api/v1/auth.py` — real `POST /api/v1/auth/request-code` + `verify-code`. Contacts allowlist check when `auth_allowlist_enabled` (default True). SMTP send when configured; `dev_code` returned inline when offline (D7=A). 15-minute TTL, one-shot codes.
+- Sidecar `/internal/auth/*` rewritten as thin relays to the backend (dev-stub gone).
+- `api/v1/sessions/uploads.py` — new `GET /{token}/recover` (honours `session_resume_hours`, HTTP 410 past window). Upload handler now fires `_maybe_alert_admins` (non-blocking SMTP to `resolve_admin_emails(frontend_id)`).
+- `polling._process_close` — after inline summary delivery, schedules `_email_summary` when `survey.email` is set AND SMTP configured. Non-blocking; UI close flow untouched.
+- `api/v1/admin/sessions.py` — list (sorted by last_activity desc) + detail (survey + messages + uploads) + flag toggle + destroy.
+- `admin/src/SessionsTab.tsx` — list + detail drawer. Columns: Token, Frontend, Company, Country, Status, Msgs, Violations, Last activity, Flag, Destroy. Filter tabs (all/active/completed/flagged). 10-s auto-refresh. HRDD role/mode/report columns dropped (ADR-004/006).
+- `admin/src/Dashboard.tsx` — Sessions tab added between Frontends and Registered Users.
+- `frontend/src/components/SessionPage.tsx` — "Resume existing session" flow with token input, error handling (404 / 410 / network).
+- `frontend/src/components/ChatShell.tsx` — accepts `recoveryData`; on mount, replays persisted messages instead of seeding the initial-query bubble; seeds `violations` + `sessionEnded` from recovery metadata.
+- `frontend/src/App.tsx` — `handleResumeSession` bypasses survey and lands directly in chat with language + frontend_id + survey populated from the recovery payload.
+- `frontend/src/types.ts` — `RecoveryData`/`RecoveryMessage` types.
+- `backend/requirements.txt` — added `email-validator>=2.0` (pydantic `EmailStr`).
+- `admin/package.json` — added `react-markdown` + `remark-gfm` for the detail-drawer conversation viewer.
+
+### Acceptance tested end-to-end
+- **D1 (recovery)**: curl survey → 12 s wait → `GET /internal/session/{token}/recover` returns `status=active, messages=[user/hi], session_resume_hours=48`.
+- **D2 (allowlist)**: `POST /internal/auth/request-code` with `nobody@test.com` (not in Contacts) → HTTP 403 `"This email is not authorized for this deployment."`. Turning `auth_allowlist_enabled: false` in `deployment_backend.json` bypasses the check for bootstrap.
+- **D3 (auto-destroy)**: `set_status("completed")` stamps `completed_at`; scanner reads it on next tick. Verified via Python REPL — `auto_destroy_hours=0` skips the destroy path.
+- **D7 (SMTP fallback)**: with no SMTP configured, backend returns `dev_code` in the response body; AuthPage shows the amber banner as before.
+- **Lifespan**: `Session lifecycle scanner started (interval 300s)` logged on boot; `rag_watcher` + `polling` + `lifecycle` run concurrently.
+
+### Known caveats
+- Out-of-the-box: `auth_allowlist_enabled=true` + empty Contacts → *no one* can auth. For bootstrap, either add contacts in Registered Users or flip `auth_allowlist_enabled=false` in `deployment_backend.json`. A "SMTP / Contacts bootstrap" banner on the admin dashboard is a nice-to-have for Sprint 8.
+- Admin SMTP-offline alert: nothing surfaces the fact that upload alerts are silently skipped. Log line is there; no UI. Sprint 8 polish.
+- ChatShell recovery reopens the SSE unconditionally. If the session is `completed`, no tokens will ever arrive — harmless but keeps a connection warm. Could skip the `openStream` call when `recoveryData.status === 'completed'`; small polish.
+
+### Decisions locked (2026-04-20)
+
+- **D1 = B** — Session recovery replays the persisted conversation and opens a fresh SSE. No re-attachment to in-flight streams. Covers "closed tab, coming back" — the real use case.
+- **D2 = A** — Contacts is the authoritative allowlist. `auth_allowlist_enabled=true` by default, togglable in `deployment_backend.json` for bootstrap. Per-frontend auth-on/off toggle (from Sprint 4A `session_settings`) already exists — that disables auth entirely for a frontend; D2 is about which emails pass *when* auth is on.
+- **D3 = A** — Auto-destroy fires N hours after the session reaches `completed`. Active sessions never self-destruct.
+- **D4 = A** — All three SMTP send paths: auth code, user summary at close, admin alert on chat upload.
+- **D5 = A** — SessionPage gains a "Resume existing session" textbox-and-button path next to the existing "Start new session" button (HRDD pattern).
+- **D6 = A (reuse HRDD fields where they fit)** — Admin SessionsTab: list + detail drawer. Column set to be derived from HRDD's SessionsTab, filtered to what applies to CBC's domain (drop HRDD-specific roles/modes; keep token, company, country, messages, status, last_activity, violations, flagged, actions).
+- **D7 = A** — Graceful SMTP-offline fallback. When `smtp_service.is_configured()` is False, the backend still returns `dev_code` in the auth response so bootstrap demos keep working. Once SMTP is configured, the field is omitted and email is sent.
+
+## Sprint 7 — PLANNING
+
+**Goal (MILESTONES §Sprint 7):** Session management works end-to-end. Real SMTP replaces the dev-banner stubs for auth and summary delivery. Background scanners auto-close and auto-destroy per the per-frontend session settings. Admins have a sessions tab to inspect what's running.
+
+### Already-present pieces (trust inventory)
+- `services/session_store.py` (Sprint 6A — disk-backed + cache + destroy rmtree)
+- `services/smtp_service.py` (Sprint 3 — config + send_email + frontend override)
+- `services/contacts_store.py` (SPEC §4.11 follow-up — authorized users directory)
+- Admin `RegisteredUsersTab.tsx` (Contacts UI)
+- Session RAG (Sprint 5) + session_rag.destroy_session hook already used by `session_store.destroy_session`
+
+### Deliverables
+
+**Backend new**
+- `services/session_lifecycle.py` — background task loop (every 5 min): mark idle sessions `completed` after `auto_close_hours`; rm -rf sessions past `auto_destroy_hours` after close.
+- `api/v1/sessions/recovery.py` — `GET /api/v1/sessions/{token}` (conversation + survey + status) used by the frontend on token reconnect. Honours `session_resume_hours`.
+- `api/v1/admin/sessions.py` — list + detail + flag + destroy, admin-auth-gated.
+
+**Backend changes**
+- `polling.py _process_close`: after generating the inline summary, if `survey.email` is set AND SMTP configured, send the summary via `smtp_service.send_email` (non-blocking; failures logged, don't break the flow).
+- `api/v1/sessions/uploads.py upload_to_session`: fire-and-forget admin alert via SMTP when a user uploads during chat (if `send_new_document_to_admin` toggle is on).
+- Sidecar `/internal/auth/request-code` + `/internal/auth/verify-code`: swap the dev-stub generator for a backend-mediated path. The sidecar relays the email to a new `POST /api/v1/auth/request-code` on the backend which (a) checks Contacts allowlist, (b) generates a 6-digit code, (c) sends via SMTP. Verify is unchanged in pattern, just moves to the backend.
+- Add `auth_allowlist_enabled: bool = true` to `deployment_backend.json` so the admin can turn off Contacts enforcement during bootstrap.
+
+**Admin UI**
+- `admin/src/SessionsTab.tsx` — list (token / company / status / message count / last activity / violations / flagged) with a detail drawer showing the full conversation.jsonl + survey + RAG paths. Destroy + flag buttons.
+- `Dashboard.tsx` — add the Sessions tab (4 tabs total: General / Frontends / Sessions / Registered Users).
+
+**Frontend**
+- `SessionPage.tsx` — add a "Resume existing session" path: textbox for token + button. On submit, `GET /api/v1/sessions/{token}` via the sidecar. If within resume window, skip ahead directly to chat; if not, show an error.
+- `ChatShell.tsx` — accept optional `recoveryData` prop so an existing conversation can be replayed into the bubble list on mount.
+- `AuthPage.tsx` — keep the dev banner visible only when SMTP is not configured (the backend-mediated path returns `dev_code` in that case so the UX doesn't break during setup).
+
+### Decisions to lock
+
+- **D1 — Session recovery scope.**
+  - A. Full: token → replay conversation + reopen SSE; resume in-flight streams if backend is still generating.
+  - B. **Partial** (recommended): replay the persisted conversation, reopen SSE for future turns; don't try to re-attach to a live stream. Simple + covers the real use case ("closed the tab, coming back").
+
+- **D2 — Auth allowlist enforcement.**
+  - A. Contacts is authoritative. Emails not in Contacts fail auth with a "contact your admin" message. `auth_allowlist_enabled=true` by default, togglable in `deployment_backend.json`. *(recommended — matches SPEC §4.11)*
+  - B. Allow any email — Contacts is informational only.
+
+- **D3 — Auto-destroy trigger.**
+  - A. **N hours after session close** (recommended). Safer: never destroys an active session. `auto_destroy_hours=0` = disabled.
+  - B. N hours after session creation regardless of state (useful if you need a hard "burn after X hours" guarantee even for sessions still open).
+
+- **D4 — SMTP sending scope this sprint.**
+  - A. All three: auth codes + user summary on close + admin alert on chat upload *(recommended — smtp_service already supports it; just wire three call sites)*.
+  - B. Only auth codes + summary; defer admin alert to Sprint 8.
+
+- **D5 — Recovery UX on SessionPage.**
+  - A. **"Resume existing session" textbox + button** (recommended — matches HRDD). Session token pasted → validated → jump to chat.
+  - B. Recovery by URL only (`/?recover=TOKEN`). No UI affordance.
+
+- **D6 — Admin SessionsTab depth.**
+  - A. **List + detail drawer** (recommended): click a row → see conversation.jsonl + survey + RAG paths + flagged toggle + destroy button.
+  - B. List-only: destroy button inline per row, no detail drawer (lands Sprint 8).
+
+- **D7 — SMTP-not-configured fallback for auth.**
+  - A. **Graceful degrade** (recommended): backend detects `smtp_service.is_configured()==False` and still returns the 6-digit code in `dev_code` (as today). Admin bootstrap stays smooth.
+  - B. Fail hard — no SMTP = no auth. Admin must configure SMTP first. Safer security posture but painful bootstrap.
+
+### Implementation order
+
+1. **Phase A — Session lifecycle scanner** (auto-close + auto-destroy). Lifecycle is foundational; everything else relies on it.
+2. **Phase B — Session recovery** (backend GET + SessionPage button + ChatShell replay prop).
+3. **Phase C — Real auth flow** (backend request/verify endpoints + SMTP + Contacts allowlist + sidecar relay). Dev-code fallback when SMTP is down.
+4. **Phase D — Summary email on close** (polling._process_close wires SMTP).
+5. **Phase E — Admin alert on upload**.
+6. **Phase F — Admin SessionsTab + Dashboard integration**.
+7. **Phase G — Docs** (SPEC confirm, CHANGELOG, STATUS close).
+
+### Risks / open questions
+
+- **Pitfall 9 — Docker volume permissions**: session auto-destroy calls `shutil.rmtree` as root (backend container). Should just work; test with real OrbStack paths.
+- **SMTP config discoverability**: if Daniel's SMTP isn't set up, most of Sprint 7 becomes silently-logging. D7=A means this is fine, but add a small "SMTP offline" banner at the top of the admin for visibility.
+- **Session recovery vs destroyed**: if session was destroyed (ADR-005), the recovery GET returns 410 Gone. UI shows a polite "that session no longer exists".
+- **Guardrail-ended sessions should still be recoverable** (read-only): users can see the session-ended state without being allowed to send new messages.
 
 ---
 

@@ -69,6 +69,7 @@ class SessionStore:
                     "flagged": meta.get("flagged", False),
                     "created_at": meta.get("created_at"),
                     "last_activity": meta.get("last_activity"),
+                    "completed_at": meta.get("completed_at"),
                     "guardrail_violations": meta.get("guardrail_violations", 0),
                     "initial_query_injected": meta.get("initial_query_injected", False),
                 }
@@ -106,6 +107,7 @@ class SessionStore:
             "system_prompt": session.get("system_prompt", ""),
             "created_at": session.get("created_at"),
             "last_activity": session.get("last_activity"),
+            "completed_at": session.get("completed_at"),
             "frontend_id": session.get("frontend_id", ""),
             "frontend_name": session.get("frontend_name", ""),
             "guardrail_violations": session.get("guardrail_violations", 0),
@@ -265,6 +267,7 @@ class SessionStore:
                 "guardrail_violations": data.get("guardrail_violations", 0),
                 "created_at": data.get("created_at"),
                 "last_activity": data.get("last_activity"),
+                "completed_at": data.get("completed_at"),
             })
         return out
 
@@ -290,10 +293,16 @@ class SessionStore:
         return count
 
     def set_status(self, token: str, status: str) -> None:
+        """Flip the session's status. When moving into `completed`, stamps
+        `completed_at` if it wasn't already set — this is the clock that
+        drives auto-destroy timing in `session_lifecycle`.
+        """
         self._ensure_loaded()
         session = self._cache.get(token)
         if session:
             session["status"] = status
+            if status == "completed" and not session.get("completed_at"):
+                session["completed_at"] = _now()
             self._save_meta(token)
 
     def mark_initial_query_injected(self, token: str) -> None:

@@ -2,7 +2,7 @@
 // Sprint 2: full page flow, placeholder instead of ChatShell at the end.
 import { useState, useEffect, useCallback } from 'react'
 import { t } from './i18n'
-import type { Phase, LangCode, DeploymentConfig, SurveyData, Company } from './types'
+import type { Phase, LangCode, DeploymentConfig, SurveyData, Company, RecoveryData } from './types'
 import LanguageSelector from './components/LanguageSelector'
 import DisclaimerPage from './components/DisclaimerPage'
 import SessionPage from './components/SessionPage'
@@ -20,6 +20,7 @@ export default function App() {
   const [verifiedEmail, setVerifiedEmail] = useState('')
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null)
   const [survey, setSurvey] = useState<SurveyData | null>(null)
+  const [recoveryData, setRecoveryData] = useState<RecoveryData | null>(null)
 
   useEffect(() => {
     fetchConfig()
@@ -66,9 +67,20 @@ export default function App() {
 
   const handleNewSession = (token: string) => {
     setSessionToken(token)
+    setRecoveryData(null)
     if (config?.auth_required) navigateTo('auth')
     else if (config?.instructions_enabled === false) navigateTo('company_select')
     else navigateTo('instructions')
+  }
+
+  const handleResumeSession = (data: RecoveryData) => {
+    // D1=B: replay the persisted conversation. Skip survey + instructions —
+    // we already have the session's survey data from the backend.
+    setRecoveryData(data)
+    setSessionToken(data.token)
+    setLang(data.language as LangCode)
+    setSurvey(data.survey)
+    navigateTo('chat')
   }
 
   const handleAuth = (email: string) => {
@@ -150,7 +162,7 @@ export default function App() {
         )}
 
         {phase === 'session' && (
-          <SessionPage lang={lang} onNewSession={handleNewSession} onBack={goBack.session} />
+          <SessionPage lang={lang} onNewSession={handleNewSession} onResume={handleResumeSession} onBack={goBack.session} />
         )}
 
         {phase === 'auth' && (
@@ -176,7 +188,7 @@ export default function App() {
         )}
 
         {phase === 'chat' && survey && (
-          <ChatShell lang={lang} sessionToken={sessionToken} survey={survey} branding={branding} />
+          <ChatShell lang={lang} sessionToken={sessionToken} survey={survey} branding={branding} recoveryData={recoveryData} />
         )}
       </main>
 
