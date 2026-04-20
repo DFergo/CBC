@@ -2,12 +2,16 @@
 # When deploying via Portainer, set CBC_BACKEND_PORT in the stack's env vars.
 # The container port stays 8000 — internal service URLs (e.g. from frontend
 # to backend over cbc-net) use http://cbc-backend:8000 regardless.
+#
+# No explicit container_name: Portainer prefixes containers with the stack
+# name, so multiple stacks can coexist on one host without colliding. DNS
+# resolution over cbc-net uses the SERVICE name (`cbc-backend`), not the
+# container name, so the sidecar's http://cbc-backend:8000 URL still works.
 services:
   cbc-backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: cbc-backend
     ports:
       - "${CBC_BACKEND_PORT:-8100}:8000"
     volumes:

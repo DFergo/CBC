@@ -5,12 +5,19 @@
 // Empty fields are stripped on save and inherit the lower tier (global default
 // → hardcoded baseline). Save also pushes the merged result to the sidecar.
 import { useEffect, useState } from 'react'
-import { getFrontendBranding, saveFrontendBranding, deleteFrontendBranding } from '../api'
-import type { FrontendBranding } from '../api'
+import {
+  getFrontendBranding, saveFrontendBranding, deleteFrontendBranding,
+  getFrontendTranslations, putFrontendTranslations, autoTranslateFrontend,
+} from '../api'
+import type { FrontendBranding, TranslationBundle } from '../api'
+import TranslationBundleControls from '../components/TranslationBundleControls'
 
 const EMPTY: FrontendBranding = {
   app_title: '', org_name: '', logo_url: '', primary_color: '', secondary_color: '',
   disclaimer_text: '', instructions_text: '',
+  source_language: 'en',
+  disclaimer_text_translations: {},
+  instructions_text_translations: {},
 }
 
 export default function BrandingPanel({ frontendId }: { frontendId: string }) {
@@ -167,6 +174,28 @@ export default function BrandingPanel({ frontendId }: { frontendId: string }) {
               />
             </div>
           </div>
+
+          <TranslationBundleControls
+            sourceLanguage={branding.source_language || 'en'}
+            onSourceLanguageChange={code => update({ source_language: code })}
+            disclaimerTranslations={branding.disclaimer_text_translations || {}}
+            instructionsTranslations={branding.instructions_text_translations || {}}
+            disabled={dirty || (!branding.disclaimer_text && !branding.instructions_text)}
+            onDownload={() => getFrontendTranslations(frontendId)}
+            onUpload={async (bundle: TranslationBundle) => {
+              const r = await putFrontendTranslations(frontendId, bundle)
+              setBranding({ ...EMPTY, ...r.branding })
+              setDirty(false)
+            }}
+            onAutoTranslate={async () => {
+              const r = await autoTranslateFrontend(frontendId)
+              setBranding({ ...EMPTY, ...r.branding })
+              setDirty(false)
+              setStatus(`Auto-translated: +${r.stats.disclaimer_filled} disclaimer, +${r.stats.instructions_filled} instructions. ${r.stats.disclaimer_failed + r.stats.instructions_failed} failures.`)
+              setTimeout(() => setStatus(''), 6000)
+            }}
+            filenameStem={`cbc-translations-${frontendId}`}
+          />
 
           <div className="flex gap-2 mt-4">
             <button onClick={save} disabled={!dirty}

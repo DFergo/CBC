@@ -1,5 +1,5 @@
 // Adapted from HRDDHelper/src/frontend/src/components/DisclaimerPage.tsx
-import { t } from '../i18n'
+import { t, pickBrandingText } from '../i18n'
 import type { LangCode, BrandingConfig } from '../types'
 
 interface Props {
@@ -10,6 +10,16 @@ interface Props {
 }
 
 export default function DisclaimerPage({ lang, onAccept, onBack, branding }: Props) {
+  // Sprint 8 — when admin set a custom disclaimer, prefer the translation for
+  // the user's lang; fall back to the source; fall back to the 3-section i18n
+  // default when no custom text is set at any tier.
+  const customDisclaimer = pickBrandingText(
+    branding?.disclaimer_text,
+    branding?.source_language,
+    branding?.disclaimer_text_translations,
+    lang,
+  )
+
   return (
     <div className="max-w-4xl mx-auto mt-8 p-6">
       <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6 max-h-[80vh] overflow-y-auto">
@@ -19,11 +29,11 @@ export default function DisclaimerPage({ lang, onAccept, onBack, branding }: Pro
           </div>
         )}
 
-        {branding?.disclaimer_text ? (
+        {customDisclaimer ? (
           <>
             <h2 className="text-xl font-semibold text-gray-800 mb-3">{t('disclaimer_title', lang)}</h2>
             <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
-              {branding.disclaimer_text}
+              {customDisclaimer}
             </div>
           </>
         ) : (

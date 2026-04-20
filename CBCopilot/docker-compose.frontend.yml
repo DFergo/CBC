@@ -1,12 +1,16 @@
 # Host port is configurable via CBC_FRONTEND_PORT (default 8190).
 # When deploying via Portainer, set CBC_FRONTEND_PORT per frontend instance.
 # The container port stays 80 (Nginx).
+#
+# No explicit container_name: Portainer prefixes containers with the stack
+# name so multiple frontend stacks (one per campaign/union) can coexist on a
+# single host. Top-level named volumes are also prefixed with the stack name,
+# so each stack gets its own isolated `/app/data` — no shared state.
 services:
   cbc-frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    container_name: cbc-frontend
     ports:
       - "${CBC_FRONTEND_PORT:-8190}:80"
     volumes:

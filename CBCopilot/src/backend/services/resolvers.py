@@ -258,6 +258,12 @@ def resolve_orgs(frontend_id: str | None = None) -> dict[str, Any]:
 
 # --- Branding ---
 
+_TEXT_TRANSLATION_PAIRS = (
+    ("disclaimer_text", "disclaimer_text_translations"),
+    ("instructions_text", "instructions_text_translations"),
+)
+
+
 def resolve_branding(frontend_id: str) -> tuple[Tier, dict[str, Any]]:
     """Effective branding for a frontend, merged per-field across tiers.
 
@@ -265,6 +271,11 @@ def resolve_branding(frontend_id: str) -> tuple[Tier, dict[str, Any]]:
     Empty strings in an override = "inherit lower tier" rather than "force empty".
     Order (lowest → highest precedence): hardcoded baseline (in the sidecar,
     unknown to the backend) → global defaults → per-frontend override.
+
+    Free-text + translations are tied: if a tier sets `disclaimer_text`, that
+    same tier's `disclaimer_text_translations` dict is used alongside it. A
+    tier cannot override translations without also owning the source text.
+    Same for instructions.
 
     Returns (tier, fields_dict). `tier` is the deepest tier that contributed
     any non-empty field (`"frontend"` > `"global"` > `"none"`). `fields_dict`
@@ -274,19 +285,42 @@ def resolve_branding(frontend_id: str) -> tuple[Tier, dict[str, Any]]:
     defaults = branding_defaults_store.load()
     override = branding_store.load(frontend_id)
 
+    def _block(b: Branding | None) -> dict[str, Any]:
+        return b.model_dump() if b else {}
+
+    d_block = _block(defaults)
+    o_block = _block(override)
+
     merged: dict[str, Any] = {}
-    if defaults:
-        for k, v in defaults.model_dump().items():
-            if v:
-                merged[k] = v
-    if override:
-        for k, v in override.model_dump().items():
+    # Simple scalar fields: per-field deepest-non-empty wins.
+    for k in ("app_title", "org_name", "logo_url", "primary_color", "secondary_color", "source_language"):
+        for b in (d_block, o_block):
+            v = b.get(k, "")
             if v:
                 merged[k] = v
 
-    if override and any(override.model_dump().values()):
+    # Paired text + translations: whichever tier owns the text also owns the dict.
+    for text_key, trans_key in _TEXT_TRANSLATION_PAIRS:
+        for b in (d_block, o_block):
+            text = b.get(text_key, "")
+            if text:
+                merged[text_key] = text
+                # Translations travel with the source text (empty dict is valid).
+                merged[trans_key] = b.get(trans_key, {}) or {}
+
+    # Non-empty check: treat branding as "customized" if any scalar is non-empty
+    # OR any text block was set (translations alone without text are ignored).
+    def _any_content(b: dict[str, Any]) -> bool:
+        for k, v in b.items():
+            if k in ("disclaimer_text_translations", "instructions_text_translations", "source_language"):
+                continue
+            if v:
+                return True
+        return False
+
+    if _any_content(o_block):
         return ("frontend", merged)
-    if defaults and any(defaults.model_dump().values()):
+    if _any_content(d_block):
         return ("global", merged)
     return ("none", merged)
 

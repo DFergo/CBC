@@ -419,6 +419,18 @@ export interface FrontendBranding {
   secondary_color: string
   disclaimer_text: string
   instructions_text: string
+  // Sprint 8: source language for the free-text blocks + per-language translations.
+  source_language?: string
+  disclaimer_text_translations?: Record<string, string>
+  instructions_text_translations?: Record<string, string>
+}
+
+export interface TranslationBundle {
+  source_language: string
+  disclaimer_text: string
+  instructions_text: string
+  disclaimer_text_translations: Record<string, string>
+  instructions_text_translations: Record<string, string>
 }
 
 export async function getFrontendBranding(frontendId: string): Promise<{ frontend_id: string; branding: FrontendBranding | null }> {
@@ -434,6 +446,42 @@ export async function saveFrontendBranding(frontendId: string, branding: Fronten
 
 export async function deleteFrontendBranding(frontendId: string): Promise<{ frontend_id: string; removed: boolean }> {
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/branding`, { method: 'DELETE' })
+}
+
+// --- Translation bundle download / upload ---
+
+export async function getDefaultsTranslations(): Promise<TranslationBundle> {
+  return request('/admin/api/v1/branding/defaults/translations')
+}
+
+export async function putDefaultsTranslations(bundle: TranslationBundle): Promise<{ defaults: FrontendBranding; pushed_to_frontends: number }> {
+  return request('/admin/api/v1/branding/defaults/translations', { method: 'PUT', body: JSON.stringify(bundle) })
+}
+
+export async function getFrontendTranslations(frontendId: string): Promise<TranslationBundle> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/branding/translations`)
+}
+
+export async function putFrontendTranslations(frontendId: string, bundle: TranslationBundle): Promise<{ frontend_id: string; branding: FrontendBranding }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/branding/translations`, {
+    method: 'PUT',
+    body: JSON.stringify(bundle),
+  })
+}
+
+export interface AutoTranslateStats {
+  disclaimer_filled: number
+  disclaimer_failed: number
+  instructions_filled: number
+  instructions_failed: number
+}
+
+export async function autoTranslateDefaults(): Promise<{ defaults: FrontendBranding; pushed_to_frontends: number; stats: AutoTranslateStats }> {
+  return request('/admin/api/v1/branding/defaults/auto-translate', { method: 'POST' })
+}
+
+export async function autoTranslateFrontend(frontendId: string): Promise<{ frontend_id: string; branding: FrontendBranding; stats: AutoTranslateStats }> {
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/branding/auto-translate`, { method: 'POST' })
 }
 
 // --- Per-frontend session settings ---

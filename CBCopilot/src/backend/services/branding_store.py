@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.services._paths import atomic_write_json, frontend_dir, read_json
 
@@ -26,6 +26,15 @@ class Branding(BaseModel):
     # tier. Empty string = no override at this tier (sidecar merges across tiers).
     disclaimer_text: str = ""
     instructions_text: str = ""
+    # Sprint 8: language in which the admin wrote the source strings above.
+    # Controls which key of *_translations the source itself populates and what
+    # the auto-translate job treats as source. Defaults to 'en'.
+    source_language: str = "en"
+    # Sprint 8: {lang_code: translated_text}. Translations are tied to the
+    # source text at the same tier — if a tier doesn't set disclaimer_text,
+    # its translations dict is ignored (the lower tier's translations apply).
+    disclaimer_text_translations: dict[str, str] = Field(default_factory=dict)
+    instructions_text_translations: dict[str, str] = Field(default_factory=dict)
 
 
 def _path(frontend_id: str) -> Path:

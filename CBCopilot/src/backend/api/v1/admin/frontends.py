@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from src.api.v1.admin.auth import require_admin
+from src.api.v1.admin.branding import TranslationBundle
 from src.services import (
     branding_store,
     llm_override_store,
@@ -155,6 +156,57 @@ async def delete_branding(frontend_id: str, _admin: dict = Depends(require_admin
     # or {custom: False} (sidecar falls back to its deployment_frontend.json baseline).
     await _push(frontend_id, "/internal/branding", resolvers.branding_push_payload(frontend_id))
     return {"frontend_id": frontend_id, "removed": removed}
+
+
+# --- Per-frontend translation bundle (download / upload) ---
+
+@router.get("/{frontend_id}/branding/translations")
+async def get_branding_translations(frontend_id: str, _admin: dict = Depends(require_admin)):
+    """Export this frontend's translation bundle as JSON.
+
+    404 if no per-frontend override exists — can't export what isn't there.
+    """
+    _require_registered(frontend_id)
+    b = branding_store.load(frontend_id)
+    if b is None:
+        raise HTTPException(status_code=404, detail="No per-frontend branding override to export")
+    return TranslationBundle.from_branding(b).model_dump()
+
+
+@router.put("/{frontend_id}/branding/translations")
+async def put_branding_translations(frontend_id: str, bundle: TranslationBundle, _admin: dict = Depends(require_admin)):
+    """Import a translation bundle into this frontend's override.
+
+    Overwrites source text + translations; preserves non-text fields (logo,
+    colors, app_title, org_name). Creates an override record if none exists.
+    """
+    _require_registered(frontend_id)
+    current = branding_store.load(frontend_id) or Branding()
+    updated = bundle.apply_to(current)
+    branding_store.save(frontend_id, updated)
+    await _push(frontend_id, "/internal/branding", resolvers.branding_push_payload(frontend_id))
+    return {"frontend_id": frontend_id, "branding": updated.model_dump()}
+
+
+@router.post("/{frontend_id}/branding/auto-translate")
+async def auto_translate_frontend_branding(frontend_id: str, _admin: dict = Depends(require_admin)):
+    """Fill missing language keys in this frontend's branding override using the summariser LLM.
+
+    Uses the frontend's own LLM override if one is set (via resolve_llm_config),
+    falling back to the global LLM config otherwise. Existing non-empty
+    translations are preserved.
+    """
+    from src.services.branding_translator import auto_translate_branding
+    _require_registered(frontend_id)
+    current = branding_store.load(frontend_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="No per-frontend branding override to translate")
+    if not (current.disclaimer_text.strip() or current.instructions_text.strip()):
+        raise HTTPException(status_code=400, detail="No source text in disclaimer_text or instructions_text")
+    updated, stats = await auto_translate_branding(current, frontend_id=frontend_id, overwrite=False)
+    branding_store.save(frontend_id, updated)
+    await _push(frontend_id, "/internal/branding", resolvers.branding_push_payload(frontend_id))
+    return {"frontend_id": frontend_id, "branding": updated.model_dump(), "stats": stats}
 
 
 # --- Per-frontend session settings ---

@@ -1,6 +1,6 @@
 // Adapted from HRDDHelper/src/frontend/src/components/InstructionsPage.tsx
 // CBC has a single user profile — no role-based variants.
-import { t } from '../i18n'
+import { t, pickBrandingText } from '../i18n'
 import type { LangCode, BrandingConfig } from '../types'
 
 interface Props {
@@ -11,6 +11,13 @@ interface Props {
 }
 
 export default function InstructionsPage({ lang, onContinue, onBack, branding }: Props) {
+  const customInstructions = pickBrandingText(
+    branding?.instructions_text,
+    branding?.source_language,
+    branding?.instructions_text_translations,
+    lang,
+  )
+
   return (
     <div className="max-w-4xl mx-auto mt-8 p-6">
       <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
@@ -21,7 +28,7 @@ export default function InstructionsPage({ lang, onContinue, onBack, branding }:
         )}
         <h2 className="text-xl font-semibold text-gray-800 mb-4">{t('instructions_title', lang)}</h2>
         <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line mb-6">
-          {branding?.instructions_text || t('instructions_body', lang)}
+          {customInstructions || t('instructions_body', lang)}
         </div>
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 mb-4">
           {t('instructions_no_reload', lang)}

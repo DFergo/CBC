@@ -10,12 +10,19 @@
 // chevron lets the admin collapse it back to clean up the General tab without
 // disabling the override.
 import { useEffect, useState } from 'react'
-import { getBrandingDefaults, saveBrandingDefaults, deleteBrandingDefaults } from '../api'
-import type { FrontendBranding } from '../api'
+import {
+  getBrandingDefaults, saveBrandingDefaults, deleteBrandingDefaults,
+  getDefaultsTranslations, putDefaultsTranslations, autoTranslateDefaults,
+} from '../api'
+import type { FrontendBranding, TranslationBundle } from '../api'
+import TranslationBundleControls from '../components/TranslationBundleControls'
 
 const EMPTY: FrontendBranding = {
   app_title: '', org_name: '', logo_url: '', primary_color: '', secondary_color: '',
   disclaimer_text: '', instructions_text: '',
+  source_language: 'en',
+  disclaimer_text_translations: {},
+  instructions_text_translations: {},
 }
 
 export default function BrandingSection() {
@@ -187,6 +194,26 @@ export default function BrandingSection() {
               />
             </div>
           </div>
+
+          <TranslationBundleControls
+            sourceLanguage={branding.source_language || 'en'}
+            onSourceLanguageChange={code => update({ source_language: code })}
+            disclaimerTranslations={branding.disclaimer_text_translations || {}}
+            instructionsTranslations={branding.instructions_text_translations || {}}
+            disabled={dirty || (!branding.disclaimer_text && !branding.instructions_text)}
+            onDownload={getDefaultsTranslations}
+            onUpload={async (bundle: TranslationBundle) => {
+              await putDefaultsTranslations(bundle)
+              await reload()
+            }}
+            onAutoTranslate={async () => {
+              const r = await autoTranslateDefaults()
+              setStatus(`Auto-translated: +${r.stats.disclaimer_filled} disclaimer, +${r.stats.instructions_filled} instructions. ${r.stats.disclaimer_failed + r.stats.instructions_failed} failures.`)
+              setTimeout(() => setStatus(''), 6000)
+              await reload()
+            }}
+            filenameStem="cbc-translations-global"
+          />
 
           <div className="flex gap-2 mt-4">
             <button onClick={save} disabled={!dirty}

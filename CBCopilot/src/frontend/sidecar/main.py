@@ -49,7 +49,7 @@ _SESSION_SETTINGS_CACHE = _DATA_DIR / "pushed_session_settings.json"
 # per-frontend (FrontendsTab → Branding). When all overrides are absent, this
 # wins. NOT read from deployment_frontend.json — that file shouldn't carry
 # branding at all in CBC's model.
-_HARDCODED_BRANDING: dict[str, str] = {
+_HARDCODED_BRANDING: dict[str, Any] = {
     "app_title": "Collective Bargaining Copilot",
     "org_name": "UNI Global Union",
     "logo_url": "/assets/uni-global-logo.png",
@@ -59,6 +59,11 @@ _HARDCODED_BRANDING: dict[str, str] = {
     # can override globally or per-frontend with a custom block.
     "disclaimer_text": "",
     "instructions_text": "",
+    # Sprint 8: source language + per-language translations for the text blocks
+    # above. Pushed-through from whichever tier owns the text (resolvers.py).
+    "source_language": "en",
+    "disclaimer_text_translations": {},
+    "instructions_text_translations": {},
 }
 
 

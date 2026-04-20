@@ -9,7 +9,11 @@ export type Phase =
   | 'survey'
   | 'chat'
 
-export type LangCode = 'en' | 'es' | 'fr' | 'de' | 'pt'
+// Sprint 8: full 31-language bundle matching HRDD (Croatian `hr` included).
+export type LangCode =
+  | 'en' | 'zh' | 'hi' | 'es' | 'ar' | 'fr' | 'bn' | 'pt' | 'ru' | 'id'
+  | 'de' | 'mr' | 'ja' | 'te' | 'tr' | 'ta' | 'vi' | 'ko' | 'ur' | 'th'
+  | 'it' | 'pl' | 'nl' | 'el' | 'uk' | 'ro' | 'hr' | 'xh' | 'sw' | 'hu' | 'sv'
 
 export type ComparisonScope = 'national' | 'regional' | 'global'
 
@@ -22,6 +26,12 @@ export interface BrandingConfig {
   // Free-text overrides — when non-empty, replace the i18n disclaimer/instructions text.
   disclaimer_text?: string
   instructions_text?: string
+  // Sprint 8: source language the admin wrote the text above in, and
+  // per-language translations. Used by DisclaimerPage / InstructionsPage to
+  // pick translations[user_lang] → source → i18n default.
+  source_language?: string
+  disclaimer_text_translations?: Record<string, string>
+  instructions_text_translations?: Record<string, string>
 }
 
 export interface DeploymentConfig {

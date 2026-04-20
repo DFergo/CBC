@@ -1,7 +1,7 @@
 // Adapted from HRDDHelper/src/frontend/src/App.tsx
 // Sprint 2: full page flow, placeholder instead of ChatShell at the end.
 import { useState, useEffect, useCallback } from 'react'
-import { t } from './i18n'
+import { t, RTL_LANGS } from './i18n'
 import type { Phase, LangCode, DeploymentConfig, SurveyData, Company, RecoveryData } from './types'
 import LanguageSelector from './components/LanguageSelector'
 import DisclaimerPage from './components/DisclaimerPage'
@@ -25,6 +25,13 @@ export default function App() {
   useEffect(() => {
     fetchConfig()
   }, [])
+
+  // Keep <html lang> and dir in sync with the current UI language. Screen
+  // readers + browser UI pick up lang; dir flips the layout for Arabic/Urdu.
+  useEffect(() => {
+    document.documentElement.lang = lang
+    document.documentElement.dir = RTL_LANGS.includes(lang) ? 'rtl' : 'ltr'
+  }, [lang])
 
   const navigateTo = useCallback((next: Phase) => {
     window.history.pushState({ phase: next }, '', '')
