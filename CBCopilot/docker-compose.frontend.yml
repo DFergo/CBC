@@ -2,6 +2,12 @@
 # When deploying via Portainer, set CBC_FRONTEND_PORT per frontend instance.
 # The container port stays 80 (Nginx).
 #
+# CBC_BACKEND_URL tells the sidecar where to reach the backend:
+#   - Same Docker host as the backend → leave default http://cbc-backend:8000
+#     (resolved via Docker service-name DNS on cbc-net).
+#   - Backend on a DIFFERENT host → set to http://<backend-host>:<CBC_BACKEND_PORT>
+#     (e.g. http://100.78.12.109:8100 over a Tailscale / LAN address).
+#
 # No explicit container_name: Portainer prefixes containers with the stack
 # name so multiple frontend stacks (one per campaign/union) can coexist on a
 # single host. Top-level named volumes are also prefixed with the stack name,
@@ -17,6 +23,7 @@ services:
       - cbc-frontend-data:/app/data
     environment:
       - DEPLOYMENT_JSON_PATH=/app/config/deployment_frontend.json
+      - CBC_BACKEND_URL=${CBC_BACKEND_URL:-http://cbc-backend:8000}
     networks:
       - cbc-net
 

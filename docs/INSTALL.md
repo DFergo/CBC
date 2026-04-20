@@ -91,7 +91,24 @@ Both stacks deploy cleanly from Portainer in two flavours:
 
 2. **Web editor mode**. Add Stack → Web editor, paste the contents of the compose file, tweak inline (ports, build args, extra env vars), and deploy. You lose the Git auto-pull, but you can edit directly from Portainer's UI.
 
-Both modes rely on the `cbc-net` external network. Create it once from the Networks tab (or via `docker network create cbc-net`) before the first stack deploy.
+Both modes rely on the `cbc-net` external network. Create it once **on each Docker host** (Networks tab → Add network, name `cbc-net`, driver `bridge`, or via `docker network create cbc-net`) before the first stack deploy. Docker networks are local to a host — they do not span machines.
+
+### Cross-host deployment (backend and frontend on different Docker hosts)
+
+A common layout is: one beefy machine runs the backend (needs RAM for RAG + LLM traffic), several small / remote machines each run a frontend stack. In that case the frontend's Docker network can't reach the backend's via service-name DNS, so you need to point the sidecar at the backend's published host address:
+
+On the frontend stack, set the env var:
+
+```
+CBC_BACKEND_URL = http://<backend-host>:<CBC_BACKEND_PORT>
+# e.g. http://100.78.12.109:8100 over Tailscale,
+#      http://backend.lan:8100 over local DNS,
+#      http://mac-studio.local:8100 over Bonjour.
+```
+
+The backend still only needs to publish its port once — the `CBC_BACKEND_PORT` variable on its own stack. Firewall-wise, the frontend host needs outbound TCP to the backend host on that port.
+
+When both stacks live on the same Docker host, leave `CBC_BACKEND_URL` unset — the default `http://cbc-backend:8000` uses Docker service-name DNS over `cbc-net` and is faster + doesn't require exposing the backend's port to the LAN.
 
 ## 5. Per-frontend configuration
 
