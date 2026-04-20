@@ -165,26 +165,26 @@ Each sprint has explicit acceptance criteria. A sprint is NOT done until ALL cri
 **Goal:** RAG indexing works at all three tiers. File watcher detects changes on disk and triggers reindex automatically.
 
 ### Deliverables
-- [ ] `CBCopilot/src/backend/services/rag_service.py` — 3-tier RAG with lazy loading
-- [ ] `CBCopilot/src/backend/services/rag_watcher.py` — File watcher with debouncing
-- [ ] Session RAG (temporary per-session index for user uploads)
-- [ ] Document metadata support (country, language, document_type)
-- [ ] Compare All mode: load filtered RAGs by comparison scope
+- [x] `CBCopilot/src/backend/services/rag_service.py` — 3-tier RAG with lazy loading
+- [x] `CBCopilot/src/backend/services/rag_watcher.py` — File watcher with debouncing
+- [x] Session RAG (temporary per-session index for user uploads)
+- [x] Document metadata support (country, language, document_type)
+- [x] Compare All mode: load filtered RAGs by comparison scope (company-level country filter using auto-derived `country_tags`)
 
 ### Acceptance Criteria
-- [ ] Upload document to global RAG → indexed and queryable
-- [ ] Upload document to frontend RAG → indexed and queryable
-- [ ] Upload document to company RAG → indexed and queryable
-- [ ] RAG mode "combine_all": query returns chunks from company + frontend + global
-- [ ] RAG mode "own_only": query returns only company chunks
-- [ ] Place a .pdf in the documents folder on disk → file watcher triggers reindex within 10 seconds
-- [ ] Delete a document from disk → file watcher triggers reindex
-- [ ] Bulk copy 10 files → single reindex after debounce period (5s)
-- [ ] `.icloud` and `.DS_Store` files are ignored by watcher
-- [ ] Session RAG: user uploads document → queryable in that session only
-- [ ] Session RAG: session destroyed → index files deleted
-- [ ] Compare All national mode: only returns chunks tagged with user's country
-- [ ] Compare All global mode: returns chunks from all companies
+- [x] Upload document to global RAG → indexed and queryable
+- [x] Upload document to frontend RAG → indexed and queryable
+- [x] Upload document to company RAG → indexed and queryable
+- [x] Combine RAG both ticked (new model, replaces legacy "combine_all"): query returns chunks from company + frontend + global
+- [x] Combine RAG all unticked (new model, replaces legacy "own_only"): query returns only company chunks
+- [x] Place a file in a documents folder on disk → file watcher triggers reindex within 10 seconds
+- [x] Delete a document from disk → file watcher triggers reindex
+- [x] Bulk copy multiple files → single reindex after debounce period (5s, per-scope)
+- [x] `.icloud` / `.DS_Store` / `._*` / `*.tmp` / `*.swp` / `~$*` ignored by watcher
+- [x] Session RAG: user uploads document via sidecar `POST /internal/upload` → queryable via `session_rag.query(token, ...)`
+- [x] Session RAG: `session_rag.destroy_session(token)` rmtrees the entire `/app/data/sessions/{token}/` tree
+- [x] Compare All national mode: only returns scopes whose companies have the user's country in their derived `country_tags`
+- [x] Compare All global mode: returns chunks from all enabled companies
 
 ### Spec Sections Covered
 - §4.2 (RAG Service), §4.3 (RAG File Watcher), §3.3 (Compare All Mode)

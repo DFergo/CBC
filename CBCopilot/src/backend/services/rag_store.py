@@ -1,8 +1,8 @@
-"""Sprint 3 RAG stub: file upload + list + delete + fake-stats reindex.
+"""Admin RAG file CRUD + bridge to the real indexer.
 
-Real indexing with LlamaIndex + 3-tier + file watcher lands in Sprint 5.
-Documents live in the same layout the real indexer will use, so no migration
-is needed — Sprint 5 just reads the same folders and builds indexes.
+Owns the on-disk file layout (upload / list / delete) and delegates indexing
+to `rag_service`. Sprint 3 shipped a stub here; Sprint 5 keeps this thin
+wrapper but reindex now triggers the real LlamaIndex build.
 
 Paths:
 - Global:  /app/data/documents/
@@ -38,7 +38,9 @@ class RAGDocument:
 class RAGStats:
     document_count: int
     total_size_bytes: int
-    note: str = "Sprint 3 stub — file metadata only. Real indexing arrives in Sprint 5."
+    indexed: bool = False
+    node_count: int = 0
+    note: str = ""
 
 
 def _tier_dir(frontend_id: str | None, company_slug: str | None) -> Path:
@@ -74,6 +76,8 @@ def list_documents(frontend_id: str | None = None, company_slug: str | None = No
 
 
 def save_document(name: str, content: bytes, frontend_id: str | None = None, company_slug: str | None = None) -> RAGDocument:
+    from src.services import rag_service
+
     name = safe_filename(name)
     _check_ext(name)
     d = _tier_dir(frontend_id, company_slug)
@@ -83,11 +87,17 @@ def save_document(name: str, content: bytes, frontend_id: str | None = None, com
     tmp.write_bytes(content)
     tmp.replace(path)
     logger.info(f"Saved RAG document {path} ({len(content)} bytes)")
+    # Drop the cached index so the next query sees the new doc. Phase B's file
+    # watcher will additionally schedule a reindex; until then the admin clicks
+    # Reindex (or the next query lazy-rebuilds).
+    rag_service.invalidate(rag_service.scope_key_for(frontend_id, company_slug))
     st = path.stat()
     return RAGDocument(name=path.name, size=st.st_size, modified=st.st_mtime)
 
 
 def delete_document(name: str, frontend_id: str | None = None, company_slug: str | None = None) -> bool:
+    from src.services import rag_service
+
     name = safe_filename(name)
     d = _tier_dir(frontend_id, company_slug)
     path = d / name
@@ -95,17 +105,35 @@ def delete_document(name: str, frontend_id: str | None = None, company_slug: str
         return False
     path.unlink()
     logger.info(f"Deleted RAG document {path}")
+    rag_service.invalidate(rag_service.scope_key_for(frontend_id, company_slug))
     return True
 
 
 def stats(frontend_id: str | None = None, company_slug: str | None = None) -> RAGStats:
+    from src.services import rag_service
+
     docs = list_documents(frontend_id, company_slug)
     total = sum(d.size for d in docs)
-    return RAGStats(document_count=len(docs), total_size_bytes=total)
+    sk = rag_service.scope_key_for(frontend_id, company_slug)
+    info = rag_service.index_stats(sk)
+    return RAGStats(
+        document_count=len(docs),
+        total_size_bytes=total,
+        indexed=info["indexed"],
+    )
 
 
 def reindex(frontend_id: str | None = None, company_slug: str | None = None) -> RAGStats:
-    """Sprint 3 stub — returns current stats. Sprint 5 replaces with real indexing."""
-    s = stats(frontend_id, company_slug)
-    logger.info(f"Reindex called (stub) — tier={frontend_id}/{company_slug} docs={s.document_count}")
-    return s
+    """Trigger a real LlamaIndex rebuild for this scope and return live stats."""
+    from src.services import rag_service
+
+    sk = rag_service.scope_key_for(frontend_id, company_slug)
+    result = rag_service.reindex(sk)
+    docs = list_documents(frontend_id, company_slug)
+    total = sum(d.size for d in docs)
+    return RAGStats(
+        document_count=result["document_count"],
+        total_size_bytes=total,
+        indexed=result["document_count"] > 0,
+        node_count=result["node_count"],
+    )

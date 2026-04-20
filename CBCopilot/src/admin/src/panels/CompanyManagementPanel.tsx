@@ -111,10 +111,10 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
               <div className="mt-2">
                 <div className="flex items-center justify-between">
                   <label className="block text-[11px] text-gray-500">Country tags</label>
-                  <span className="text-[10px] text-gray-400 italic">auto-derived from document metadata (Sprint 5)</span>
+                  <span className="text-[10px] text-gray-400 italic">auto-derived from document metadata</span>
                 </div>
                 {(c.country_tags || []).length === 0 ? (
-                  <p className="text-xs text-gray-400">— none yet. Upload company CBAs in Sprint 5 with country metadata to populate this.</p>
+                  <p className="text-xs text-gray-400">— none yet. Upload company documents and set their <code>country</code> metadata in the RAG section to populate this.</p>
                 ) : (
                   <div className="flex flex-wrap gap-1 mt-1">
                     {(c.country_tags || []).map(t => (

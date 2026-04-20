@@ -6,3 +6,12 @@ python-multipart==0.0.20
 httpx==0.28.1
 aiosmtplib>=3.0
 openpyxl>=3.1
+# RAG (Sprint 5) — pin LlamaIndex inside a known-good range borrowed from HRDD.
+# torch is installed CPU-only as a separate Dockerfile step BEFORE this file
+# to keep CUDA/NVIDIA bloat (~5 GB) out of the image.
+llama-index-core>=0.12,<0.15
+llama-index-readers-file>=0.4
+llama-index-embeddings-huggingface>=0.5
+sentence-transformers>=2.2
+docx2txt>=0.8
+watchdog>=4.0

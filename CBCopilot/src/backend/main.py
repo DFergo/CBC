@@ -22,6 +22,7 @@ from src.api.v1.admin.contacts import router as contacts_router
 from src.api.v1.admin.frontends import router as frontends_router
 from src.api.v1.admin.resolvers import router as resolvers_router
 from src.api.v1.admin.branding import router as branding_router
+from src.api.v1.sessions.uploads import router as session_uploads_router
 from src.services._paths import (
     ensure_dirs,
     PROMPTS_DIR,
@@ -57,16 +58,20 @@ def ensure_defaults() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from src.services import rag_watcher
+
     ensure_defaults()
     asyncio.create_task(check_smtp_health())
     poll_task = asyncio.create_task(polling_loop())
-    logger.info("CBC backend started (Sprint 4A — registry + health polling)")
+    rag_watcher.start()
+    logger.info("CBC backend started (Sprint 5 — RAG indexing + file watcher)")
     yield
     poll_task.cancel()
     try:
         await poll_task
     except asyncio.CancelledError:
         pass
+    rag_watcher.stop()
 
 
 app = FastAPI(title="CBC Backend", version="0.4.0", lifespan=lifespan)
@@ -82,6 +87,7 @@ app.include_router(smtp_router)
 app.include_router(contacts_router)
 app.include_router(resolvers_router)
 app.include_router(branding_router)
+app.include_router(session_uploads_router)
 
 ADMIN_DIST = Path("/app/admin/dist")
 

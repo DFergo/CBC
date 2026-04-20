@@ -127,8 +127,18 @@ export interface RAGDocument {
 export interface RAGStats {
   document_count: number
   total_size_bytes: number
+  indexed: boolean
+  node_count: number
   note: string
 }
+
+export interface DocMetadata {
+  country?: string
+  language?: string
+  document_type?: string
+}
+
+export type DocMetadataMap = Record<string, DocMetadata>
 
 function ragQuery(frontendId?: string, companySlug?: string): string {
   const params = new URLSearchParams()
@@ -168,6 +178,17 @@ export async function getRAGStats(frontendId?: string, companySlug?: string): Pr
 
 export async function reindexRAG(frontendId?: string, companySlug?: string): Promise<RAGStats> {
   return request(`/admin/api/v1/rag/reindex${ragQuery(frontendId, companySlug)}`, { method: 'POST' })
+}
+
+export async function getDocMetadata(frontendId?: string, companySlug?: string): Promise<{ scope_key: string; metadata: DocMetadataMap }> {
+  return request(`/admin/api/v1/rag/metadata${ragQuery(frontendId, companySlug)}`)
+}
+
+export async function saveDocMetadata(filename: string, patch: DocMetadata, frontendId?: string, companySlug?: string): Promise<{ scope_key: string; filename: string; metadata: DocMetadata }> {
+  return request(`/admin/api/v1/rag/metadata/${encodeURIComponent(filename)}${ragQuery(frontendId, companySlug)}`, {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  })
 }
 
 // --- Knowledge ---

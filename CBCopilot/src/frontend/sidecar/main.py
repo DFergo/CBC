@@ -240,3 +240,35 @@ async def dequeue_messages():
         valid = [m for m in _queue if now - m["created_at"] < MESSAGE_TTL]
         _queue.clear()
     return {"messages": valid}
+
+
+# --- Session uploads (Sprint 5) ---
+# Browser → sidecar /internal/upload → backend /api/v1/sessions/{token}/upload.
+# We forward over the shared `cbc-net` network using the conventional
+# `cbc-backend` service name. End users never see the backend URL — they
+# only ever talk to the sidecar.
+
+import httpx  # noqa: E402  — kept here so the sidecar's boot path doesn't pay the import cost
+from fastapi import File, HTTPException, UploadFile  # noqa: E402
+
+_BACKEND_URL = os.environ.get("CBC_BACKEND_URL", "http://cbc-backend:8000")
+_UPLOAD_TIMEOUT = 30.0
+
+
+@app.post("/internal/upload")
+async def upload_session_file(session_token: str, file: UploadFile = File(...)):
+    """Forward a session upload to the backend's session ingest endpoint."""
+    if not file.filename:
+        raise HTTPException(400, "No filename")
+    content = await file.read()
+    url = f"{_BACKEND_URL}/api/v1/sessions/{session_token}/upload"
+    files = {"file": (file.filename, content, file.content_type or "application/octet-stream")}
+    try:
+        async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT) as client:
+            r = await client.post(url, files=files)
+    except httpx.HTTPError as e:
+        logger.error(f"Upload relay to {url} failed: {e}")
+        raise HTTPException(502, f"Backend unreachable: {e}")
+    if r.status_code // 100 != 2:
+        raise HTTPException(r.status_code, r.text[:300])
+    return r.json()

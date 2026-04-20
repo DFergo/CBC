@@ -7,8 +7,9 @@ import {
   previewRAGResolution,
   getFrontendRAGSettings, saveFrontendRAGSettings,
   updateCompany,
+  getDocMetadata, saveDocMetadata,
 } from '../api'
-import type { RAGDocument, RAGStats, RAGResolutionResponse, Company } from '../api'
+import type { RAGDocument, RAGStats, RAGResolutionResponse, Company, DocMetadata, DocMetadataMap } from '../api'
 
 interface Props {
   frontendId?: string
@@ -27,11 +28,14 @@ export default function RAGSection({ frontendId, companySlug, company, onCompany
   const [preview, setPreview] = useState<RAGResolutionResponse | null>(null)
   const [combineGlobalAtFrontend, setCombineGlobalAtFrontend] = useState(true)
   const [combineSaving, setCombineSaving] = useState(false)
+  const [metadata, setMetadata] = useState<DocMetadataMap>({})
+  const [editingMeta, setEditingMeta] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const tierLabel = companySlug ? 'company' : frontendId ? 'frontend' : 'global'
   const showFrontendCombine = tierLabel === 'frontend'
   const showCompanyCombine = tierLabel === 'company' && !!company
+  const showMetadataEditor = tierLabel === 'company'
 
   const refresh = async () => {
     try {
@@ -48,14 +52,34 @@ export default function RAGSection({ frontendId, companySlug, company, onCompany
 
   useEffect(() => {
     setPreview(null)
+    setEditingMeta(null)
     refresh()
     if (showFrontendCombine && frontendId) {
       getFrontendRAGSettings(frontendId)
         .then(r => setCombineGlobalAtFrontend(r.settings.combine_global_rag))
         .catch(e => setError(e instanceof Error ? e.message : String(e)))
     }
+    if (showMetadataEditor) {
+      getDocMetadata(frontendId, companySlug)
+        .then(r => setMetadata(r.metadata))
+        .catch(e => setError(e instanceof Error ? e.message : String(e)))
+    } else {
+      setMetadata({})
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frontendId, companySlug])
+
+  const updateMetadata = async (filename: string, patch: DocMetadata) => {
+    if (!showMetadataEditor) return
+    setError('')
+    try {
+      const r = await saveDocMetadata(filename, patch, frontendId, companySlug)
+      setMetadata(prev => ({ ...prev, [filename]: r.metadata }))
+      // Triggers backend re-derive of country_tags; trigger parent to reload company chips.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const setFrontendCombineGlobal = async (next: boolean) => {
     if (!frontendId) return
@@ -256,18 +280,100 @@ export default function RAGSection({ frontendId, companySlug, company, onCompany
 
       <ul className="border border-gray-200 rounded-lg divide-y divide-gray-200">
         {docs.length === 0 && <li className="px-3 py-2 text-sm text-gray-400">No {tierLabel}-level documents.</li>}
-        {docs.map(d => (
-          <li key={d.name} className="flex items-center justify-between px-3 py-2 text-sm">
-            <div>
-              <span className="font-medium text-gray-800">{d.name}</span>
-              <span className="ml-2 text-xs text-gray-400">{fmtSize(d.size)}</span>
-            </div>
-            <button onClick={() => onDelete(d.name)} disabled={busy} className="text-xs text-uni-red hover:underline disabled:opacity-50">
-              Delete
-            </button>
-          </li>
-        ))}
+        {docs.map(d => {
+          const meta = metadata[d.name] || {}
+          const isEditing = editingMeta === d.name
+          const summary = [meta.country, meta.language, meta.document_type].filter(Boolean).join(' · ')
+          return (
+            <li key={d.name} className="px-3 py-2 text-sm">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="min-w-0">
+                  <span className="font-medium text-gray-800">{d.name}</span>
+                  <span className="ml-2 text-xs text-gray-400">{fmtSize(d.size)}</span>
+                  {showMetadataEditor && summary && (
+                    <span className="ml-2 text-[11px] text-gray-500 font-mono">{summary}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {showMetadataEditor && (
+                    <button
+                      onClick={() => setEditingMeta(isEditing ? null : d.name)}
+                      className="text-xs border border-gray-300 rounded px-2 py-0.5 hover:bg-gray-50"
+                    >
+                      {isEditing ? 'Hide metadata' : (summary ? 'Edit metadata' : '+ Add metadata')}
+                    </button>
+                  )}
+                  <button onClick={() => onDelete(d.name)} disabled={busy} className="text-xs text-uni-red hover:underline disabled:opacity-50">
+                    Delete
+                  </button>
+                </div>
+              </div>
+              {showMetadataEditor && isEditing && (
+                <MetadataForm
+                  current={meta}
+                  onSave={patch => updateMetadata(d.name, patch)}
+                />
+              )}
+            </li>
+          )
+        })}
       </ul>
     </section>
+  )
+}
+
+function MetadataForm({ current, onSave }: { current: DocMetadata; onSave: (patch: DocMetadata) => Promise<void> }) {
+  const [country, setCountry] = useState(current.country || '')
+  const [language, setLanguage] = useState(current.language || '')
+  const [docType, setDocType] = useState(current.document_type || '')
+  const [saving, setSaving] = useState(false)
+  const [savedAt, setSavedAt] = useState(0)
+
+  const dirty =
+    (country || '') !== (current.country || '') ||
+    (language || '') !== (current.language || '') ||
+    (docType || '') !== (current.document_type || '')
+
+  const handleSave = async () => {
+    setSaving(true)
+    await onSave({ country: country.trim().toUpperCase(), language: language.trim().toLowerCase(), document_type: docType.trim() })
+    setSaving(false)
+    setSavedAt(Date.now())
+    setTimeout(() => setSavedAt(0), 2000)
+  }
+
+  return (
+    <div className="mt-2 ml-4 grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+      <div>
+        <label className="block text-[11px] text-gray-500 mb-0.5">Country (ISO-2)</label>
+        <input value={country} onChange={e => setCountry(e.target.value)}
+          placeholder="AU"
+          className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono uppercase" />
+      </div>
+      <div>
+        <label className="block text-[11px] text-gray-500 mb-0.5">Language (ISO-2)</label>
+        <input value={language} onChange={e => setLanguage(e.target.value)}
+          placeholder="en"
+          className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono lowercase" />
+      </div>
+      <div>
+        <label className="block text-[11px] text-gray-500 mb-0.5">Document type</label>
+        <select value={docType} onChange={e => setDocType(e.target.value)}
+          className="w-full border border-gray-300 rounded px-2 py-1 text-xs">
+          <option value="">—</option>
+          <option value="cba">CBA</option>
+          <option value="policy">Policy</option>
+          <option value="code_of_conduct">Code of conduct</option>
+          <option value="agreement">Agreement</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div>
+        <button onClick={handleSave} disabled={!dirty || saving}
+          className="text-xs bg-uni-blue text-white rounded-lg px-3 py-1 hover:opacity-90 disabled:opacity-50">
+          {saving ? 'Saving…' : savedAt ? 'Saved' : 'Save'}
+        </button>
+      </div>
+    </div>
   )
 }

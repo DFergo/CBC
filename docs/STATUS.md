@@ -1,9 +1,118 @@
 # CBC — Project Status
 
-**Current Sprint:** 5 — RAG Engine + File Watcher
-**Last Updated:** 2026-04-19
+**Current Sprint:** 6 — Chat Engine & Prompt Assembly
+**Last Updated:** 2026-04-20
 
-Sprint 4 fully closed (4A + 4B + post-sprint polish). MILESTONES Sprint 4 acceptance criteria all green. Ready to start Sprint 5.
+Sprint 5 closed. MILESTONES Sprint 5 acceptance criteria all green. Ready to start Sprint 6.
+
+---
+
+## Sprint 5 — COMPLETE
+
+**Goal (MILESTONES §Sprint 5):** RAG indexing works at all 3 tiers; file watcher detects disk changes and triggers debounced reindex; session RAG; document metadata; Compare All filtering by country.
+
+### Deliverables (all ✓)
+- [x] `services/rag_service.py` — LlamaIndex 3-tier, in-memory cache per `scope_key`, lazy load
+- [x] `services/rag_watcher.py` — watchdog + per-scope 5s debounce + iCloud/Office/vim/DS_Store filter + write-event-only filter (fixes self-triggering rebuild loop)
+- [x] `services/session_rag.py` — per-session index + destroy_session rmtree
+- [x] `services/document_metadata.py` — per-directory `metadata.json` + `derive_country_tags`
+- [x] `api/v1/sessions/uploads.py` — `POST /api/v1/sessions/{token}/upload` + list + destroy
+- [x] Sidecar `POST /internal/upload` — relays multipart to backend via `cbc-backend:8000`
+- [x] Admin `api/v1/admin/rag.py` — metadata GET/PUT/DELETE routes; stats + reindex return `indexed` + `node_count`
+- [x] `rag_store.py` bridged to real indexer: upload/delete invalidate cache, reindex rebuilds
+- [x] `requirements.txt` + `Dockerfile.backend`: torch CPU-only first, LlamaIndex + sentence-transformers + watchdog + pypdf + docx2txt, embedding model pre-downloaded in build step
+- [x] Admin UI: per-document metadata editor in `RAGSection` (company tier only); `CompanyManagementPanel` country chips now live (placeholder note removed)
+
+### Acceptance tested end-to-end
+- Global tier: 3 docs → 39 nodes; query returns ranked chunks with scope tagging.
+- Frontend + company tiers: empty scope handled cleanly; query returns [].
+- File watcher: single file create → 1 debounced reindex; delete → reindex; bulk 3-file drop → 1 reindex; `.icloud`/`.DS_Store`/`._*` filtered (no log entries).
+- Write-event-only filter stops the feedback loop where the indexer's own file reads were re-scheduling rebuilds.
+- Document metadata: write `country=AU` for one amcor doc → `amcor.country_tags` becomes `['AU']`; add `country=US` doc → `['AU', 'US']` (correctly replaces stale hardcoded chips).
+- Session RAG: `POST /internal/upload?session_token=TEST-1234` with a text file → returns `{upload: {...}}`; `GET /api/v1/sessions/TEST-1234/uploads` lists it; `session_rag.query('TEST-1234', 'vacation weeks?')` returns the chunk with score 0.306.
+- Compare All: `national` mode with user_country=DE (no matching company) returns frontend + global only; `AU` matches amcor; `global` mode returns every enabled company.
+
+### Deviations from milestone
+- None. All 13 acceptance criteria hit. One re-phrasing: the criteria were worded in terms of the old `rag_mode=combine_all`/`own_only`; post-Sprint-4 polish renamed these to two booleans (`combine_frontend_rag` + `combine_global_rag`). Behaviour identical — both ticked ≡ combine_all; both unticked ≡ own_only. Acceptance text updated in MILESTONES.
+
+---
+
+### Decisions locked (2026-04-19)
+
+- **D1 = A** — Per-directory `metadata.json` mapping `filename → {country, language, document_type}`.
+- **D2 = A** — `country_tags` auto-derived on reindex and persisted back to the Company record. Live chips in admin (placeholder note disappears).
+- **D3 = A** — Session RAG under `/app/data/sessions/{token}/{uploads,rag_index}/` — one tree per session so auto-destroy is a single rmtree.
+- **D4 = A** — Per-scope 5s debounce in the file watcher.
+- **D5 = A** — Pre-download `all-MiniLM-L6-v2` in `Dockerfile.backend` build step. Keep HRDD's `torch` CPU-only install BEFORE `sentence-transformers` to avoid the 5 GB CUDA bloat.
+- **D6 = A** — Full session upload pipeline this sprint (sidecar → backend → ingest), curl-tested. Chat UI upload button is Sprint 6.
+
+### Decision options (for reference)
+
+- **D1 — Document metadata format.**
+  - A. Per-directory `metadata.json` mapping `filename → {country, language, document_type}`. One file per documents/ folder. *(my recommendation — single source per scope, easy to edit by hand)*
+  - B. Companion `.meta.json` per file (one alongside each PDF).
+  - C. Read PDF embedded metadata (more complex, less reliable).
+
+- **D2 — `country_tags` auto-derivation.**
+  - A. On reindex, aggregate unique `country` values from metadata.json and persist back to the Company record. The chip list in CompanyManagementPanel becomes live (the Sprint 4B "Sprint 5" placeholder note disappears). *(recommended)*
+  - B. Compute on-the-fly when the resolver needs it (no persistence).
+  - C. Drop auto-derive — keep `country_tags` admin-edited manually.
+
+- **D3 — Session RAG storage layout.**
+  - A. `/app/data/sessions/{token}/{uploads,rag_index}/` — everything per session under one tree (cleaner auto-destroy). *(recommended)*
+  - B. `/app/data/session_rag/{token}/...` separate from the session's metadata folder.
+
+- **D4 — File watcher debouncing.**
+  - A. **Per-scope** 5s debounce — bulk-copying to one company doesn't trigger reindex on unrelated scopes. *(recommended)*
+  - B. Global single 5s debounce, then rebuild every affected scope at once.
+
+- **D5 — Embedding model packaging.**
+  - A. Pre-download `all-MiniLM-L6-v2` in `Dockerfile.backend` build step (no cold start; image grows ~90 MB). *(recommended)*
+  - B. Download on first use (smaller image, slower first query, needs internet at runtime).
+
+- **D6 — Session upload endpoint scope.**
+  - A. Build the full pipeline now: sidecar `POST /internal/upload` → backend `POST /api/v1/sessions/{token}/upload` → session RAG ingest. Smoke-test with curl. Sprint 6 wires the UI. *(recommended — closes Sprint 5 acceptance "Session RAG: user uploads document → queryable in that session only")*
+  - B. Defer to Sprint 6; Sprint 5 only ships the session RAG service callable from Python.
+
+### Deliverables (assuming default A on every D)
+
+**Backend new:**
+- `services/rag_service.py` — LlamaIndex-based, scope-aware (uses Sprint 4B `resolvers.resolve_rag_paths`), in-memory cache keyed by `scope_key`.
+- `services/rag_watcher.py` — watchdog observer over `/app/data/`, scope detection from path, per-scope 5s debounce, iCloud filter (`*.icloud`, `.DS_Store`, `._*`, `*.tmp`, `*.swp`, `~$*`).
+- `services/session_rag.py` — per-session indexing + queryable + destroy.
+- `services/document_metadata.py` — read/write `metadata.json`, derive country tags.
+- `api/v1/sessions/uploads.py` — session upload endpoint.
+
+**Backend modified:**
+- Replace `services/rag_store.py` reindex stub with calls into the real `rag_service`.
+- `api/v1/admin/rag.py` — metadata GET/PUT routes, real reindex returns real stats.
+- `main.py` — start file watcher in lifespan, ensure clean shutdown.
+- `services/company_registry.py` — accept country_tags writes from rag_service (auto-derive path).
+- Sidecar `POST /internal/upload` (multipart) → forwards to backend.
+- `requirements.txt`: add `llama-index-core`, `llama-index-embeddings-huggingface`, `sentence-transformers`, `watchdog`, `pypdf`, `python-docx`.
+- `Dockerfile.backend`: pre-download embedding model in a separate layer.
+
+**Admin UI:**
+- `RAGSection`: per-document metadata editor (country / language / document_type) — only meaningful at company tier.
+- `CompanyManagementPanel`: country_tags chips become live (no more placeholder note); read-only display showing what was auto-derived.
+
+**Frontend (sidecar smoke only — no UI):**
+- Sidecar `POST /internal/upload` and a curl recipe in CHANGELOG. Chat UI upload button is Sprint 6.
+
+### Implementation order
+
+1. **Phase A — Indexing core**: deps + `rag_service.py` + replace `rag_store.py` reindex + admin route → smoke: upload PDF, reindex, query.
+2. **Phase B — File watcher**: `rag_watcher.py` + main.py lifespan + iCloud filter test.
+3. **Phase C — Document metadata + country auto-derive**: `document_metadata.py` + admin UI editor + Company.country_tags update on reindex.
+4. **Phase D — Session RAG**: `session_rag.py` + sidecar upload + backend ingest + curl smoke.
+5. **Phase E — Compare All filtering**: already in Sprint 4B resolver (company-level); verify chunks for `national` mode only come from country-matched companies.
+6. **Phase F — Docs**: SPEC §4.2/§4.3 confirmation, CHANGELOG, STATUS close.
+
+### Risks / open questions
+- **Pitfall 7** (lessons-learned): RAG rebuild storms — debouncer + scope-rebuild only.
+- **Pitfall 8**: iCloud filter must be in the watcher.
+- **Pitfall 10**: Compare All can balloon token usage — Sprint 6's prompt assembler + context compressor handle that, not Sprint 5. Sprint 5 just exposes the chunks.
+- LlamaIndex API surface area — version pin in requirements, mirror HRDD's known-good imports (`llama_index.core.VectorStoreIndex`, `llama_index.embeddings.huggingface.HuggingFaceEmbedding`).
 
 ---
 

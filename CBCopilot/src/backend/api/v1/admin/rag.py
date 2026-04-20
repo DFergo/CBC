@@ -1,13 +1,10 @@
-"""Admin RAG management (SPEC §4.2).
-
-Sprint 3: file storage only (stub). Sprint 5 wires real LlamaIndex indexing.
-3-tier paths are reused by the Sprint 5 service — no migration needed.
-"""
+"""Admin RAG management (SPEC §4.2)."""
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from src.api.v1.admin.auth import require_admin
 from src.core.config import config
-from src.services import rag_store
+from src.services import document_metadata, rag_service, rag_store
 
 router = APIRouter(prefix="/admin/api/v1", tags=["admin-rag"])
 
@@ -74,6 +71,8 @@ async def get_stats(frontend_id: str | None = None, company_slug: str | None = N
     return {
         "document_count": s.document_count,
         "total_size_bytes": s.total_size_bytes,
+        "indexed": s.indexed,
+        "node_count": s.node_count,
         "note": s.note,
     }
 
@@ -86,5 +85,52 @@ async def reindex(frontend_id: str | None = None, company_slug: str | None = Non
         "status": "ok",
         "document_count": s.document_count,
         "total_size_bytes": s.total_size_bytes,
+        "indexed": s.indexed,
+        "node_count": s.node_count,
         "note": s.note,
     }
+
+
+# --- Document metadata (per-directory metadata.json) ---
+
+class DocMetadataPatch(BaseModel):
+    country: str = ""
+    language: str = ""
+    document_type: str = ""
+
+
+@router.get("/rag/metadata")
+async def get_metadata(frontend_id: str | None = None, company_slug: str | None = None, _admin: dict = Depends(require_admin)):
+    fid, slug = _qs(frontend_id, company_slug)
+    sk = rag_service.scope_key_for(fid, slug)
+    return {"scope_key": sk, "metadata": document_metadata.load(sk)}
+
+
+@router.put("/rag/metadata/{filename}")
+async def put_metadata(
+    filename: str,
+    patch: DocMetadataPatch,
+    frontend_id: str | None = None,
+    company_slug: str | None = None,
+    _admin: dict = Depends(require_admin),
+):
+    fid, slug = _qs(frontend_id, company_slug)
+    sk = rag_service.scope_key_for(fid, slug)
+    merged = document_metadata.update_one(sk, filename, patch.model_dump())
+    # Refresh derived country_tags immediately so the admin sees the company chips update.
+    rag_service._sync_derived_country_tags(sk)
+    return {"scope_key": sk, "filename": filename, "metadata": merged}
+
+
+@router.delete("/rag/metadata/{filename}")
+async def delete_metadata(
+    filename: str,
+    frontend_id: str | None = None,
+    company_slug: str | None = None,
+    _admin: dict = Depends(require_admin),
+):
+    fid, slug = _qs(frontend_id, company_slug)
+    sk = rag_service.scope_key_for(fid, slug)
+    removed = document_metadata.remove_one(sk, filename)
+    rag_service._sync_derived_country_tags(sk)
+    return {"scope_key": sk, "filename": filename, "removed": removed}

@@ -14,14 +14,27 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install PyTorch CPU-only first so sentence-transformers doesn't drag in
+# the ~5 GB CUDA/NVIDIA stack (HRDD pattern). Must come BEFORE requirements.txt.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Backend dependencies
 COPY src/backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download the embedding model so first chat query doesn't hit HuggingFace
+# (predictable cold start, works air-gapped). Adds ~90 MB to the image; cached
+# in /root/.cache/huggingface/.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+# Application code
 COPY src/backend/ ./src/
 COPY config/deployment_backend.json ./config/deployment_backend.json
 
+# Built admin SPA (served as fallback by FastAPI)
 COPY --from=admin-builder /app/admin/dist /app/admin/dist
 
+# Persistent data dir (mounted from a Docker volume in compose)
 RUN mkdir -p /app/data
 
 EXPOSE 8000
