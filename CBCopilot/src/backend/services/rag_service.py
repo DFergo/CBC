@@ -7,6 +7,16 @@ VectorStoreIndex objects keyed by `scope_key` and uses the same scope_key
 shape that `resolvers.resolve_rag_paths` returns — the chat engine in
 Sprint 6 just calls `query_scopes(resolver_paths, query)`.
 
+Pipeline (Sprint 9):
+1. Ingest — SimpleDirectoryReader → markdown-aware parser for .md, sentence
+   splitter for everything else. Optional Contextual Retrieval prepends a
+   short LLM-generated context to each chunk (off by default).
+2. Embed — BGE-M3 (1024-dim, multilingual). Drop-in via HuggingFaceEmbedding.
+3. Retrieve — hybrid BM25 + vector via QueryFusionRetriever, fetch top
+   `rag_reranker_fetch_k` candidates.
+4. Rerank — cross-encoder bge-reranker-v2-m3 reduces to top
+   `rag_reranker_top_n`. Skipped if rag_reranker_enabled = False.
+
 Design rules:
 - Lazy load: indexes load from disk on first use, build if absent.
 - `invalidate(scope_key)` drops the in-memory entry. The next query reloads
@@ -22,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.core.config import config as backend_config
 from src.services._paths import (
     DATA_DIR,
     DOCUMENTS_DIR,
@@ -31,10 +42,9 @@ from src.services._paths import (
 
 logger = logging.getLogger("rag")
 
-# Per SPEC §4.2 + chunker tune (numeric-heavy CBAs like Amcor-Lezo's Anexo I
-# need bigger chunks so a whole salary table + its heading stay together and
-# survive retrieval). Bumping top_k too — hybrid BM25 + semantic needs a bit
-# more slack for the fusion to rank well.
+# These are kept as module constants in case session_rag.py imports them
+# directly. The runtime values come from backend_config so admins can tune
+# them via deployment_backend.json without redeploying code.
 CHUNK_SIZE = 1024
 CHUNK_OVERLAP = 100
 DEFAULT_TOP_K = 8
@@ -46,6 +56,8 @@ ADMIN_ALLOWED_EXTS = {".pdf", ".txt", ".md"}
 # Lazy-loaded singletons.
 _embed_model: Any = None
 _embed_lock = threading.Lock()
+_reranker: Any = None
+_reranker_lock = threading.Lock()
 
 # Per-scope cached indexes. Keyed by `scope_key` (e.g. "global",
 # "packaging-eu", "packaging-eu/amcor").
@@ -106,6 +118,8 @@ def _tier_for(scope_key: str) -> str:
 def _get_embed_model() -> Any:
     """Load the embedding model on first use. The Dockerfile pre-downloads the
     weights so this only does the local-disk load, not a network call.
+    Model name is admin-configurable via `rag_embedding_model` in
+    deployment_backend.json (default: BAAI/bge-m3).
     """
     global _embed_model
     if _embed_model is not None:
@@ -113,11 +127,33 @@ def _get_embed_model() -> Any:
     with _embed_lock:
         if _embed_model is None:
             from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-            _embed_model = HuggingFaceEmbedding(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
-            )
-            logger.info("Loaded embedding model all-MiniLM-L6-v2")
+            model_name = backend_config.rag_embedding_model
+            _embed_model = HuggingFaceEmbedding(model_name=model_name)
+            logger.info(f"Loaded embedding model {model_name}")
     return _embed_model
+
+
+def _get_reranker() -> Any | None:
+    """Lazy-load the cross-encoder reranker. Returns None if disabled in
+    config or if the package isn't available."""
+    if not backend_config.rag_reranker_enabled:
+        return None
+    global _reranker
+    if _reranker is not None:
+        return _reranker
+    with _reranker_lock:
+        if _reranker is None:
+            try:
+                from llama_index.core.postprocessor import SentenceTransformerRerank
+                _reranker = SentenceTransformerRerank(
+                    model=backend_config.rag_reranker_model,
+                    top_n=backend_config.rag_reranker_top_n,
+                )
+                logger.info(f"Loaded reranker {backend_config.rag_reranker_model}")
+            except Exception as e:
+                logger.warning(f"Reranker unavailable ({e}); falling back to no rerank")
+                return None
+    return _reranker
 
 
 def _setup_settings() -> None:
@@ -125,7 +161,7 @@ def _setup_settings() -> None:
     from llama_index.core import Settings
     Settings.embed_model = _get_embed_model()
     Settings.llm = None  # we drive the LLM ourselves; LlamaIndex never calls one
-    Settings.chunk_size = CHUNK_SIZE
+    Settings.chunk_size = backend_config.rag_chunk_size
     Settings.chunk_overlap = CHUNK_OVERLAP
 
 
@@ -173,9 +209,98 @@ def _parse_nodes(documents: list[Any]) -> list[Any]:
         md_parser = MarkdownNodeParser()
         nodes.extend(md_parser.get_nodes_from_documents(md_docs))
     if other_docs:
-        sentence_parser = SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+        sentence_parser = SentenceSplitter(
+            chunk_size=backend_config.rag_chunk_size,
+            chunk_overlap=CHUNK_OVERLAP,
+        )
         nodes.extend(sentence_parser.get_nodes_from_documents(other_docs))
     return nodes
+
+
+# --- Anthropic Contextual Retrieval (toggleable) ---
+# When `rag_contextual_enabled` is True, every chunk gets a short LLM-generated
+# context sentence prepended at index time so embeddings carry document-level
+# grounding. Approach from Anthropic's Sept-2024 paper, adapted to call the
+# local summariser slot instead of Claude.
+
+_CONTEXT_PROMPT = """\
+<document>
+{document}
+</document>
+
+Here is the chunk we want to situate within the whole document:
+<chunk>
+{chunk}
+</chunk>
+
+Please give a short, succinct context (1-2 sentences, max 60 words) that
+situates this chunk within the overall document for the purposes of improving
+search retrieval of the chunk. Mention the section / annex / article number
+when applicable. Answer ONLY with the succinct context, no preamble.\
+"""
+
+
+def _generate_chunk_context(document_text: str, chunk_text: str) -> str:
+    """One synchronous call to the summariser slot to produce a context line.
+    Errors are swallowed — we return "" so the chunk still indexes without
+    enrichment rather than blocking the whole reindex on a transient LLM hiccup.
+
+    Uses a private event loop so this works whether the caller is on the
+    FastAPI main loop (admin reindex) or a background thread (file watcher).
+    """
+    import asyncio
+
+    from src.services import llm_provider
+
+    doc_excerpt = (document_text or "")[: backend_config.rag_contextual_max_doc_chars]
+    prompt = _CONTEXT_PROMPT.format(document=doc_excerpt, chunk=chunk_text)
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                llm_provider.chat(messages, slot="summariser", frontend_id=None)
+            )
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.warning(f"Contextual enrichment failed for one chunk: {e}")
+        return ""
+
+
+def _contextualise_nodes(nodes: list[Any], documents: list[Any]) -> None:
+    """Mutate `nodes` in place — prepend an LLM-generated context line to each
+    node's text. Per-document text is fetched from `documents` by file_name
+    so chunks know what's around them.
+
+    Cost: one LLM call per chunk. With ~25 chunks per doc and a local summariser
+    at 10-30 s per call, expect 5-15 minutes per document. Surface progress in
+    the log so admins see it isn't stuck.
+    """
+    if not nodes:
+        return
+    # Index documents by file_name for quick lookup
+    doc_by_file: dict[str, str] = {}
+    for d in documents:
+        fname = (d.metadata or {}).get("file_name") or ""
+        if fname:
+            doc_by_file[fname] = (d.text or "")
+
+    total = len(nodes)
+    enriched = 0
+    for i, node in enumerate(nodes):
+        fname = (node.metadata or {}).get("file_name") or ""
+        doc_text = doc_by_file.get(fname, "")
+        if not doc_text or not node.text:
+            continue
+        context = _generate_chunk_context(doc_text, node.text).strip()
+        if context:
+            # Anthropic's recipe: prepend the context with a header so both
+            # the embedder and BM25 weigh it correctly.
+            node.set_content(f"[CONTEXT] {context}\n\n{node.text}")
+            enriched += 1
+        if (i + 1) % 5 == 0 or (i + 1) == total:
+            logger.info(f"Contextual enrichment: {i + 1}/{total} chunks ({enriched} enriched)")
 
 
 def _build_index(scope_key: str) -> Any | None:
@@ -197,6 +322,15 @@ def _build_index(scope_key: str) -> Any | None:
         for n in nodes:
             n.metadata["scope_key"] = scope_key
             n.metadata["tier"] = _tier_for(scope_key)
+        # Anthropic Contextual Retrieval: prepend an LLM-generated context
+        # line to every chunk. Gated behind the global toggle because it adds
+        # substantial LLM cost at index time.
+        if backend_config.rag_contextual_enabled:
+            logger.info(
+                f"Contextual enrichment ON — generating context for "
+                f"{len(nodes)} chunks in scope {scope_key} (this will take a while)"
+            )
+            _contextualise_nodes(nodes, documents)
         index = VectorStoreIndex(nodes)
         index_dir = _index_dir_for(scope_key)
         index_dir.mkdir(parents=True, exist_ok=True)
@@ -295,18 +429,55 @@ def invalidate(scope_key: str) -> None:
         _indexes.pop(scope_key, None)
 
 
-def _hybrid_retrieve(idx: Any, query_text: str, top_k: int) -> list[Any]:
-    """Fuse semantic (all-MiniLM-L6-v2) + lexical (BM25) retrieval and return
-    ranked NodeWithScore objects. Semantic alone loses on numeric-heavy chunks
-    (salary tables, horarios, tarifas); BM25 catches them via keyword match
-    ("Anexo I", "Salarios diarios", "grupo profesional"). Reciprocal rank
-    fusion gives us the best of both.
-
-    Built on the fly from the persisted docstore — no extra index files, and
-    cheap for the scale we deal with (≤ a few thousand nodes per scope).
-    Falls back to pure vector retrieval if BM25 can't spin up for any reason.
+def _discover_all_scope_keys() -> list[str]:
+    """Enumerate every scope that currently has a documents/ folder on disk:
+    global, each frontend, and each company under each frontend. Used by
+    reindex_all_scopes when toggling Contextual Retrieval or another
+    corpus-wide change.
     """
-    vector_retriever = idx.as_retriever(similarity_top_k=top_k)
+    from src.services._paths import CAMPAIGNS_DIR
+    out: list[str] = ["global"]
+    if not CAMPAIGNS_DIR.exists():
+        return out
+    for fe_dir in CAMPAIGNS_DIR.iterdir():
+        if not fe_dir.is_dir():
+            continue
+        fid = fe_dir.name
+        if (fe_dir / "documents").exists():
+            out.append(fid)
+        companies_dir = fe_dir / "companies"
+        if companies_dir.exists():
+            for co_dir in companies_dir.iterdir():
+                if not co_dir.is_dir():
+                    continue
+                if (co_dir / "documents").exists():
+                    out.append(f"{fid}/{co_dir.name}")
+    return out
+
+
+def reindex_all_scopes() -> list[dict[str, Any]]:
+    """Rebuild every scope's index. Used when a pipeline-wide setting changes
+    (embedder, chunk size, Contextual Retrieval). Returns one stats dict per
+    scope so the caller can surface per-scope counts.
+    """
+    out: list[dict[str, Any]] = []
+    for sk in _discover_all_scope_keys():
+        try:
+            out.append(reindex(sk))
+        except Exception as e:
+            logger.exception(f"reindex_all_scopes: scope {sk} failed: {e}")
+            out.append({"scope_key": sk, "error": str(e)})
+    return out
+
+
+def _hybrid_retrieve(idx: Any, query_text: str, fetch_k: int) -> list[Any]:
+    """Fuse dense (BGE-M3) + lexical (BM25) retrieval and return ranked
+    NodeWithScore objects. BGE-M3 is strong multilingual, BM25 catches exact
+    keyword hits ("Anexo I", "Salarios diarios") that dense retrievers can
+    still miss on short-form numeric content. Reciprocal rank fusion combines
+    them. Falls back to pure vector retrieval if BM25 isn't available.
+    """
+    vector_retriever = idx.as_retriever(similarity_top_k=fetch_k)
     try:
         from llama_index.core.retrievers import QueryFusionRetriever
         from llama_index.retrievers.bm25 import BM25Retriever
@@ -314,10 +485,10 @@ def _hybrid_retrieve(idx: Any, query_text: str, top_k: int) -> list[Any]:
         nodes = list(idx.docstore.docs.values())
         if not nodes:
             return vector_retriever.retrieve(query_text)
-        bm25_retriever = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=top_k)
+        bm25_retriever = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=fetch_k)
         fused = QueryFusionRetriever(
             [vector_retriever, bm25_retriever],
-            similarity_top_k=top_k,
+            similarity_top_k=fetch_k,
             num_queries=1,  # no LLM-driven query expansion; we have no LLM wired into Settings
             mode="reciprocal_rerank",
             use_async=False,
@@ -329,13 +500,39 @@ def _hybrid_retrieve(idx: Any, query_text: str, top_k: int) -> list[Any]:
         return vector_retriever.retrieve(query_text)
 
 
-def query(scope_key: str, query_text: str, top_k: int = DEFAULT_TOP_K) -> list[Chunk]:
-    """Retrieve top-k chunks from one scope. Returns [] when there's no index."""
+def _rerank(nodes: list[Any], query_text: str, top_n: int) -> list[Any]:
+    """Cross-encoder reranker pass over the hybrid candidates. Narrows the
+    fetched set down to the most relevant top_n using bge-reranker-v2-m3.
+    Returns `nodes` unchanged if the reranker isn't available."""
+    rr = _get_reranker()
+    if rr is None or not nodes:
+        return nodes[:top_n]
+    try:
+        from llama_index.core import QueryBundle
+        reranked = rr.postprocess_nodes(nodes, query_bundle=QueryBundle(query_text))
+        return reranked[:top_n]
+    except Exception as e:
+        logger.warning(f"Rerank failed ({e}); using hybrid order")
+        return nodes[:top_n]
+
+
+def query(scope_key: str, query_text: str, top_k: int | None = None) -> list[Chunk]:
+    """Retrieve top-k chunks from one scope. Returns [] when there's no index.
+
+    Pipeline: hybrid retrieve `rag_reranker_fetch_k` → cross-encoder rerank to
+    `rag_reranker_top_n` (or the explicit `top_k` if passed).
+    """
     idx = get_index(scope_key)
     if idx is None:
         return []
     try:
-        nodes = _hybrid_retrieve(idx, query_text, top_k)
+        fetch_k = max(
+            backend_config.rag_reranker_fetch_k,
+            top_k or backend_config.rag_reranker_top_n,
+        )
+        nodes = _hybrid_retrieve(idx, query_text, fetch_k)
+        final_top_n = top_k or backend_config.rag_reranker_top_n
+        nodes = _rerank(nodes, query_text, final_top_n)
         return [
             Chunk(
                 text=n.node.text,
@@ -354,12 +551,11 @@ def query(scope_key: str, query_text: str, top_k: int = DEFAULT_TOP_K) -> list[C
 def query_scopes(
     scope_keys: list[str],
     query_text: str,
-    top_k_per_scope: int = DEFAULT_TOP_K,
+    top_k_per_scope: int | None = None,
 ) -> list[Chunk]:
-    """Query several scopes and concatenate results sorted by score.
-
-    Sprint 6 may add reranking / dedup; for now this is enough for the
-    chat engine to assemble a context block.
+    """Query several scopes and concatenate results sorted by score. Per-scope
+    top_k defaults to `rag_reranker_top_n` from config, so scope_keys that
+    contribute nothing simply drop out.
     """
     out: list[Chunk] = []
     for sk in scope_keys:

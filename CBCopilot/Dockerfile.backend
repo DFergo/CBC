@@ -22,10 +22,18 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 COPY src/backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the embedding model so first chat query doesn't hit HuggingFace
-# (predictable cold start, works air-gapped). Adds ~90 MB to the image; cached
-# in /root/.cache/huggingface/.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+# Pre-download the embedding + reranker weights so first query doesn't hit
+# HuggingFace (predictable cold start, works air-gapped).
+#  - BGE-M3 embedder (~2.2 GB, 1024-dim multilingual)
+#  - bge-reranker-v2-m3 cross-encoder (~568 M params, multilingual)
+# Cached in /root/.cache/huggingface/. Also downloads MiniLM as a fallback
+# in case rag_embedding_model is overridden back to it via deployment_backend.json.
+RUN python -c "\
+from sentence_transformers import SentenceTransformer, CrossEncoder; \
+SentenceTransformer('BAAI/bge-m3'); \
+SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
+CrossEncoder('BAAI/bge-reranker-v2-m3')\
+"
 
 # Application code
 COPY src/backend/ ./src/

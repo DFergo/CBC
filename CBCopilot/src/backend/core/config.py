@@ -17,9 +17,25 @@ class BackendConfig(BaseModel):
     ollama_num_ctx: int = 8192
     rag_documents_path: str = "./data/documents"
     rag_index_path: str = "./data/rag_index"
-    rag_chunk_size: int = 512
-    rag_similarity_top_k: int = 5
-    rag_embedding_model: str = "all-MiniLM-L6-v2"
+    rag_chunk_size: int = 1024
+    rag_similarity_top_k: int = 8
+    # Sprint 9 (RAG upgrade): swap MiniLM for BGE-M3 — 1024-dim multilingual
+    # embeddings; covers all 31 of CBC's UI languages well, including
+    # Spanish/Basque/French/Portuguese where MiniLM degrades. Reranker is a
+    # cross-encoder applied to the hybrid (vector+BM25) candidates.
+    rag_embedding_model: str = "BAAI/bge-m3"
+    rag_reranker_enabled: bool = True
+    rag_reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    rag_reranker_fetch_k: int = 30  # fetched from hybrid retrieval before rerank
+    rag_reranker_top_n: int = 8     # surfaced to the prompt assembler after rerank
+    # Sprint 9 (Anthropic Contextual Retrieval). When True, every chunk gets a
+    # short LLM-generated context sentence prepended at index time so embeddings
+    # carry document-level grounding ("This chunk is from Annex I salary tables
+    # of the Amcor Lezo CBA"). Off by default — adds one summariser-LLM call
+    # per chunk, which means hours of indexing for big corpora and a slower
+    # reindex cycle when curating documents. Toggle on once content is stable.
+    rag_contextual_enabled: bool = False
+    rag_contextual_max_doc_chars: int = 12000  # truncate the doc passed to the contextualiser
     rag_watcher_enabled: bool = True
     rag_watcher_debounce_seconds: int = 5
     streaming_enabled: bool = True

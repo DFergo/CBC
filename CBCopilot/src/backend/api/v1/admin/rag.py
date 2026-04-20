@@ -134,3 +134,76 @@ async def delete_metadata(
     removed = document_metadata.remove_one(sk, filename)
     rag_service._sync_derived_country_tags(sk)
     return {"scope_key": sk, "filename": filename, "removed": removed}
+
+
+# --- RAG settings (Sprint 9) ---
+#
+# Admin-editable knobs that change how the index is built. The embedder /
+# reranker models are surfaced read-only — changing them means rebuilding the
+# Docker image so the weights are pre-downloaded; admins who want to
+# experiment should edit deployment_backend.json + rebuild.
+#
+# Contextual Retrieval IS runtime-togglable but triggers a full reindex of
+# every scope because existing vectors were computed without the prepended
+# context line. The endpoint returns stats for the reindex.
+
+class ContextualToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/rag/settings")
+async def get_rag_settings(_admin: dict = Depends(require_admin)):
+    """Snapshot of the active RAG configuration + index stats across every
+    scope. Frontend shows this on the admin General tab so the operator can
+    see at a glance what the pipeline looks like and what toggling CR costs."""
+    return {
+        "embedding_model": config.rag_embedding_model,
+        "chunk_size": config.rag_chunk_size,
+        "reranker_enabled": config.rag_reranker_enabled,
+        "reranker_model": config.rag_reranker_model,
+        "reranker_fetch_k": config.rag_reranker_fetch_k,
+        "reranker_top_n": config.rag_reranker_top_n,
+        "contextual_enabled": config.rag_contextual_enabled,
+    }
+
+
+@router.post("/rag/settings/contextual")
+async def toggle_contextual_retrieval(req: ContextualToggleRequest, _admin: dict = Depends(require_admin)):
+    """Flip the Contextual Retrieval toggle. When it changes, reindex every
+    scope — existing chunks were embedded without the context line (or with
+    it, if we're turning it off) and their vectors are stale.
+
+    Returns per-scope reindex counts so the admin can see what happened.
+    Since CR calls the summariser LLM per chunk, the whole reindex can take
+    minutes to hours on big corpora. The endpoint is synchronous — the admin
+    UI should show a progress spinner + note the expected delay.
+    """
+    if req.enabled == config.rag_contextual_enabled:
+        return {
+            "enabled": req.enabled,
+            "changed": False,
+            "scopes_reindexed": 0,
+            "note": "Already in requested state; no reindex triggered.",
+        }
+    # Flip the in-memory config. Persisting to deployment_backend.json is
+    # deferred — admins that need it to survive container restart can edit
+    # the JSON manually. Keeps the endpoint side-effect-free on disk beyond
+    # the rebuilt indexes.
+    config.rag_contextual_enabled = req.enabled
+    try:
+        stats = rag_service.reindex_all_scopes()
+    except Exception as e:
+        # Roll back the toggle if the reindex blows up mid-way — otherwise
+        # we'd be in a half-indexed state with config saying "on".
+        config.rag_contextual_enabled = not req.enabled
+        raise HTTPException(status_code=500, detail=f"Reindex failed, toggle rolled back: {e}")
+    return {
+        "enabled": req.enabled,
+        "changed": True,
+        "scopes_reindexed": len(stats),
+        "stats": stats,
+        "note": (
+            "Contextual Retrieval is a runtime toggle; edit deployment_backend.json "
+            "and redeploy if you want it to persist across container restarts."
+        ),
+    }

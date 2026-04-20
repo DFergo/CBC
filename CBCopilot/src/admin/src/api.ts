@@ -542,6 +542,37 @@ export async function deleteFrontendRAGSettings(frontendId: string): Promise<{ f
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/rag-settings`, { method: 'DELETE' })
 }
 
+// --- Global RAG pipeline settings (Sprint 9) ---
+
+export interface GlobalRAGSettings {
+  embedding_model: string
+  chunk_size: number
+  reranker_enabled: boolean
+  reranker_model: string
+  reranker_fetch_k: number
+  reranker_top_n: number
+  contextual_enabled: boolean
+}
+
+export interface ContextualToggleResult {
+  enabled: boolean
+  changed: boolean
+  scopes_reindexed: number
+  stats?: { scope_key: string; document_count?: number; node_count?: number; error?: string }[]
+  note?: string
+}
+
+export async function getRAGSettings(): Promise<GlobalRAGSettings> {
+  return request('/admin/api/v1/rag/settings')
+}
+
+export async function toggleContextualRetrieval(enabled: boolean): Promise<ContextualToggleResult> {
+  return request('/admin/api/v1/rag/settings/contextual', {
+    method: 'POST',
+    body: JSON.stringify({ enabled }),
+  })
+}
+
 // --- Per-frontend organizations override ---
 
 export interface FrontendOrgsOverride {
