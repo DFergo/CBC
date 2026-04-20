@@ -31,10 +31,13 @@ from src.services._paths import (
 
 logger = logging.getLogger("rag")
 
-# Per SPEC §4.2.
-CHUNK_SIZE = 512
-CHUNK_OVERLAP = 50
-DEFAULT_TOP_K = 5
+# Per SPEC §4.2 + chunker tune (numeric-heavy CBAs like Amcor-Lezo's Anexo I
+# need bigger chunks so a whole salary table + its heading stay together and
+# survive retrieval). Bumping top_k too — hybrid BM25 + semantic needs a bit
+# more slack for the fusion to rank well.
+CHUNK_SIZE = 1024
+CHUNK_OVERLAP = 100
+DEFAULT_TOP_K = 8
 
 # Admin RAG accepts these. Session RAG additionally accepts .docx (handled in
 # session_rag.py — Phase D).
@@ -144,9 +147,40 @@ def _list_indexable_files(docs_dir: Path) -> list[Path]:
     return out
 
 
+def _parse_nodes(documents: list[Any]) -> list[Any]:
+    """Route docs through the right chunker by file extension.
+
+    Markdown: MarkdownNodeParser splits by header, so a section like
+    "## ANEXO I — Tablas salariales" stays WITH its table rows in the same
+    node. Critical for CBA annexes where the heading is the only semantic
+    ground for otherwise numeric content.
+
+    Everything else: SentenceSplitter with the configured chunk size/overlap.
+    """
+    from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
+
+    md_docs: list[Any] = []
+    other_docs: list[Any] = []
+    for d in documents:
+        name = (d.metadata or {}).get("file_name", "") or (d.metadata or {}).get("file_path", "") or ""
+        if name.lower().endswith(".md"):
+            md_docs.append(d)
+        else:
+            other_docs.append(d)
+
+    nodes: list[Any] = []
+    if md_docs:
+        md_parser = MarkdownNodeParser()
+        nodes.extend(md_parser.get_nodes_from_documents(md_docs))
+    if other_docs:
+        sentence_parser = SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+        nodes.extend(sentence_parser.get_nodes_from_documents(other_docs))
+    return nodes
+
+
 def _build_index(scope_key: str) -> Any | None:
     """Build a fresh VectorStoreIndex from disk. Returns None if no docs."""
-    from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
+    from llama_index.core import SimpleDirectoryReader, VectorStoreIndex
 
     _setup_settings()
     docs_dir = _docs_dir_for(scope_key)
@@ -156,16 +190,21 @@ def _build_index(scope_key: str) -> Any | None:
     try:
         reader = SimpleDirectoryReader(input_files=[str(f) for f in files])
         documents = reader.load_data()
-        # Tag every node so retrieved chunks know where they came from
-        for d in documents:
-            d.metadata["scope_key"] = scope_key
-            d.metadata["tier"] = _tier_for(scope_key)
-        index = VectorStoreIndex.from_documents(documents)
+        nodes = _parse_nodes(documents)
+        # Tag every node so retrieved chunks know where they came from. The
+        # node parsers copy doc metadata onto each node already, we just add
+        # scope_key + tier on top.
+        for n in nodes:
+            n.metadata["scope_key"] = scope_key
+            n.metadata["tier"] = _tier_for(scope_key)
+        index = VectorStoreIndex(nodes)
         index_dir = _index_dir_for(scope_key)
         index_dir.mkdir(parents=True, exist_ok=True)
         index.storage_context.persist(persist_dir=str(index_dir))
-        node_count = len(index.docstore.docs) if hasattr(index, "docstore") else 0
-        logger.info(f"Built index for scope {scope_key}: {len(files)} files → {node_count} nodes")
+        logger.info(
+            f"Built index for scope {scope_key}: {len(files)} files → {len(nodes)} nodes "
+            f"({sum(1 for d in documents if (d.metadata or {}).get('file_name','').lower().endswith('.md'))} markdown)"
+        )
         return index
     except Exception as e:
         logger.error(f"Failed to build index for scope {scope_key}: {e}")
@@ -256,14 +295,47 @@ def invalidate(scope_key: str) -> None:
         _indexes.pop(scope_key, None)
 
 
+def _hybrid_retrieve(idx: Any, query_text: str, top_k: int) -> list[Any]:
+    """Fuse semantic (all-MiniLM-L6-v2) + lexical (BM25) retrieval and return
+    ranked NodeWithScore objects. Semantic alone loses on numeric-heavy chunks
+    (salary tables, horarios, tarifas); BM25 catches them via keyword match
+    ("Anexo I", "Salarios diarios", "grupo profesional"). Reciprocal rank
+    fusion gives us the best of both.
+
+    Built on the fly from the persisted docstore — no extra index files, and
+    cheap for the scale we deal with (≤ a few thousand nodes per scope).
+    Falls back to pure vector retrieval if BM25 can't spin up for any reason.
+    """
+    vector_retriever = idx.as_retriever(similarity_top_k=top_k)
+    try:
+        from llama_index.core.retrievers import QueryFusionRetriever
+        from llama_index.retrievers.bm25 import BM25Retriever
+
+        nodes = list(idx.docstore.docs.values())
+        if not nodes:
+            return vector_retriever.retrieve(query_text)
+        bm25_retriever = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=top_k)
+        fused = QueryFusionRetriever(
+            [vector_retriever, bm25_retriever],
+            similarity_top_k=top_k,
+            num_queries=1,  # no LLM-driven query expansion; we have no LLM wired into Settings
+            mode="reciprocal_rerank",
+            use_async=False,
+            verbose=False,
+        )
+        return fused.retrieve(query_text)
+    except Exception as e:
+        logger.warning(f"Hybrid retrieval unavailable ({e}); falling back to vector-only")
+        return vector_retriever.retrieve(query_text)
+
+
 def query(scope_key: str, query_text: str, top_k: int = DEFAULT_TOP_K) -> list[Chunk]:
     """Retrieve top-k chunks from one scope. Returns [] when there's no index."""
     idx = get_index(scope_key)
     if idx is None:
         return []
     try:
-        retriever = idx.as_retriever(similarity_top_k=top_k)
-        nodes = retriever.retrieve(query_text)
+        nodes = _hybrid_retrieve(idx, query_text, top_k)
         return [
             Chunk(
                 text=n.node.text,
