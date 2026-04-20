@@ -5,12 +5,15 @@ columns — CBC has a single user profile. Report / internal-summary
 generation endpoints are absent by design (ADR-004).
 """
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from src.api.v1.admin.auth import require_admin
 from src.services import session_rag
+from src.services._paths import SESSIONS_DIR, safe_filename
 from src.services.session_store import store as session_store
 
 logger = logging.getLogger("admin.sessions")
@@ -57,6 +60,14 @@ async def get_session(token: str, _admin: dict = Depends(require_admin)):
         for m in sess.get("messages", [])
     ]
 
+    # Surface the latest summary at the top of the payload so the drawer can
+    # pin it without scrolling through the conversation to find it.
+    summary: str | None = None
+    for m in reversed(messages):
+        if m["role"] == "assistant_summary":
+            summary = m["content"]
+            break
+
     return {
         "token": token,
         "status": sess.get("status", "active"),
@@ -72,6 +83,7 @@ async def get_session(token: str, _admin: dict = Depends(require_admin)):
         "message_count": len(messages),
         "messages": messages,
         "uploads": upload_payload,
+        "summary": summary,
     }
 
 
@@ -90,3 +102,37 @@ async def destroy(token: str, _admin: dict = Depends(require_admin)):
     if not removed:
         raise HTTPException(status_code=404, detail=f"Session {token!r} not found")
     return {"token": token, "removed": True}
+
+
+@router.get("/{token}/uploads/{filename}")
+async def download_session_upload(
+    token: str,
+    filename: str,
+    _admin: dict = Depends(require_admin),
+):
+    """Stream a user-uploaded file from the session's tree to the admin.
+
+    Used by the Sessions tab's detail drawer Download / Copy-text buttons.
+    Path is constructed + validated — traversal attempts (`../etc/passwd`)
+    are rejected by `safe_filename` and the `relative_to` sanity check.
+    """
+    try:
+        fname = safe_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    uploads_dir = (SESSIONS_DIR / token / "uploads").resolve()
+    requested = (uploads_dir / fname).resolve()
+    try:
+        requested.relative_to(uploads_dir)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not requested.is_file():
+        raise HTTPException(status_code=404, detail=f"Upload {fname!r} not found in session {token!r}")
+
+    # Keep the original name in Content-Disposition so downloads don't lose it.
+    return FileResponse(
+        path=str(requested),
+        filename=fname,
+        media_type="application/octet-stream",
+    )

@@ -697,6 +697,7 @@ export interface SessionDetail extends SessionSummary {
   language: string
   messages: SessionMessage[]
   uploads: { name: string; size: number }[]
+  summary: string | null
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
@@ -713,4 +714,35 @@ export async function toggleSessionFlag(token: string): Promise<{ token: string;
 
 export async function destroySession(token: string): Promise<{ token: string; removed: boolean }> {
   return request(`/admin/api/v1/sessions/${encodeURIComponent(token)}`, { method: 'DELETE' })
+}
+
+export async function fetchSessionUploadBlob(token: string, filename: string): Promise<Blob> {
+  const authToken = localStorage.getItem('cbc_admin_token')
+  const res = await fetch(`/admin/api/v1/sessions/${encodeURIComponent(token)}/uploads/${encodeURIComponent(filename)}`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: 'Download failed' }))
+    throw new Error(body.detail || `HTTP ${res.status}`)
+  }
+  return res.blob()
+}
+
+export async function downloadSessionUpload(token: string, filename: string): Promise<void> {
+  const blob = await fetchSessionUploadBlob(token, filename)
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  // Revoke after a beat so Chrome has time to start the download
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+export async function copySessionUploadText(token: string, filename: string): Promise<void> {
+  const blob = await fetchSessionUploadBlob(token, filename)
+  const text = await blob.text()
+  await navigator.clipboard.writeText(text)
 }

@@ -1,5 +1,12 @@
 # CBC — Changelog
 
+## SessionsTab polish — grouped by frontend + pinned summary + upload download/copy (2026-04-20)
+
+- **One table per frontend**: sessions are bucketed by `frontend_id`, each group gets its own card with a header (frontend name + session count) and its own table. Global filter tabs (all / active / completed / flagged) still apply across every group.
+- **Pinned Session summary in the detail drawer**: admin endpoint `GET /admin/api/v1/sessions/{token}` now returns `summary` at the top of the payload (the last `assistant_summary` message). Drawer renders it as the first section below the header, with a Copy-summary button and markdown rendering. The original summary bubble still appears in the conversation below for audit.
+- **Download + Copy-text per upload**: new admin-authed endpoint `GET /admin/api/v1/sessions/{token}/uploads/{filename}` streams the raw file with path-traversal guards (`safe_filename` + `relative_to` check). `api.ts` gains `downloadSessionUpload(token, filename)` (fetch → blob → anchor-click) and `copySessionUploadText(token, filename)` (fetch → text → clipboard). Copy-text is only surfaced for `.txt` / `.md` uploads; Download is always available.
+- Per-row feedback text ("Downloading…", "Saved", "Copied") appears next to the buttons and auto-clears after 2 s.
+
 ## Sprint 7 — Sessions & Lifecycle (2026-04-20)
 
 - **Session lifecycle scanner** (`services/session_lifecycle.py`): 5-min background loop. Auto-closes sessions idle past `auto_close_hours`; rm -rf session trees that have been `completed` for longer than `auto_destroy_hours` (`=0` means never). `session_store.set_status("completed")` stamps `completed_at` to drive the destroy timer. Wired into `main.py` lifespan alongside polling + rag_watcher.
