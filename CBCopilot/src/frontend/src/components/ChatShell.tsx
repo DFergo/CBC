@@ -298,7 +298,7 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
       try {
         const formData = new FormData()
         formData.append('file', file)
-        const res = await fetch(`/internal/upload?session_token=${encodeURIComponent(sessionToken)}`, {
+        const res = await fetch(`/internal/upload/${encodeURIComponent(sessionToken)}`, {
           method: 'POST',
           body: formData,
         })

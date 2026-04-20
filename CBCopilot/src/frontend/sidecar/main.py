@@ -2,17 +2,23 @@
 # Sprint 2: health, config, companies, auth stubs, survey queue.
 # Sprint 4A: backend-push endpoints for branding + session-settings overrides;
 #            /internal/config merges baseline JSON + pushed overrides.
-# SSE streaming, recovery, file upload, evidence delete — later sprints.
+# SSE streaming added in Sprint 6A.
+# Sprint 8 (pull-inverse fix): uploads, session recovery, and guardrails
+# thresholds all flow through the backend's polling loop — NO direct
+# sidecar→backend HTTP. Matches HRDD architecture.
 import asyncio
 import json
 import logging
 import os
 import random
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+import httpx  # used only by the auth relay below — follow-up to also pull-invert
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -311,11 +317,19 @@ async def enqueue_chat(msg: ChatMessage):
 
 @app.get("/internal/queue")
 async def dequeue_messages():
+    """Backend poll target — drains pending chat/survey/close messages and
+    surfaces pending recovery_requests (tokens) so the backend can resolve
+    them in the same tick."""
     now = time.time()
     async with _queue_lock:
         valid = [m for m in _queue if now - m["created_at"] < MESSAGE_TTL]
         _queue.clear()
-    return {"messages": valid}
+    async with _recovery_lock:
+        pending_tokens = [tok for tok, s in _recovery.items() if s["status"] == "pending"]
+    result: dict[str, Any] = {"messages": valid}
+    if pending_tokens:
+        result["recovery_requests"] = pending_tokens
+    return result
 
 
 # --- SSE stream channels (Sprint 6A) ---
@@ -388,66 +402,174 @@ async def stream_sse(session_token: str):
     )
 
 
-# --- Session uploads (Sprint 5) ---
-# Browser → sidecar /internal/upload → backend /api/v1/sessions/{token}/upload.
-# We forward over the shared `cbc-net` network using the conventional
-# `cbc-backend` service name. End users never see the backend URL — they
-# only ever talk to the sidecar.
+# --- Guardrails thresholds (push from backend) ---
+# Backend pushes the admin-configured warn/end thresholds during its polling
+# cycle. Sidecar caches them to disk; ChatShell reads via the GET route on
+# mount. Fallback defaults are HRDD-era 2/5 so UI never breaks.
 
-import httpx  # noqa: E402  — kept here so the sidecar's boot path doesn't pay the import cost
-from fastapi import File, HTTPException, UploadFile  # noqa: E402
+_GUARDRAIL_THRESHOLDS_CACHE = _DATA_DIR / "pushed_guardrails_thresholds.json"
+_DEFAULT_THRESHOLDS = {"warn_at": 2, "end_at": 5}
 
-_BACKEND_URL = os.environ.get("CBC_BACKEND_URL", "http://cbc-backend:8000")
-_UPLOAD_TIMEOUT = 30.0
+
+class GuardrailThresholdsBody(BaseModel):
+    warn_at: int
+    end_at: int
+
+
+@app.post("/internal/guardrails/thresholds")
+async def push_guardrails_thresholds(body: GuardrailThresholdsBody):
+    """Backend pushes the configured guardrails thresholds here on every poll."""
+    _write_json(_GUARDRAIL_THRESHOLDS_CACHE, body.model_dump())
+    return {"status": "ok"}
 
 
 @app.get("/internal/guardrails/thresholds")
-async def guardrails_thresholds():
-    """Proxy the public backend guardrails endpoint. ChatShell reads this on
-    mount to show the amber-banner threshold + lock the input at end."""
-    url = f"{_BACKEND_URL}/api/v1/guardrails/thresholds"
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.get(url)
-    except httpx.HTTPError:
-        # Fallback to HRDD-era defaults so the UI never breaks on the
-        # backend being slow / unreachable for this one call.
-        return {"warn_at": 2, "end_at": 5}
-    if r.status_code // 100 != 2:
-        return {"warn_at": 2, "end_at": 5}
-    return r.json()
+async def get_guardrails_thresholds():
+    """ChatShell reads this on mount to show the amber-banner threshold +
+    lock the input at the end threshold."""
+    cached = _read_json(_GUARDRAIL_THRESHOLDS_CACHE)
+    warn = cached.get("warn_at")
+    end = cached.get("end_at")
+    if isinstance(warn, int) and isinstance(end, int):
+        return {"warn_at": warn, "end_at": end}
+    return dict(_DEFAULT_THRESHOLDS)
 
 
-@app.get("/internal/session/{session_token}/recover")
-async def recover_session(session_token: str):
-    """Proxy for the backend's recovery endpoint. The React SessionPage calls
-    this when the user pastes a session token and clicks Resume."""
-    url = f"{_BACKEND_URL}/api/v1/sessions/{session_token}/recover"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(url)
-    except httpx.HTTPError as e:
-        logger.warning(f"Recovery relay to {url} failed: {e}")
-        raise HTTPException(502, f"Backend unreachable: {e}")
-    if r.status_code // 100 != 2:
-        raise HTTPException(r.status_code, r.text[:300])
-    return r.json()
+# --- Session recovery (pull-inverse, HRDD pattern) ---
+# React POSTs to /internal/session/recover with a token; the sidecar queues a
+# recovery_request that the backend picks up on its next poll. Backend pushes
+# the resolved session data to /internal/session/{token}/recovery-data. React
+# polls /internal/session/{token}/recover for the status until it's resolved.
+
+_recovery: dict[str, dict[str, Any]] = {}
+_recovery_lock = asyncio.Lock()
+_RECOVERY_TTL = 60.0  # seconds — abandon pending requests after this
 
 
-@app.post("/internal/upload")
-async def upload_session_file(session_token: str, file: UploadFile = File(...)):
-    """Forward a session upload to the backend's session ingest endpoint."""
+class RecoverRequest(BaseModel):
+    token: str
+
+
+class RecoveryData(BaseModel):
+    status: str  # "found" | "not_found" | "expired"
+    data: dict[str, Any] | None = None
+
+
+@app.post("/internal/session/recover")
+async def request_recovery(req: RecoverRequest):
+    """React starts a recovery by session token. Queues the request for the
+    backend's next poll; the React app then polls /internal/session/{token}/recover
+    for the result."""
+    token = req.token.strip().upper()
+    if not token:
+        raise HTTPException(400, "Empty token")
+    async with _recovery_lock:
+        _recovery[token] = {"status": "pending", "data": None, "created_at": time.time()}
+    return {"status": "pending"}
+
+
+@app.get("/internal/session/{token}/recover")
+async def poll_recovery(token: str):
+    """React polls this. Returns status='pending' until backend pushes a
+    result (found / not_found / expired). Once delivered, the slot is freed
+    so a subsequent attempt on the same token starts fresh."""
+    token = token.strip().upper()
+    async with _recovery_lock:
+        state = _recovery.get(token)
+        if not state:
+            raise HTTPException(404, "No recovery request for this token")
+        # Abandon stale pendings so the React app sees an error instead of
+        # spinning forever if the backend never polled.
+        if state["status"] == "pending" and time.time() - state["created_at"] > _RECOVERY_TTL:
+            _recovery.pop(token, None)
+            raise HTTPException(504, "Backend did not respond in time")
+        if state["status"] in ("found", "not_found", "expired"):
+            _recovery.pop(token, None)
+        return {"status": state["status"], "data": state.get("data")}
+
+
+@app.post("/internal/session/{token}/recovery-data")
+async def push_recovery_data(token: str, body: RecoveryData):
+    """Backend pushes the resolved recovery payload here. Status is one of
+    'found' (payload in `data`), 'not_found', or 'expired'."""
+    token = token.strip().upper()
+    async with _recovery_lock:
+        if token in _recovery:
+            _recovery[token] = {
+                "status": body.status,
+                "data": body.data,
+                "created_at": _recovery[token].get("created_at", time.time()),
+            }
+    return {"status": "ok"}
+
+
+# --- Session uploads (pull-inverse, HRDD pattern) ---
+# React POSTs a file to /internal/upload/{token}. Sidecar stores it locally
+# and queues a notification. Backend polls /internal/uploads, GETs each file,
+# ingests it, then DELETEs the sidecar's temp copy.
+
+_UPLOAD_MAX_SIZE = 25 * 1024 * 1024  # 25 MB
+_upload_dir = Path(tempfile.mkdtemp(prefix="cbc_uploads_"))
+_upload_queue: list[dict[str, Any]] = []
+_upload_queue_lock = asyncio.Lock()
+
+
+@app.post("/internal/upload/{session_token}", status_code=201)
+async def upload_file(session_token: str, file: UploadFile = File(...)):
+    """React app uploads a file for this session. Sidecar stores locally and
+    queues it for the backend's next poll. Returns immediately — user sees
+    a 'ready' chip, backend ingests in the background within ~2s."""
     if not file.filename:
         raise HTTPException(400, "No filename")
     content = await file.read()
-    url = f"{_BACKEND_URL}/api/v1/sessions/{session_token}/upload"
-    files = {"file": (file.filename, content, file.content_type or "application/octet-stream")}
-    try:
-        async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT) as client:
-            r = await client.post(url, files=files)
-    except httpx.HTTPError as e:
-        logger.error(f"Upload relay to {url} failed: {e}")
-        raise HTTPException(502, f"Backend unreachable: {e}")
-    if r.status_code // 100 != 2:
-        raise HTTPException(r.status_code, r.text[:300])
-    return r.json()
+    if len(content) > _UPLOAD_MAX_SIZE:
+        raise HTTPException(
+            413,
+            f"File too large. Max {_UPLOAD_MAX_SIZE // (1024 * 1024)} MB.",
+        )
+    session_dir = _upload_dir / session_token
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / file.filename).write_bytes(content)
+    async with _upload_queue_lock:
+        _upload_queue.append({
+            "session_token": session_token,
+            "filename": file.filename,
+            "size": len(content),
+            "content_type": file.content_type or "application/octet-stream",
+            "created_at": time.time(),
+        })
+    logger.info(f"Upload received: {file.filename} ({len(content)} bytes) for {session_token}")
+    return {"status": "uploaded", "filename": file.filename, "size": len(content)}
+
+
+@app.get("/internal/uploads")
+async def list_pending_uploads():
+    """Backend polls this alongside /internal/queue. Returns all pending
+    upload notifications and clears the list."""
+    async with _upload_queue_lock:
+        uploads = list(_upload_queue)
+        _upload_queue.clear()
+    return {"uploads": uploads}
+
+
+@app.get("/internal/upload/{session_token}/{filename}")
+async def fetch_upload(session_token: str, filename: str):
+    """Backend fetches the raw file bytes for ingest."""
+    safe_name = Path(filename).name  # strip any directory components
+    file_path = _upload_dir / session_token / safe_name
+    if not file_path.exists():
+        raise HTTPException(404, "Upload not found")
+    return FileResponse(file_path)
+
+
+@app.delete("/internal/upload/{session_token}/{filename}")
+async def cleanup_upload(session_token: str, filename: str):
+    """Backend signals ingest is done; sidecar removes the temp copy."""
+    safe_name = Path(filename).name
+    file_path = _upload_dir / session_token / safe_name
+    if file_path.exists():
+        file_path.unlink()
+    session_dir = _upload_dir / session_token
+    if session_dir.exists() and not any(session_dir.iterdir()):
+        session_dir.rmdir()
+    return {"status": "deleted"}

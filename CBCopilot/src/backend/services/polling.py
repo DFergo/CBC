@@ -25,12 +25,22 @@ drained the next time the UI reconnects (within 30s keepalive window).
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from src.core.config import config as backend_config
-from src.services import context_compressor, guardrails, llm_provider, prompt_assembler, resolvers, smtp_service
+from src.services import (
+    context_compressor,
+    guardrails,
+    llm_provider,
+    prompt_assembler,
+    resolvers,
+    session_rag,
+    session_settings_store,
+    smtp_service,
+)
 from src.services.frontend_registry import registry
 from src.services.session_store import store as session_store
 
@@ -40,6 +50,18 @@ POLL_INTERVAL_SECONDS = 2
 HEALTH_TIMEOUT = 3.0
 QUEUE_TIMEOUT = 5.0
 STREAM_PUSH_TIMEOUT = 10.0
+UPLOAD_FETCH_TIMEOUT = 30.0
+PUSH_TIMEOUT = 5.0
+
+# Track which frontends have had the current guardrails thresholds pushed to
+# them. Cleared when the backend restarts or when thresholds change
+# (see guardrails.invalidate_pushed_thresholds()).
+_thresholds_pushed: set[str] = set()
+
+
+def invalidate_thresholds_pushed() -> None:
+    """Call from admin when thresholds change so next poll re-pushes."""
+    _thresholds_pushed.clear()
 
 
 async def _check_health(client: httpx.AsyncClient, url: str) -> str:
@@ -50,14 +72,216 @@ async def _check_health(client: httpx.AsyncClient, url: str) -> str:
         return "offline"
 
 
-async def _drain_queue(client: httpx.AsyncClient, url: str) -> list[dict[str, Any]]:
+async def _drain_queue(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
+    """Drain the sidecar queue. Returns a dict with:
+      - messages: list of queued chat/survey/close items
+      - recovery_requests: list of session tokens the user pasted in SessionPage
+    """
     try:
         r = await client.get(f"{url.rstrip('/')}/internal/queue", timeout=QUEUE_TIMEOUT)
         r.raise_for_status()
-        return list(r.json().get("messages") or [])
+        return dict(r.json())
     except httpx.HTTPError as e:
         logger.warning(f"Drain queue at {url} failed: {e}")
-        return []
+        return {}
+
+
+async def _push_thresholds_if_needed(client: httpx.AsyncClient, url: str, fid: str) -> None:
+    """Push admin-configured guardrails thresholds to the sidecar once per
+    frontend (HRDD branding-push pattern). Sidecar caches to disk; ChatShell
+    reads on mount.
+    """
+    if fid in _thresholds_pushed:
+        return
+    body = {
+        "warn_at": int(backend_config.guardrail_warn_at),
+        "end_at": int(backend_config.guardrail_max_triggers),
+    }
+    try:
+        r = await client.post(
+            f"{url.rstrip('/')}/internal/guardrails/thresholds",
+            json=body,
+            timeout=PUSH_TIMEOUT,
+        )
+        if r.status_code // 100 != 2:
+            logger.warning(f"Push thresholds to {fid}: HTTP {r.status_code}")
+            return
+    except httpx.HTTPError as e:
+        logger.warning(f"Push thresholds to {fid} failed: {e}")
+        return
+    _thresholds_pushed.add(fid)
+
+
+async def _handle_recovery_request(client: httpx.AsyncClient, url: str, token: str) -> None:
+    """Resolve one pending recovery request and POST the result back to the
+    sidecar. Status payload is 'found' (+data), 'not_found', or 'expired'.
+    """
+    token = (token or "").strip().upper()
+    if not token:
+        return
+
+    def _post(status: str, data: dict[str, Any] | None = None) -> asyncio.Task[Any]:
+        return asyncio.create_task(_push_recovery_result(client, url, token, status, data))
+
+    sess = session_store.get_session(token)
+    if not sess:
+        await _post("not_found")
+        return
+
+    frontend_id = sess.get("frontend_id") or ""
+    settings = session_settings_store.load(frontend_id)
+    if settings is None:
+        from src.services.session_settings_store import SessionSettings
+        settings = SessionSettings()
+    resume_hours = int(settings.session_resume_hours)
+
+    created_at_raw = sess.get("created_at")
+    try:
+        created_at = datetime.fromisoformat(created_at_raw) if created_at_raw else None
+    except ValueError:
+        created_at = None
+    within_window = False
+    if created_at and resume_hours > 0:
+        age_hours = (datetime.now(timezone.utc) - created_at).total_seconds() / 3600.0
+        within_window = age_hours <= resume_hours
+    if not within_window:
+        await _post("expired")
+        return
+
+    messages = [
+        {
+            "role": m.get("role"),
+            "content": m.get("content", ""),
+            "attachments": m.get("attachments") or [],
+        }
+        for m in sess.get("messages", [])
+    ]
+    data = {
+        "token": token,
+        "status": sess.get("status", "active"),
+        "survey": sess.get("survey") or {},
+        "language": sess.get("language", "en"),
+        "frontend_id": frontend_id,
+        "frontend_name": sess.get("frontend_name", ""),
+        "created_at": created_at_raw,
+        "last_activity": sess.get("last_activity"),
+        "completed_at": sess.get("completed_at"),
+        "guardrail_violations": int(sess.get("guardrail_violations", 0)),
+        "messages": messages,
+        "session_resume_hours": resume_hours,
+    }
+    await _post("found", data)
+
+
+async def _push_recovery_result(
+    client: httpx.AsyncClient,
+    url: str,
+    token: str,
+    status: str,
+    data: dict[str, Any] | None,
+) -> None:
+    try:
+        await client.post(
+            f"{url.rstrip('/')}/internal/session/{token}/recovery-data",
+            json={"status": status, "data": data},
+            timeout=PUSH_TIMEOUT,
+        )
+    except httpx.HTTPError as e:
+        logger.warning(f"Push recovery result for {token} failed: {e}")
+
+
+async def _handle_uploads(client: httpx.AsyncClient, url: str, fid: str) -> None:
+    """Poll the sidecar for pending uploads, ingest each one, then tell the
+    sidecar to clean up its temp copy. Matches HRDD upload pull-inverse.
+    """
+    try:
+        r = await client.get(f"{url.rstrip('/')}/internal/uploads", timeout=QUEUE_TIMEOUT)
+        r.raise_for_status()
+        uploads = list(r.json().get("uploads") or [])
+    except httpx.HTTPError as e:
+        logger.warning(f"List uploads from {fid} failed: {e}")
+        return
+
+    for upload in uploads:
+        token = (upload.get("session_token") or "").strip()
+        filename = (upload.get("filename") or "").strip()
+        if not token or not filename:
+            continue
+        await _ingest_one_upload(client, url, fid, token, filename)
+
+
+async def _ingest_one_upload(
+    client: httpx.AsyncClient,
+    url: str,
+    fid: str,
+    token: str,
+    filename: str,
+) -> None:
+    """GET the file from the sidecar, ingest into session RAG, then DELETE
+    the sidecar copy. Fire the admin alert (fire-and-forget) if configured.
+    """
+    try:
+        r = await client.get(
+            f"{url.rstrip('/')}/internal/upload/{token}/{filename}",
+            timeout=UPLOAD_FETCH_TIMEOUT,
+        )
+        r.raise_for_status()
+        content = r.content
+    except httpx.HTTPError as e:
+        logger.warning(f"Fetch upload {token}/{filename} from {fid} failed: {e}")
+        return
+
+    try:
+        result = session_rag.ingest_upload(token, filename, content)
+        logger.info(f"[{token}] ingested upload {filename} ({result.size} bytes)")
+    except ValueError as e:
+        logger.warning(f"[{token}] ingest of {filename} rejected: {e}")
+        # Still delete the sidecar copy so it doesn't clog the temp dir.
+    except Exception as e:
+        logger.exception(f"[{token}] ingest of {filename} failed: {e}")
+        return  # Do NOT delete — allow retry on next poll
+
+    # Fire-and-forget admin alert (same logic as the old direct endpoint).
+    sess = session_store.get_session(token)
+    if sess:
+        asyncio.create_task(_maybe_alert_admins(token, sess, filename, len(content)))
+
+    try:
+        await client.delete(
+            f"{url.rstrip('/')}/internal/upload/{token}/{filename}",
+            timeout=PUSH_TIMEOUT,
+        )
+    except httpx.HTTPError as e:
+        logger.info(f"Cleanup of {token}/{filename} on {fid} dropped: {e}")
+
+
+async def _maybe_alert_admins(token: str, session: dict[str, Any], filename: str, size: int) -> None:
+    cfg = smtp_service.load_config()
+    if not cfg.send_new_document_to_admin:
+        return
+    if not smtp_service.is_configured(cfg):
+        return
+    frontend_id = session.get("frontend_id") or ""
+    recipients = smtp_service.resolve_admin_emails(frontend_id)
+    if not recipients:
+        return
+    survey = session.get("survey") or {}
+    subject = f"[CBC] User uploaded {filename} in session {token}"
+    body = (
+        f"A user just attached a document to their chat session.\n\n"
+        f"Session: {token}\n"
+        f"Frontend: {session.get('frontend_name') or frontend_id}\n"
+        f"Company: {survey.get('company_display_name') or survey.get('company_slug') or '(none)'}\n"
+        f"Country: {survey.get('country') or '(not provided)'}\n"
+        f"User email: {survey.get('email') or '(anonymous)'}\n"
+        f"File: {filename} ({size} bytes)\n\n"
+        f"You can view the session in the admin panel under Sessions."
+    )
+    try:
+        await smtp_service.send_email(to_address=recipients, subject=subject, body=body)
+        logger.info(f"[{token}] admin alert emailed to {len(recipients)} recipient(s) for upload {filename}")
+    except Exception as e:
+        logger.warning(f"[{token}] admin alert for upload {filename} failed: {e}")
 
 
 async def _push_chunk(client: httpx.AsyncClient, url: str, token: str, event: str, data: str) -> None:
@@ -335,13 +559,30 @@ async def _tick(client: httpx.AsyncClient) -> None:
         if status != "online":
             continue
 
-        # 2. Queue drain
-        messages = await _drain_queue(client, url)
-        for msg in messages:
+        # 2. Push guardrails thresholds once per frontend (pull-inverse —
+        #    sidecar caches; ChatShell reads on mount).
+        await _push_thresholds_if_needed(client, url, fid)
+
+        # 3. Queue drain (messages + recovery_requests)
+        drained = await _drain_queue(client, url)
+        for msg in drained.get("messages") or []:
             try:
                 await _process_message(client, fe, msg)
             except Exception as e:
                 logger.exception(f"Processing message from {fid} failed: {e}")
+
+        # 4. Handle recovery requests (pull-inverse: backend resolves, POSTs back)
+        for token in drained.get("recovery_requests") or []:
+            try:
+                await _handle_recovery_request(client, url, token)
+            except Exception as e:
+                logger.exception(f"Recovery for {token} from {fid} failed: {e}")
+
+        # 5. Handle uploads (pull-inverse: fetch, ingest, cleanup)
+        try:
+            await _handle_uploads(client, url, fid)
+        except Exception as e:
+            logger.exception(f"Handling uploads from {fid} failed: {e}")
 
 
 async def polling_loop() -> None:

@@ -1,32 +1,29 @@
 # CBC — Deployment & Install Guide
 
-This guide walks an operator through a first deployment of the Collective Bargaining Copilot on a single host (OrbStack / Docker Desktop / Portainer).
+This guide walks an operator through a first deployment of the Collective Bargaining Copilot.
 
-CBC runs as two docker-compose stacks on a shared network `cbc-net`:
-- **Backend** (`docker-compose.backend.yml`) — FastAPI + embedded admin SPA, one per deployment.
-- **Frontend** (`docker-compose.frontend.yml`) — React app + Nginx + Python sidecar. You can stand up one or many frontends; each one registers itself with the backend.
+CBC is a **pull-inverse** system (HRDD-parity design) made of two independent docker-compose stacks:
+
+- **Backend** (`docker-compose.backend.yml`) — FastAPI + embedded admin SPA. One per deployment. Holds the RAG, polls frontends, runs the LLM traffic.
+- **Frontend** (`docker-compose.frontend.yml`) — React + Nginx + Python sidecar. You can stand up one or many; each one is a separate stack, typically on its **own** Docker host.
+
+**Backend and frontend live on different machines by design**. The backend *polls* the registered frontend URLs over the LAN / Tailscale / public-hostname — there is NO shared Docker network, NO service-name DNS between them. Each stack runs on Docker's default bridge network, which is why the compose files are intentionally minimal.
+
+Single-host deployments also work: just treat them as two stacks on the same Docker daemon, each with its published port.
 
 ## 1. Prerequisites
 
-- Docker Engine ≥ 24.0 (OrbStack on macOS works identically).
+- Docker Engine ≥ 24.0 (OrbStack on macOS works identically) on each host.
 - ~4 GB free disk for the backend volume (RAG indexes + uploaded docs).
 - **LLM provider** reachable from the backend container:
-  - local: LM Studio or Ollama running on the host, reachable via `host.docker.internal`.
-  - remote: an API key for Anthropic, OpenAI, or any OpenAI-compatible endpoint (Together, Groq, Mistral, etc.). Pass the key via an environment variable on the backend container.
+  - local: LM Studio or Ollama running on the backend host, reachable via `host.docker.internal`.
+  - remote: an API key for Anthropic, OpenAI, or any OpenAI-compatible endpoint. Pass the key via an environment variable on the backend container.
 - SMTP credentials if you want auth codes / summary emails to actually land. Without SMTP, CBC runs in dev mode and shows the auth code in the UI.
+- Network reachability: each frontend host must be reachable by the backend host on `CBC_FRONTEND_PORT` (8190 by default). Tailscale is the easy path; LAN hostnames / mDNS also work.
 
-## 2. One-time host setup
+## 2. Deploy the backend
 
-```bash
-# Create the shared docker network that both stacks attach to.
-docker network create cbc-net
-```
-
-Portainer users: you can also create `cbc-net` from the Networks tab before deploying the stacks.
-
-## 3. Deploy the backend
-
-From `CBCopilot/`:
+From `CBCopilot/` on the backend host:
 
 ```bash
 docker compose -f docker-compose.backend.yml build
@@ -39,7 +36,7 @@ The backend listens on host port `8100` by default. Override via the `CBC_BACKEN
 CBC_BACKEND_PORT=9000 docker compose -f docker-compose.backend.yml up -d
 ```
 
-The container always listens on `8000` internally, so other containers reach it at `http://cbc-backend:8000` regardless of the host port mapping.
+The container always listens on `8000` internally. Write down the backend's **reachable URL** from the frontends' perspective (e.g. `http://100.78.12.109:8100` over Tailscale, or `http://backend.lan:8100` over LAN DNS) — you'll pass it to the frontend stacks as `CBC_BACKEND_URL`.
 
 ### First-run admin setup
 
@@ -60,23 +57,34 @@ The top of the page shows a green/amber indicator — green means the endpoint i
 
 Open the **SMTP** tab and fill in host, port, user, password, from-address. Without SMTP, auth codes and session summaries are logged but not emailed.
 
-## 4. Deploy a frontend
+## 3. Deploy a frontend
 
-Each frontend is a separate stack. From `CBCopilot/`:
-
-```bash
-CBC_FRONTEND_PORT=8190 docker compose -p cbc-fe-graphical -f docker-compose.frontend.yml up -d
-```
-
-Spin up additional frontends on different host ports for different campaigns / unions — just use a different `-p` project name + a different port:
+Each frontend is a separate stack, typically on its **own** Docker host. From `CBCopilot/` on that host:
 
 ```bash
-CBC_FRONTEND_PORT=8191 docker compose -p cbc-fe-eu -f docker-compose.frontend.yml up -d
+CBC_FRONTEND_PORT=8190 CBC_BACKEND_URL=http://<backend-host>:8100 \
+  docker compose -p cbc-fe-graphical -f docker-compose.frontend.yml up -d
 ```
 
-The `-p` project flag is what keeps container names and named volumes isolated — `cbc-fe-graphical_cbc-frontend_1` vs `cbc-fe-eu_cbc-frontend_1`, each with its own `/app/data` volume. The compose file intentionally omits `container_name` so the prefix works.
+`<backend-host>` is whatever address the backend is reachable at from this frontend's host (Tailscale IP, LAN hostname, `.local` Bonjour name, etc.). The backend stack must publish its port on that host.
 
-After a frontend boots it auto-registers with the backend via the shared `cbc-net`. In the admin **Frontends** tab you'll see it appear with status `active`.
+For additional frontend stacks on the same machine (different campaign / union), use a different `-p` project name + a different port:
+
+```bash
+CBC_FRONTEND_PORT=8191 CBC_BACKEND_URL=http://<backend-host>:8100 \
+  docker compose -p cbc-fe-eu -f docker-compose.frontend.yml up -d
+```
+
+The `-p` project flag isolates container names and named volumes (`cbc-fe-graphical_cbc-frontend_1` vs `cbc-fe-eu_cbc-frontend_1`), each with its own `/app/data`. The compose file intentionally omits `container_name` so the prefix works.
+
+### Register the frontend with the backend
+
+Open the admin panel (`http://<backend-host>:8100/admin/`) → **Frontends** tab → **Add frontend**. Fill in:
+
+- **URL**: the frontend's reachable address from the backend's host. Same pattern as `CBC_BACKEND_URL` above but in the opposite direction — e.g. `http://frontend-m4.local:8190`, `http://100.78.12.115:8190`.
+- **Name**: human-readable label (Graphical & Packaging EU, etc.). The backend derives an internal `frontend_id` slug from this.
+
+The backend's polling loop kicks in within 2 s and the frontend flips to status `online` once it's reachable.
 
 ### Portainer deployment
 
@@ -85,30 +93,13 @@ Both stacks deploy cleanly from Portainer in two flavours:
 1. **Repository mode** (recommended). Add Stack → Repository:
    - Repository URL: the Git URL of this repo.
    - Compose path: `CBCopilot/docker-compose.backend.yml` (or `.../docker-compose.frontend.yml`).
-   - Environment variables: set `CBC_BACKEND_PORT` / `CBC_FRONTEND_PORT` to override the host port without editing the YAML.
+   - Environment variables: set `CBC_BACKEND_PORT` / `CBC_FRONTEND_PORT` / `CBC_BACKEND_URL` without editing the YAML.
    - Stack name: whatever you like — it becomes the prefix for container names + named volumes. For multiple frontend stacks on one host, give each a distinct stack name (e.g. `cbc-fe-graphical`, `cbc-fe-eu`).
    - On git push, redeploy from the stack's **Pull and redeploy** button.
 
 2. **Web editor mode**. Add Stack → Web editor, paste the contents of the compose file, tweak inline (ports, build args, extra env vars), and deploy. You lose the Git auto-pull, but you can edit directly from Portainer's UI.
 
-Both modes rely on the `cbc-net` external network. Create it once **on each Docker host** (Networks tab → Add network, name `cbc-net`, driver `bridge`, or via `docker network create cbc-net`) before the first stack deploy. Docker networks are local to a host — they do not span machines.
-
-### Cross-host deployment (backend and frontend on different Docker hosts)
-
-A common layout is: one beefy machine runs the backend (needs RAM for RAG + LLM traffic), several small / remote machines each run a frontend stack. In that case the frontend's Docker network can't reach the backend's via service-name DNS, so you need to point the sidecar at the backend's published host address:
-
-On the frontend stack, set the env var:
-
-```
-CBC_BACKEND_URL = http://<backend-host>:<CBC_BACKEND_PORT>
-# e.g. http://100.78.12.109:8100 over Tailscale,
-#      http://backend.lan:8100 over local DNS,
-#      http://mac-studio.local:8100 over Bonjour.
-```
-
-The backend still only needs to publish its port once — the `CBC_BACKEND_PORT` variable on its own stack. Firewall-wise, the frontend host needs outbound TCP to the backend host on that port.
-
-When both stacks live on the same Docker host, leave `CBC_BACKEND_URL` unset — the default `http://cbc-backend:8000` uses Docker service-name DNS over `cbc-net` and is faster + doesn't require exposing the backend's port to the LAN.
+No Docker network needs to exist beforehand. Each stack runs on Docker's default bridge network and talks to the other machine over published TCP ports, exactly like HRDD Helper.
 
 ## 5. Per-frontend configuration
 

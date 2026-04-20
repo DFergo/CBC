@@ -1,12 +1,15 @@
-# Host port is configurable via CBC_BACKEND_PORT (default 8100).
-# When deploying via Portainer, set CBC_BACKEND_PORT in the stack's env vars.
-# The container port stays 8000 — internal service URLs (e.g. from frontend
-# to backend over cbc-net) use http://cbc-backend:8000 regardless.
+# Pull-inverse architecture (HRDD parity): the backend is the single Docker
+# stack on its host. It does NOT share a Docker network with frontends —
+# frontends live on different machines (by design), and the backend polls
+# them over the LAN / Tailscale / hostname URL that the admin registered
+# in the Frontends tab. No shared networks, no service-name DNS needed.
+#
+# Host port is configurable via CBC_BACKEND_PORT (default 8100). Override
+# via Portainer's Environment variables without editing the compose.
+# Container port stays 8000 internally.
 #
 # No explicit container_name: Portainer prefixes containers with the stack
-# name, so multiple stacks can coexist on one host without colliding. DNS
-# resolution over cbc-net uses the SERVICE name (`cbc-backend`), not the
-# container name, so the sidecar's http://cbc-backend:8000 URL still works.
+# name, so multiple stacks can coexist on one host without colliding.
 services:
   cbc-backend:
     build:
@@ -19,12 +22,6 @@ services:
     environment:
       - DEPLOYMENT_JSON_PATH=/app/config/deployment_backend.json
       - CBC_DATA_DIR=/app/data
-    networks:
-      - cbc-net
 
 volumes:
   cbc-data:
-
-networks:
-  cbc-net:
-    name: cbc-net

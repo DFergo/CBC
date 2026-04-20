@@ -30,21 +30,46 @@ export default function SessionPage({ lang, onNewSession, onResume, onBack }: Pr
     setResumeBusy(true)
     setResumeError('')
     try {
-      const res = await fetch(`/internal/session/${encodeURIComponent(value)}/recover`)
-      if (res.status === 404) {
-        setResumeError(t('session_resume_not_found', lang))
-        return
-      }
-      if (res.status === 410) {
-        setResumeError(t('session_resume_expired', lang))
-        return
-      }
-      if (!res.ok) {
+      // Pull-inverse: queue the recovery request on the sidecar. The backend
+      // resolves it on its next poll (typically within 2s) and POSTs the
+      // result back. We then poll the sidecar for the resolved status.
+      const startRes = await fetch('/internal/session/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: value }),
+      })
+      if (!startRes.ok) {
         setResumeError(t('session_resume_error', lang))
         return
       }
-      const data = (await res.json()) as RecoveryData
-      onResume(data)
+      // Poll every 400ms for up to ~15s. Backend polling runs every 2s so
+      // typical latency is 0–2s; we give it plenty of room before surfacing
+      // the timeout as a generic error.
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 400))
+        const pollRes = await fetch(`/internal/session/${encodeURIComponent(value)}/recover`)
+        if (pollRes.status === 404 || pollRes.status === 504) {
+          setResumeError(t('session_resume_error', lang))
+          return
+        }
+        if (!pollRes.ok) continue
+        const body = (await pollRes.json()) as { status: string; data?: RecoveryData }
+        if (body.status === 'pending') continue
+        if (body.status === 'not_found') {
+          setResumeError(t('session_resume_not_found', lang))
+          return
+        }
+        if (body.status === 'expired') {
+          setResumeError(t('session_resume_expired', lang))
+          return
+        }
+        if (body.status === 'found' && body.data) {
+          onResume(body.data)
+          return
+        }
+      }
+      setResumeError(t('session_resume_error', lang))
     } catch {
       setResumeError(t('session_resume_error', lang))
     } finally {
