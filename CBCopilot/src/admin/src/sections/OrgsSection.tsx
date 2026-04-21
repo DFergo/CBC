@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getOrganizations, saveOrganizations } from '../api'
 import type { Organization } from '../api'
 import { downloadJSON } from '../utils'
+import { useT } from '../i18n'
 
 export default function OrgsSection() {
   const [orgs, setOrgs] = useState<Organization[]>([])
@@ -11,6 +12,7 @@ export default function OrgsSection() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const uploadRef = useRef<HTMLInputElement>(null)
+  const { t } = useT()
 
   useEffect(() => {
     getOrganizations()
@@ -27,19 +29,19 @@ export default function OrgsSection() {
       const text = await file.text()
       const data = JSON.parse(text)
       if (!Array.isArray(data.organizations)) {
-        throw new Error('Invalid format: JSON must have an "organizations" array. Download the current file as a template.')
+        throw new Error(t('orgs_invalid_orgs_array'))
       }
       for (const o of data.organizations) {
         if (!o.name) {
-          throw new Error(`Each entry needs at least a "name" field. Problem with: ${JSON.stringify(o).slice(0, 80)}`)
+          throw new Error(t('orgs_missing_name_field', { snippet: JSON.stringify(o).slice(0, 80) }))
         }
       }
       const result = await saveOrganizations(data.organizations)
       setOrgs(result.organizations)
-      setSuccess(`Organizations updated: ${result.organizations.length} entries`)
+      setSuccess(t('orgs_updated', { count: result.organizations.length }))
       setTimeout(() => setSuccess(''), 3000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Invalid JSON file')
+      setError(err instanceof Error ? err.message : t('generic_invalid_json'))
     } finally {
       if (uploadRef.current) uploadRef.current.value = ''
     }
@@ -49,18 +51,18 @@ export default function OrgsSection() {
     <section className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
       <div className="flex items-center justify-between mb-1">
         <h3 className="text-lg font-semibold text-gray-800">
-          Organizations Directory
-          <span className="text-sm font-normal text-gray-400 ml-2">({orgs.length} entries)</span>
+          {t('orgs_heading')}
+          <span className="text-sm font-normal text-gray-400 ml-2">({t('orgs_entry_count', { count: orgs.length })})</span>
         </h3>
         <div className="flex items-center gap-2">
           <button
             onClick={() => downloadJSON({ organizations: orgs }, 'organizations.json')}
             className="border border-gray-300 text-gray-600 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors hover:bg-gray-50"
           >
-            Download JSON
+            {t('generic_download_json')}
           </button>
           <label className="bg-uni-blue text-white rounded-lg px-3 py-1.5 text-sm font-medium transition-colors hover:opacity-90 cursor-pointer">
-            Upload JSON
+            {t('generic_upload_json')}
             <input
               ref={uploadRef}
               type="file"
@@ -72,8 +74,7 @@ export default function OrgsSection() {
         </div>
       </div>
       <p className="text-xs text-gray-400 mb-3">
-        Curated list of unions, federations, and institutions. The AI only references organizations from this list.
-        Download the current file, edit it, and upload the updated version.
+        {t('orgs_description')}
       </p>
 
       {error && <p className="text-uni-red text-sm mb-2">{error}</p>}
@@ -85,17 +86,17 @@ export default function OrgsSection() {
             onClick={() => setExpanded(!expanded)}
             className="text-xs text-uni-blue hover:underline mb-2"
           >
-            {expanded ? 'Hide organizations' : `Show all ${orgs.length} organizations`}
+            {expanded ? t('orgs_hide') : t('orgs_show_all', { count: orgs.length })}
           </button>
           {expanded && (
             <div className="overflow-x-auto">
               <table className="w-full text-sm mt-2">
                 <thead>
                   <tr className="border-b border-gray-200">
-                    <th className="text-left px-2 py-2 font-medium text-gray-600">Name</th>
-                    <th className="text-left px-2 py-2 font-medium text-gray-600">Type</th>
-                    <th className="text-left px-2 py-2 font-medium text-gray-600">Country</th>
-                    <th className="text-left px-2 py-2 font-medium text-gray-600">Description</th>
+                    <th className="text-left px-2 py-2 font-medium text-gray-600">{t('orgs_col_name')}</th>
+                    <th className="text-left px-2 py-2 font-medium text-gray-600">{t('orgs_col_type')}</th>
+                    <th className="text-left px-2 py-2 font-medium text-gray-600">{t('orgs_col_country')}</th>
+                    <th className="text-left px-2 py-2 font-medium text-gray-600">{t('orgs_col_description')}</th>
                   </tr>
                 </thead>
                 <tbody>

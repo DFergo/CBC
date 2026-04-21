@@ -6,6 +6,7 @@
 // Phase D, so here the button just triggers whatever handler the parent passes.
 import { useRef, useState } from 'react'
 import type { TranslationBundle } from '../api'
+import { useT } from '../i18n'
 
 // Same 31-lang list as the frontend's i18n.ts. Kept in lock-step.
 export const LANGUAGE_CHOICES: { code: string; label: string }[] = [
@@ -70,13 +71,15 @@ export default function TranslationBundleControls({
   onDownload,
   onUpload,
   onAutoTranslate,
-  autoTranslateLabel = 'Auto-translate missing',
+  autoTranslateLabel,
   filenameStem,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState<'' | 'download' | 'upload' | 'translate'>('')
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
+  const { t } = useT()
+  const autoTransLabel = autoTranslateLabel ?? t('translations_autotranslate')
 
   // Coverage: how many of the non-source target languages have translations.
   const targetLangs = LANGUAGE_CODES.filter(c => c !== sourceLanguage)
@@ -99,7 +102,7 @@ export default function TranslationBundleControls({
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
-      setMsg('Downloaded')
+      setMsg(t('translations_downloaded'))
       clearMsg()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -121,11 +124,11 @@ export default function TranslationBundleControls({
       try {
         parsed = JSON.parse(text)
       } catch {
-        throw new Error('File is not valid JSON')
+        throw new Error(t('generic_invalid_json'))
       }
-      if (!parsed || typeof parsed !== 'object') throw new Error('JSON must be an object')
+      if (!parsed || typeof parsed !== 'object') throw new Error(t('translations_invalid_json_object'))
       const p = parsed as Record<string, unknown>
-      if (typeof p.source_language !== 'string') throw new Error('Missing string "source_language"')
+      if (typeof p.source_language !== 'string') throw new Error(t('translations_invalid_source_lang'))
       const bundle: TranslationBundle = {
         source_language: p.source_language,
         disclaimer_text: typeof p.disclaimer_text === 'string' ? p.disclaimer_text : '',
@@ -134,7 +137,7 @@ export default function TranslationBundleControls({
         instructions_text_translations: (p.instructions_text_translations as Record<string, string>) || {},
       }
       await onUpload(bundle)
-      setMsg('Uploaded + saved')
+      setMsg(t('translations_uploaded_saved'))
       clearMsg()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -150,7 +153,7 @@ export default function TranslationBundleControls({
     setErr('')
     try {
       await onAutoTranslate()
-      setMsg('Auto-translate triggered')
+      setMsg(t('translations_autotranslate_done'))
       clearMsg()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -162,16 +165,18 @@ export default function TranslationBundleControls({
   return (
     <div className="mt-3 border border-gray-200 rounded-lg bg-gray-50/40 p-3">
       <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-semibold text-gray-600">Translations</div>
+        <div className="text-xs font-semibold text-gray-600">{t('translations_heading')}</div>
         <div className="text-[11px] text-gray-500">
-          {discCovered}/{targetLangs.length} disclaimer · {instrCovered}/{targetLangs.length} instructions
+          {t('translations_coverage_disclaimer', { filled: discCovered, total: targetLangs.length })}
+          {' · '}
+          {t('translations_coverage_instructions', { filled: instrCovered, total: targetLangs.length })}
           {msg && <span className="ml-2 text-green-700">{msg}</span>}
         </div>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
         <label className="text-xs text-gray-600 flex items-center gap-2">
-          Source language
+          {t('translations_source_language')}
           <select
             value={sourceLanguage}
             onChange={e => onSourceLanguageChange(e.target.value)}
@@ -188,10 +193,10 @@ export default function TranslationBundleControls({
             type="button"
             onClick={doDownload}
             disabled={disabled || !!busy}
-            title={disabled ? 'Set disclaimer / instructions text first' : 'Download translations as JSON'}
+            title={disabled ? t('translations_disabled_hint') : t('translations_download')}
             className="text-xs border border-gray-300 rounded-lg px-2.5 py-1 hover:bg-white disabled:opacity-50"
           >
-            {busy === 'download' ? 'Downloading…' : 'Download JSON'}
+            {busy === 'download' ? t('translations_downloading') : t('translations_download')}
           </button>
 
           <input
@@ -210,7 +215,7 @@ export default function TranslationBundleControls({
             disabled={!!busy}
             className="text-xs border border-gray-300 rounded-lg px-2.5 py-1 hover:bg-white disabled:opacity-50"
           >
-            {busy === 'upload' ? 'Uploading…' : 'Upload JSON'}
+            {busy === 'upload' ? t('translations_uploading') : t('translations_upload')}
           </button>
 
           {onAutoTranslate && (
@@ -218,10 +223,10 @@ export default function TranslationBundleControls({
               type="button"
               onClick={doAutoTranslate}
               disabled={disabled || !!busy}
-              title={disabled ? 'Set disclaimer / instructions text first' : 'Fill missing translations via the summariser LLM'}
+              title={disabled ? t('translations_disabled_hint') : t('translations_autotranslate_tooltip')}
               className="text-xs bg-uni-blue text-white rounded-lg px-2.5 py-1 hover:opacity-90 disabled:opacity-50"
             >
-              {busy === 'translate' ? 'Translating…' : autoTranslateLabel}
+              {busy === 'translate' ? t('translations_translating') : autoTransLabel}
             </button>
           )}
         </div>
@@ -229,9 +234,7 @@ export default function TranslationBundleControls({
 
       {err && <p className="text-uni-red text-xs mt-2">{err}</p>}
       <p className="text-[11px] text-gray-500 mt-2">
-        Download the JSON, translate the language keys by hand or with a tool, and upload it back. The JSON
-        preserves the source text so translators see what they're working from. Auto-translate uses the
-        summariser LLM to fill missing languages from the source.
+        {t('translations_help_text')}
       </p>
     </div>
   )

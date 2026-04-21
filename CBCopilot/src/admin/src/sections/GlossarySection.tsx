@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getGlossary, saveGlossary } from '../api'
 import type { GlossaryTerm } from '../api'
 import { downloadJSON } from '../utils'
+import { useT } from '../i18n'
 
 export default function GlossarySection() {
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([])
@@ -11,6 +12,7 @@ export default function GlossarySection() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const uploadRef = useRef<HTMLInputElement>(null)
+  const { t } = useT()
 
   useEffect(() => {
     getGlossary()
@@ -27,19 +29,19 @@ export default function GlossarySection() {
       const text = await file.text()
       const data = JSON.parse(text)
       if (!Array.isArray(data.terms)) {
-        throw new Error('Invalid format: JSON must have a "terms" array. Download the current file as a template.')
+        throw new Error(t('glossary_invalid_terms_array'))
       }
-      for (const t of data.terms) {
-        if (!t.term) {
-          throw new Error(`Each entry needs a "term" field. Problem with: ${JSON.stringify(t).slice(0, 80)}`)
+      for (const term of data.terms) {
+        if (!term.term) {
+          throw new Error(t('glossary_missing_term_field', { snippet: JSON.stringify(term).slice(0, 80) }))
         }
       }
       const result = await saveGlossary(data.terms)
       setGlossary(result.terms)
-      setSuccess(`Glossary updated: ${result.terms.length} terms`)
+      setSuccess(t('glossary_updated', { count: result.terms.length }))
       setTimeout(() => setSuccess(''), 3000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Invalid JSON file')
+      setError(err instanceof Error ? err.message : t('generic_invalid_json'))
     } finally {
       if (uploadRef.current) uploadRef.current.value = ''
     }
@@ -49,18 +51,18 @@ export default function GlossarySection() {
     <section className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
       <div className="flex items-center justify-between mb-1">
         <h3 className="text-lg font-semibold text-gray-800">
-          Glossary
-          <span className="text-sm font-normal text-gray-400 ml-2">({glossary.length} terms)</span>
+          {t('glossary_heading')}
+          <span className="text-sm font-normal text-gray-400 ml-2">({t('glossary_entry_count', { count: glossary.length })})</span>
         </h3>
         <div className="flex items-center gap-2">
           <button
             onClick={() => downloadJSON({ terms: glossary }, 'glossary.json')}
             className="border border-gray-300 text-gray-600 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors hover:bg-gray-50"
           >
-            Download JSON
+            {t('generic_download_json')}
           </button>
           <label className="bg-uni-blue text-white rounded-lg px-3 py-1.5 text-sm font-medium transition-colors hover:opacity-90 cursor-pointer">
-            Upload JSON
+            {t('generic_upload_json')}
             <input
               ref={uploadRef}
               type="file"
@@ -72,8 +74,7 @@ export default function GlossarySection() {
         </div>
       </div>
       <p className="text-xs text-gray-400 mb-3">
-        Domain terms injected into every session for consistent terminology and translations.
-        Download the current file, edit it, and upload the updated version.
+        {t('glossary_description')}
       </p>
 
       {error && <p className="text-uni-red text-sm mb-2">{error}</p>}
@@ -85,16 +86,16 @@ export default function GlossarySection() {
             onClick={() => setExpanded(!expanded)}
             className="text-xs text-uni-blue hover:underline mb-2"
           >
-            {expanded ? 'Hide terms' : `Show all ${glossary.length} terms`}
+            {expanded ? t('glossary_hide') : t('glossary_show_all', { count: glossary.length })}
           </button>
           {expanded && (
             <div className="overflow-x-auto">
               <table className="w-full text-sm mt-2">
                 <thead>
                   <tr className="border-b border-gray-200">
-                    <th className="text-left px-2 py-2 font-medium text-gray-600">Term</th>
-                    <th className="text-left px-2 py-2 font-medium text-gray-600">Definition</th>
-                    <th className="text-left px-2 py-2 font-medium text-gray-600">Translations</th>
+                    <th className="text-left px-2 py-2 font-medium text-gray-600">{t('glossary_col_term')}</th>
+                    <th className="text-left px-2 py-2 font-medium text-gray-600">{t('glossary_col_definition')}</th>
+                    <th className="text-left px-2 py-2 font-medium text-gray-600">{t('glossary_col_translations')}</th>
                   </tr>
                 </thead>
                 <tbody>

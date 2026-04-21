@@ -10,6 +10,7 @@ import PerFrontendOrgsPanel from './panels/PerFrontendOrgsPanel'
 import PerFrontendLLMPanel from './panels/PerFrontendLLMPanel'
 import PromptsSection from './sections/PromptsSection'
 import RAGSection from './sections/RAGSection'
+import { useT } from './i18n'
 
 const POLL_INTERVAL_MS = 10000  // refresh status every 10s
 
@@ -21,6 +22,7 @@ export default function FrontendsTab() {
   const [newName, setNewName] = useState('')
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
+  const { t } = useT()
 
   const reload = async () => {
     try {
@@ -50,7 +52,7 @@ export default function FrontendsTab() {
       setNewUrl(''); setNewName(''); setShowRegister(false)
       await reload()
       setSelected(r.frontend.frontend_id)
-      setInfo(`Registered as "${r.frontend.name}"`)
+      setInfo(t('frontends_registered_info', { name: r.frontend.name }))
       setTimeout(() => setInfo(''), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -68,7 +70,7 @@ export default function FrontendsTab() {
   }
 
   const removeFrontend = async (frontendId: string, displayName: string) => {
-    if (!confirm(`Unregister "${displayName}"? Backend will stop polling it. Per-frontend config (companies, branding, prompts, RAG) is NOT deleted from disk and will be reclaimed if you re-register a frontend with the same name.`)) return
+    if (!confirm(t('frontends_unregister_confirm', { name: displayName }))) return
     try {
       await deleteFrontend(frontendId)
       if (selected === frontendId) setSelected('')
@@ -84,12 +86,12 @@ export default function FrontendsTab() {
     <div className="max-w-5xl space-y-4">
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-lg font-semibold text-gray-800">Registered frontends</h2>
+          <h2 className="text-lg font-semibold text-gray-800">{t('frontends_registered_title')}</h2>
           <button
             onClick={() => setShowRegister(s => !s)}
             className="text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90"
           >
-            {showRegister ? 'Cancel' : '+ Register frontend'}
+            {showRegister ? t('generic_cancel') : t('frontends_register_button')}
           </button>
         </div>
 
@@ -99,32 +101,31 @@ export default function FrontendsTab() {
         {showRegister && (
           <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-3">
             <p className="text-xs text-gray-600 mb-3">
-              Register a frontend with the URL where its sidecar is reachable from this backend container and a
-              human-readable name. The internal config-storage ID is derived from the name automatically.
+              {t('frontends_register_helper')}
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs text-gray-500 mb-1">URL (sidecar reachable here)</label>
+                <label className="block text-xs text-gray-500 mb-1">{t('frontends_register_url_label')}</label>
                 <input value={newUrl} onChange={e => setNewUrl(e.target.value)}
-                  placeholder="http://cbc-frontend"
+                  placeholder={t('frontends_register_url_placeholder')}
                   className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono" />
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Display name</label>
+                <label className="block text-xs text-gray-500 mb-1">{t('frontends_register_name_label')}</label>
                 <input value={newName} onChange={e => setNewName(e.target.value)}
-                  placeholder="Packaging — Europe"
+                  placeholder={t('frontends_register_name_placeholder')}
                   className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm" />
               </div>
             </div>
             <button onClick={register} disabled={!newUrl.trim() || !newName.trim()}
               className="mt-3 text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50">
-              Register
+              {t('frontends_register_submit')}
             </button>
           </div>
         )}
 
         {frontends.length === 0 ? (
-          <p className="text-sm text-gray-400 py-3">No frontends registered yet. Click "+ Register frontend" to add one.</p>
+          <p className="text-sm text-gray-400 py-3">{t('frontends_empty')}</p>
         ) : (
           <ul className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
             {frontends.map(fe => (
@@ -139,18 +140,20 @@ export default function FrontendsTab() {
                   <div className="text-xs text-gray-500 truncate">{fe.url}</div>
                 </div>
                 <div className="text-xs text-gray-400 whitespace-nowrap">
-                  {fe.last_seen ? `last seen ${new Date(fe.last_seen).toLocaleTimeString()}` : '—'}
+                  {fe.last_seen
+                    ? t('frontends_last_seen', { time: new Date(fe.last_seen).toLocaleTimeString() })
+                    : t('frontends_last_seen_never')}
                 </div>
                 <label onClick={e => e.stopPropagation()} className="flex items-center gap-1 text-xs">
                   <input type="checkbox" checked={fe.enabled}
                     onChange={e => toggleEnabled(fe.frontend_id, e.target.checked)} />
-                  enabled
+                  {t('frontends_enabled_toggle')}
                 </label>
                 <button
                   onClick={e => { e.stopPropagation(); removeFrontend(fe.frontend_id, fe.name) }}
                   className="text-xs text-uni-red hover:underline"
                 >
-                  Unregister
+                  {t('frontends_unregister')}
                 </button>
               </li>
             ))}

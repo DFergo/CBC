@@ -16,11 +16,13 @@ import type {
 } from '../api'
 import SlotEditor from '../components/llm/SlotEditor'
 import ProviderCard from '../components/llm/ProviderCard'
+import { useT } from '../i18n'
+import type { AdminTranslationKeys } from '../i18n'
 
-const SLOT_ORDER: { key: 'inference' | 'compressor' | 'summariser'; label: string; hint: string }[] = [
-  { key: 'inference', label: 'Inference', hint: 'Main chat responses.' },
-  { key: 'compressor', label: 'Compressor', hint: 'Lightweight model that folds older messages into a running summary at progressive thresholds.' },
-  { key: 'summariser', label: 'Summariser', hint: 'Document summaries during injection + final conversation summary emailed to the user.' },
+const SLOT_ORDER: { key: 'inference' | 'compressor' | 'summariser'; labelKey: AdminTranslationKeys; hintKey: AdminTranslationKeys }[] = [
+  { key: 'inference', labelKey: 'llm_slot_inference', hintKey: 'llm_slot_inference_hint' },
+  { key: 'compressor', labelKey: 'llm_slot_compressor', hintKey: 'llm_slot_compressor_hint' },
+  { key: 'summariser', labelKey: 'llm_slot_summariser', hintKey: 'llm_slot_summariser_hint' },
 ]
 
 const SLOT_OPTIONS: SlotName[] = ['inference', 'compressor', 'summariser']
@@ -34,6 +36,7 @@ export default function LLMSection() {
   const [health, setHealth] = useState<LLMHealth | null>(null)
   const [saveStatus, setSaveStatus] = useState('')
   const [error, setError] = useState('')
+  const { t } = useT()
 
   const refreshProviders = async () => {
     try {
@@ -66,12 +69,12 @@ export default function LLMSection() {
 
   const save = async () => {
     if (!cfg) return
-    setSaveStatus('Saving…')
+    setSaveStatus(t('generic_saving'))
     setError('')
     try {
       const saved = await saveLLMConfig(cfg)
       setCfg(saved)
-      setSaveStatus('Saved')
+      setSaveStatus(t('generic_saved'))
       setTimeout(() => setSaveStatus(''), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -92,8 +95,8 @@ export default function LLMSection() {
   if (!cfg || !defaults) {
     return (
       <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-800 mb-1">LLM</h3>
-        <p className="text-sm text-gray-400">Loading…</p>
+        <h3 className="text-lg font-semibold text-gray-800 mb-1">{t('llm_heading')}</h3>
+        <p className="text-sm text-gray-400">{t('generic_loading')}</p>
       </section>
     )
   }
@@ -109,11 +112,11 @@ export default function LLMSection() {
   return (
     <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
       <div className="flex items-center justify-between mb-1">
-        <h3 className="text-lg font-semibold text-gray-800">LLM</h3>
+        <h3 className="text-lg font-semibold text-gray-800">{t('llm_heading')}</h3>
         {saveStatus && <span className="text-xs text-gray-500">{saveStatus}</span>}
       </div>
       <p className="text-sm text-gray-500 mb-4">
-        Three slots, each picking one of three provider types independently. API keys live in container env vars — only the variable <em>name</em> is stored here.
+        {t('llm_description')}
       </p>
 
       {/* Top indicator: LM Studio + Ollama live status + model count */}
@@ -125,11 +128,11 @@ export default function LLMSection() {
       {error && <p className="text-uni-red text-sm mb-3">{error}</p>}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {SLOT_ORDER.map(({ key, label, hint }) => (
+        {SLOT_ORDER.map(({ key, labelKey, hintKey }) => (
           <SlotEditor
             key={key}
-            label={label}
-            hint={hint}
+            label={t(labelKey)}
+            hint={t(hintKey)}
             slot={cfg[key]}
             onChange={p => updateSlot(key, p)}
             health={health?.[key]}
@@ -142,7 +145,7 @@ export default function LLMSection() {
       {/* Context compression */}
       <div className="mt-6 border border-gray-200 rounded-lg p-4">
         <div className="flex items-center justify-between mb-1">
-          <h4 className="text-sm font-semibold text-gray-700">Context compression</h4>
+          <h4 className="text-sm font-semibold text-gray-700">{t('llm_context_compression')}</h4>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -150,17 +153,15 @@ export default function LLMSection() {
               onChange={e => updateCompression({ enabled: e.target.checked })}
               className="rounded border-gray-300"
             />
-            Enabled
+            {t('llm_context_enabled')}
           </label>
         </div>
         <p className="text-xs text-gray-500 mb-3">
-          When enabled, the conversation is compressed by the slot configured above as "Compressor", using progressive thresholds:
-          first compression at <em>first threshold</em> tokens, then every <em>step size</em> tokens after.
-          Example: first=20 000, step=15 000 → compressions at 20k, 35k, 50k, 65k, …
+          {t('llm_context_description')}
         </p>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">First threshold (tokens)</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('llm_context_first_threshold')}</label>
             <input
               type="number"
               min={1000}
@@ -171,7 +172,7 @@ export default function LLMSection() {
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Step size (tokens)</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('llm_context_step_size')}</label>
             <input
               type="number"
               min={500}
@@ -186,13 +187,13 @@ export default function LLMSection() {
 
       {/* Summary routing */}
       <div className="mt-4 border border-gray-200 rounded-lg p-4">
-        <h4 className="text-sm font-semibold text-gray-700 mb-1">Summary routing</h4>
+        <h4 className="text-sm font-semibold text-gray-700 mb-1">{t('llm_summary_routing')}</h4>
         <p className="text-xs text-gray-500 mb-3">
-          Pick which slot handles each summarisation task. The compressor can be used here too — any slot works.
+          {t('llm_summary_routing_description')}
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Document summary on injection</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('llm_summary_document')}</label>
             <select
               value={cfg.routing.document_summary_slot}
               onChange={e => updateRouting({ document_summary_slot: e.target.value as SlotName })}
@@ -202,7 +203,7 @@ export default function LLMSection() {
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Final conversation summary</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('llm_summary_final')}</label>
             <select
               value={cfg.routing.user_summary_slot}
               onChange={e => updateRouting({ user_summary_slot: e.target.value as SlotName })}
@@ -215,9 +216,9 @@ export default function LLMSection() {
       </div>
 
       <div className="flex gap-2 mt-4">
-        <button onClick={save} className="text-sm bg-uni-blue text-white rounded-lg px-3 py-2 hover:opacity-90">Save LLM config</button>
-        <button onClick={runHealth} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50">Check health</button>
-        <button onClick={refreshProviders} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50">Refresh providers</button>
+        <button onClick={save} className="text-sm bg-uni-blue text-white rounded-lg px-3 py-2 hover:opacity-90">{t('llm_save_config')}</button>
+        <button onClick={runHealth} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50">{t('llm_check_health')}</button>
+        <button onClick={refreshProviders} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50">{t('llm_refresh_providers')}</button>
       </div>
     </section>
   )

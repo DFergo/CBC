@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { getRAGSettings, toggleContextualRetrieval } from '../api'
 import type { GlobalRAGSettings } from '../api'
+import { useT } from '../i18n'
 
 export default function RAGPipelineSection() {
   const [settings, setSettings] = useState<GlobalRAGSettings | null>(null)
@@ -11,6 +12,7 @@ export default function RAGPipelineSection() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  const { t } = useT()
 
   const reload = async () => {
     setError('')
@@ -26,19 +28,19 @@ export default function RAGPipelineSection() {
   const handleToggle = async (next: boolean) => {
     if (!settings) return
     const warn = next
-      ? 'Enabling Contextual Retrieval reindexes the ENTIRE corpus and calls the summariser LLM once per chunk. On a large corpus this can take hours, and queries will return degraded results while it runs. Continue?'
-      : 'Disabling Contextual Retrieval reindexes the entire corpus without the prepended context line. Fast, but queries during the reindex are degraded. Continue?'
+      ? t('rag_pipeline_contextual_enable_confirm')
+      : t('rag_pipeline_contextual_disable_confirm')
     if (!confirm(warn)) return
 
     setBusy(true)
-    setStatus(next ? 'Enabling + reindexing…' : 'Disabling + reindexing…')
+    setStatus(next ? t('rag_pipeline_enabling') : t('rag_pipeline_disabling'))
     setError('')
     try {
       const result = await toggleContextualRetrieval(next)
       setStatus(
         result.changed
-          ? `Reindexed ${result.scopes_reindexed} scopes.`
-          : 'Already in that state.',
+          ? t('rag_pipeline_reindexed', { count: result.scopes_reindexed })
+          : t('rag_pipeline_already_in_state'),
       )
       await reload()
       setTimeout(() => setStatus(''), 6000)
@@ -59,9 +61,9 @@ export default function RAGPipelineSection() {
         aria-expanded={expanded}
       >
         <div>
-          <h3 className="text-lg font-semibold text-gray-800">RAG pipeline</h3>
+          <h3 className="text-lg font-semibold text-gray-800">{t('rag_pipeline_heading')}</h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            Embedder, reranker, and Contextual Retrieval. Applies to every scope.
+            {t('rag_pipeline_description')}
             {status && <span className="ml-2 text-green-700">{status}</span>}
           </p>
         </div>
@@ -71,35 +73,27 @@ export default function RAGPipelineSection() {
       {expanded && (
         <div className="mt-5 space-y-4">
           {error && <p className="text-uni-red text-sm">{error}</p>}
-          {!settings && !error && <p className="text-sm text-gray-400">Loading…</p>}
+          {!settings && !error && <p className="text-sm text-gray-400">{t('generic_loading')}</p>}
 
           {settings && (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
-                  <div className="text-xs text-gray-500 mb-0.5">Embedder</div>
+                  <div className="text-xs text-gray-500 mb-0.5">{t('rag_pipeline_embedder')}</div>
                   <code className="text-sm text-gray-800">{settings.embedding_model}</code>
-                  <p className="text-[11px] text-gray-500 mt-1">
-                    Changing this model requires editing <code>deployment_backend.json</code> and
-                    rebuilding the Docker image (weights are pre-downloaded).
-                  </p>
                 </div>
                 <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
-                  <div className="text-xs text-gray-500 mb-0.5">Reranker</div>
+                  <div className="text-xs text-gray-500 mb-0.5">{t('rag_pipeline_reranker')}</div>
                   <code className="text-sm text-gray-800">
-                    {settings.reranker_enabled ? settings.reranker_model : 'disabled'}
+                    {settings.reranker_enabled ? settings.reranker_model : '—'}
                   </code>
-                  <p className="text-[11px] text-gray-500 mt-1">
-                    Fetches {settings.reranker_fetch_k} candidates (BM25 + dense), reranks down to
-                    {' '}{settings.reranker_top_n}.
-                  </p>
                 </div>
                 <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
-                  <div className="text-xs text-gray-500 mb-0.5">Chunk size</div>
-                  <div className="text-sm text-gray-800">{settings.chunk_size} tokens</div>
+                  <div className="text-xs text-gray-500 mb-0.5">{t('rag_pipeline_chunk_size')}</div>
+                  <div className="text-sm text-gray-800">{settings.chunk_size}</div>
                 </div>
                 <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
-                  <div className="text-xs text-gray-500 mb-0.5">Retrieval strategy</div>
+                  <div className="text-xs text-gray-500 mb-0.5">{t('rag_pipeline_strategy')}</div>
                   <div className="text-sm text-gray-800">Hybrid BM25 + vector + cross-encoder rerank</div>
                 </div>
               </div>
@@ -107,16 +101,14 @@ export default function RAGPipelineSection() {
               <div className="border border-amber-200 bg-amber-50/40 rounded-lg p-4">
                 <div className="flex items-center justify-between mb-2">
                   <div>
-                    <div className="text-sm font-semibold text-gray-800">Contextual Retrieval</div>
+                    <div className="text-sm font-semibold text-gray-800">{t('rag_pipeline_contextual_title')}</div>
                     <p className="text-xs text-gray-600 mt-0.5">
-                      Anthropic (2024): before embedding each chunk, the summariser LLM generates a
-                      short context line that situates it within the document. Improves recall on
-                      documents with many tables / cross-references.
+                      {t('rag_pipeline_contextual_description')}
                     </p>
                   </div>
                   <label className="flex items-center gap-2 ml-3">
                     <span className="text-xs text-gray-600">
-                      {settings.contextual_enabled ? 'on' : 'off'}
+                      {settings.contextual_enabled ? t('rag_pipeline_contextual_on') : t('rag_pipeline_contextual_off')}
                     </span>
                     <input
                       type="checkbox"
@@ -128,9 +120,7 @@ export default function RAGPipelineSection() {
                   </label>
                 </div>
                 <p className="text-[11px] text-amber-800">
-                  ⚠ Toggling either way reindexes the ENTIRE corpus. With CR on, each chunk costs a
-                  summariser call → minutes to hours depending on volume. Queries return degraded
-                  results during the reindex.
+                  {t('rag_pipeline_contextual_warning')}
                 </p>
               </div>
             </>

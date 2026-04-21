@@ -16,6 +16,7 @@ import {
 } from '../api'
 import type { FrontendBranding, TranslationBundle } from '../api'
 import TranslationBundleControls from '../components/TranslationBundleControls'
+import { useT } from '../i18n'
 
 const EMPTY: FrontendBranding = {
   app_title: '', org_name: '', logo_url: '', primary_color: '', secondary_color: '',
@@ -32,6 +33,7 @@ export default function BrandingSection() {
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  const { t } = useT()
 
   const reload = async () => {
     try {
@@ -55,12 +57,12 @@ export default function BrandingSection() {
   const enableDefaults = async () => {
     setError('')
     try {
-      const r = await saveBrandingDefaults(EMPTY)
+      await saveBrandingDefaults(EMPTY)
       setBranding(EMPTY)
       setHasDefaults(true)
       setExpanded(true)
       setDirty(false)
-      setStatus(`Defaults enabled — ${r.pushed_to_frontends} frontend${r.pushed_to_frontends === 1 ? '' : 's'} updated. Fields below stack on top of the hardcoded baseline.`)
+      setStatus(t('generic_saved'))
       setTimeout(() => setStatus(''), 4000)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -68,15 +70,15 @@ export default function BrandingSection() {
   }
 
   const disableDefaults = async () => {
-    if (!confirm('Disable global branding defaults? Frontends without their own override will fall back to the hardcoded baseline.')) return
+    if (!confirm(t('branding_disable_confirm'))) return
     setError('')
     try {
-      const r = await deleteBrandingDefaults()
+      await deleteBrandingDefaults()
       setBranding(EMPTY)
       setHasDefaults(false)
       setExpanded(false)
       setDirty(false)
-      setStatus(`Removed — ${r.pushed_to_frontends} frontend${r.pushed_to_frontends === 1 ? '' : 's'} updated`)
+      setStatus(t('generic_saved'))
       setTimeout(() => setStatus(''), 4000)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -84,13 +86,13 @@ export default function BrandingSection() {
   }
 
   const save = async () => {
-    setStatus('Saving…')
+    setStatus('…')
     setError('')
     try {
-      const r = await saveBrandingDefaults(branding)
+      await saveBrandingDefaults(branding)
       setHasDefaults(true)
       setDirty(false)
-      setStatus(`Saved — pushed to ${r.pushed_to_frontends} frontend${r.pushed_to_frontends === 1 ? '' : 's'} (those without their own override)`)
+      setStatus(t('generic_saved'))
       setTimeout(() => setStatus(''), 4000)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -107,10 +109,10 @@ export default function BrandingSection() {
         className="w-full flex items-center justify-between mb-1 text-left disabled:cursor-default"
         aria-expanded={expanded}
       >
-        <h3 className="text-lg font-semibold text-gray-800">Branding defaults</h3>
+        <h3 className="text-lg font-semibold text-gray-800">{t('branding_defaults_heading')}</h3>
         <div className="flex items-center gap-3">
           <span className="text-xs text-gray-500">
-            {hasDefaults ? 'custom ◆' : 'using hardcoded baseline'}
+            {hasDefaults ? t('branding_custom_badge') : t('branding_baseline_badge')}
             {status && <span className="ml-2 text-green-700">{status}</span>}
           </span>
           {hasDefaults && (
@@ -119,9 +121,7 @@ export default function BrandingSection() {
         </div>
       </button>
       <p className="text-sm text-gray-500 mb-4">
-        System-wide branding applied to every frontend without its own override. Per-frontend overrides (Frontends tab → Branding)
-        always win, and any field left empty here inherits the hardcoded baseline. Saving pushes immediately to every registered
-        frontend without an override.
+        {t('branding_defaults_description')}
       </p>
 
       {error && <p className="text-uni-red text-sm mb-3">{error}</p>}
@@ -133,62 +133,60 @@ export default function BrandingSection() {
           onChange={e => (e.target.checked ? enableDefaults() : disableDefaults())}
           className="rounded border-gray-300"
         />
-        Use custom branding defaults
+        {t('branding_enable_defaults')}
       </label>
 
       {hasDefaults && expanded && (
         <>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-gray-500 mb-1">App title</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('branding_app_title')}</label>
               <input type="text" value={branding.app_title} onChange={e => update({ app_title: e.target.value })}
                 placeholder="Collective Bargaining Copilot"
                 className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm" />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">App owner (header right + footer)</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('branding_app_owner')}</label>
               <input type="text" value={branding.org_name} onChange={e => update({ org_name: e.target.value })}
                 placeholder="UNI Global Union"
                 className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm" />
             </div>
             <div className="md:col-span-2">
-              <label className="block text-xs text-gray-500 mb-1">Logo URL</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('branding_logo_url')}</label>
               <input type="text" value={branding.logo_url} onChange={e => update({ logo_url: e.target.value })}
                 placeholder="/assets/logo.png"
                 className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm" />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Primary color</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('branding_primary_color')}</label>
               <input type="text" value={branding.primary_color} onChange={e => update({ primary_color: e.target.value })}
                 placeholder="#003087"
                 className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono" />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Secondary color</label>
+              <label className="block text-xs text-gray-500 mb-1">{t('branding_secondary_color')}</label>
               <input type="text" value={branding.secondary_color} onChange={e => update({ secondary_color: e.target.value })}
                 placeholder="#E31837"
                 className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono" />
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs text-gray-500 mb-1">
-                Disclaimer text <span className="text-gray-400">(replaces the i18n disclaimer when set)</span>
+                {t('branding_disclaimer_text')} <span className="text-gray-400">({t('branding_disclaimer_hint')})</span>
               </label>
               <textarea
                 value={branding.disclaimer_text}
                 onChange={e => update({ disclaimer_text: e.target.value })}
-                placeholder="Leave empty to inherit the default 3-section disclaimer."
                 rows={6}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono"
               />
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs text-gray-500 mb-1">
-                Instructions text <span className="text-gray-400">(replaces the i18n instructions when set)</span>
+                {t('branding_instructions_text')} <span className="text-gray-400">({t('branding_instructions_hint')})</span>
               </label>
               <textarea
                 value={branding.instructions_text}
                 onChange={e => update({ instructions_text: e.target.value })}
-                placeholder="Leave empty to inherit the default instructions."
                 rows={6}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono"
               />
@@ -218,11 +216,11 @@ export default function BrandingSection() {
           <div className="flex gap-2 mt-4">
             <button onClick={save} disabled={!dirty}
               className="text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50">
-              Save + push to frontends
+              {t('branding_save_push')}
             </button>
             <button onClick={() => setExpanded(false)}
               className="text-sm border border-gray-300 text-gray-600 rounded-lg px-3 py-1.5 hover:bg-gray-50">
-              Collapse
+              {t('branding_collapse')}
             </button>
           </div>
         </>

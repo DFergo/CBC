@@ -1,5 +1,98 @@
 # CBC — Changelog
 
+## Sprint 12 Phase B — Admin i18n wiring pass 1 (2026-04-21)
+
+Continuation of Phase A. Replaced hardcoded English in the sections/panels that
+had keys but weren't consuming them, and added ~200 new keys for the rest.
+i18n-translator subagent handled translation; splice helper spliced results
+back into the 14 non-EN dicts. Everything compiles (`tsc --noEmit` clean) and
+falls back to EN for any slot a translator hasn't landed yet.
+
+### Wired (consuming `t()` throughout)
+
+- `sections/GlossarySection.tsx` — heading, count, download/upload, table
+  headers, description, all error + success toasts.
+- `sections/OrgsSection.tsx` — same shape as Glossary (heading, description,
+  table headers, upload validation errors, success counter).
+- `sections/GuardrailsSection.tsx` — description + explanation, threshold
+  captions, pattern-count labels (singular/plural), user-trigger headings.
+- `sections/LLMSection.tsx` — heading, provider description, slot-order
+  labels + hints, compression block, summary-routing block, Save / Check
+  health / Refresh providers buttons, loading state.
+- `sections/SMTPSection.tsx` — everything: host/port/user/pass labels,
+  description, STARTTLS toggle, admin-emails section, notification toggles,
+  per-frontend override block, confirm dialogs, test-email button.
+- `panels/CompanyManagementPanel.tsx` — companies heading, description,
+  add button, display-name field, Compare-All badge, enabled toggle,
+  show/hide content, delete, country-tags hint, empty-state message,
+  added toast, remove confirm.
+- `panels/PerFrontendLLMPanel.tsx` — override heading, inheriting-global
+  badge, slot-count badge (singular/plural), description, Override
+  checkbox label, Save / Refresh buttons, slot labels from shared pool.
+- `panels/PerFrontendOrgsPanel.tsx` — override heading, inheriting badge,
+  description, mode dropdown + values, preview block, explain texts per
+  mode, download/upload buttons, upload-hint, show-count toggle, removal
+  confirm + result, upload errors + success.
+- `components/TranslationBundleControls.tsx` — heading, coverage counters
+  (disclaimer / instructions with filled/total placeholders), source-lang
+  label, Download / Upload / Auto-translate button labels incl. busy
+  states, upload validation errors, tooltip for Auto-translate, help text.
+- `FrontendsTab.tsx` — registered heading, register button, register
+  helper text + form fields + placeholders, empty-state, per-row last-seen
+  label, enabled toggle, Unregister button + confirm, registered-info
+  toast.
+- `SessionsTab.tsx` — title, filter pills, empty state, per-group session
+  count (singular/plural), all 9 table columns, row-inline destroy
+  button, flag-star titles, Compare-All cell label, em-dash fallback.
+  Detail drawer: summary heading + Copy label + Copied state, Flag /
+  Unflag / Destroy buttons, Survey section + all 14 `dt` labels
+  (Frontend / Language / Country / Region / Name / anonymous / Email /
+  none / Organisation / Position / Created / Last activity / Completed /
+  Violations), initial-query label, uploads heading with count +
+  download / copy-text buttons + feedback states, conversation heading.
+  `timeAgo(iso, lang)` now localises via `tAdmin`.
+
+### Not wired this pass (deferred to a later pass)
+
+- `sections/RAGSection.tsx` + `sections/PromptsSection.tsx` — large
+  surfaces with inline text that's densely coupled to resolution logic;
+  deferred so this pass could land cleanly.
+- `RegisteredUsersTab.tsx` — XLSX import / export, chip inputs, per-frontend
+  list switcher, still on English.
+- Minor leftovers: prompt-body editor strings (intentionally stay EN —
+  prompt bodies are operator-authored content, not UI chrome).
+
+### New translation keys + bundles
+
+- Added ~200 keys to `AdminTranslationKeys` across three batches:
+  Batch 1 — Glossary / Orgs / Guardrails / LLM / SMTP section bodies (90 keys).
+  Batch 2 — Frontends tab body + Translation-bundle controls + Company /
+  LLM / Orgs panels (59 keys).
+  Batch 3 — Sessions tab body + detail drawer (49 keys).
+- Delegated Batch 1 + Batch 2 to the i18n-translator subagent running in
+  parallel (run-in-background). Splice helper read each subagent's
+  transcript and inserted the 14 language fragments into the non-EN
+  dicts (EN is hand-authored). `tsc --noEmit` clean throughout.
+- Batch 3 (Sessions) — translator launched; splice will run when it
+  lands. EN values are in place so the UI renders correctly in every
+  language today via the built-in EN fallback.
+
+### Fallback behaviour (no UI regression when a key is untranslated)
+
+`AdminTranslations = Partial<Record<…>>` + the existing lookup
+`DICTIONARIES[lang]?.[key] ?? EN[key] ?? key` means any key we add to EN
+works in every language immediately; the translator pass just upgrades
+the non-EN rendering from "EN fallback" to "native text". No runtime
+errors, no missing-key crashes.
+
+### Validation
+
+- `cd CBCopilot/src/admin && npx tsc --noEmit` — exit 0 after every wiring batch.
+- Manual smoke deferred — UI boot + language switch in the browser
+  stays a Daniel check (iCloud + Portainer flow).
+
+---
+
 ## Sprint 12 Phase A — Admin i18n + branded header (2026-04-21)
 
 Transferring CBC to UNI affiliates means the admin is the first surface a

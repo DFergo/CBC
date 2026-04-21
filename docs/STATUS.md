@@ -1,7 +1,13 @@
 # CBC — Project Status
 
-**Current Sprint:** 12 Phase A — Admin i18n + branded header — **CLOSED 2026-04-21**
+**Current Sprint:** 12 Phase B — Admin i18n wiring pass 1 — **IN PROGRESS 2026-04-21**
 **Last Updated:** 2026-04-21
+
+Sprint 12 Phase B — pass 1 landed: ~200 new keys, three translator batches, 11 files wired (Glossary / Orgs / Guardrails / LLM / SMTP sections; Company / PerFrontendLLM / PerFrontendOrgs panels; TranslationBundleControls; FrontendsTab body; SessionsTab + detail drawer). Fallback path (`AdminTranslations = Partial<…>` + `DICTIONARIES[lang]?.[key] ?? EN[key]`) means untranslated slots render in EN transparently — no UI regression while Batch-3 (SessionsTab) translations splice in.
+
+Still-to-wire in a follow-up pass: `RAGSection`, `PromptsSection` (except prompt bodies — those stay EN by design), `RegisteredUsersTab` (XLSX import + filter + chips).
+
+## Sprint 12 Phase A — Admin i18n + branded header — CLOSED 2026-04-21
 
 Sprint 12 Phase A closed: admin panel shell speaks 15 languages + switches at runtime. Full translation bundle ready for the whole surface; only the frequently-touched chrome (header, tabs, login, setup, per-frontend session settings incl. the CBA citation toggles) has been wired to consume it in this phase. Remaining sections (Branding / RAG / Prompts / LLM / SMTP / Sessions detail / Users / Frontends tab body) still render English — the i18n keys exist, wiring them is mechanical.
 

@@ -15,13 +15,15 @@ import {
 import type { LLMConfig, LLMOverride, SlotConfig, ProvidersStatus } from '../api'
 import SlotEditor from '../components/llm/SlotEditor'
 import ProviderCard from '../components/llm/ProviderCard'
+import { useT } from '../i18n'
+import type { AdminTranslationKeys } from '../i18n'
 
 const POLL_INTERVAL_MS = 15000
 
-const SLOT_ORDER: { key: 'inference' | 'compressor' | 'summariser'; label: string; hint: string }[] = [
-  { key: 'inference', label: 'Inference', hint: 'Main chat responses.' },
-  { key: 'compressor', label: 'Compressor', hint: 'Lightweight model that folds older messages into a running summary at progressive thresholds.' },
-  { key: 'summariser', label: 'Summariser', hint: 'Document summaries on injection + final conversation summary emailed to the user.' },
+const SLOT_ORDER: { key: 'inference' | 'compressor' | 'summariser'; labelKey: AdminTranslationKeys; hintKey: AdminTranslationKeys }[] = [
+  { key: 'inference', labelKey: 'llm_slot_inference', hintKey: 'llm_slot_inference_hint' },
+  { key: 'compressor', labelKey: 'llm_slot_compressor', hintKey: 'llm_slot_compressor_hint' },
+  { key: 'summariser', labelKey: 'llm_slot_summariser', hintKey: 'llm_slot_summariser_hint' },
 ]
 
 type SlotKey = 'inference' | 'compressor' | 'summariser'
@@ -34,6 +36,7 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
   const [dirty, setDirty] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
   const [error, setError] = useState('')
+  const { t } = useT()
 
   const refreshProviders = async () => {
     try { setProviders(await getProvidersStatus()) }
@@ -65,8 +68,8 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
   if (!globalCfg || !defaults) {
     return (
       <div className="border border-gray-200 rounded-lg p-4">
-        <h4 className="text-sm font-semibold text-gray-700 mb-1">LLM</h4>
-        <p className="text-xs text-gray-400">Loading…</p>
+        <h4 className="text-sm font-semibold text-gray-700 mb-1">{t('llm_override_heading')}</h4>
+        <p className="text-xs text-gray-400">{t('generic_loading')}</p>
       </div>
     )
   }
@@ -89,13 +92,13 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
   }
 
   const save = async () => {
-    setSaveStatus('Saving…')
+    setSaveStatus(t('generic_saving'))
     setError('')
     try {
       const r = await saveFrontendLLMOverride(frontendId, override)
       setOverride(r.override)
       setDirty(false)
-      setSaveStatus('Saved')
+      setSaveStatus(t('generic_saved'))
       setTimeout(() => setSaveStatus(''), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -114,15 +117,18 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
   return (
     <div className="border border-gray-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-1">
-        <h4 className="text-sm font-semibold text-gray-700">LLM</h4>
+        <h4 className="text-sm font-semibold text-gray-700">{t('llm_override_heading')}</h4>
         <span className="text-xs text-gray-500">
-          {overriddenCount === 0 ? 'inheriting global' : `${overriddenCount} slot${overriddenCount === 1 ? '' : 's'} overridden ◆`}
+          {overriddenCount === 0
+            ? t('llm_override_inheriting')
+            : overriddenCount === 1
+              ? t('llm_override_count_one', { count: overriddenCount })
+              : t('llm_override_count_other', { count: overriddenCount })}
           {saveStatus && <span className="ml-2 text-green-700">{saveStatus}</span>}
         </span>
       </div>
       <p className="text-xs text-gray-500 mb-4">
-        Per-slot opt-in. Tick "Override" on any slot to take it off the global config and edit it for this frontend; leave unticked to inherit.
-        Compression and summary-routing always come from the global config at the frontend tier.
+        {t('llm_override_description')}
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
@@ -133,14 +139,14 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
       {error && <p className="text-uni-red text-xs mb-3">{error}</p>}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        {SLOT_ORDER.map(({ key, label, hint }) => {
+        {SLOT_ORDER.map(({ key, labelKey, hintKey }) => {
           const isOverridden = override[key] !== null
           const effective: SlotConfig = isOverridden ? override[key]! : globalCfg[key]
           return (
             <SlotEditor
               key={key}
-              label={label}
-              hint={hint}
+              label={t(labelKey)}
+              hint={t(hintKey)}
               slot={effective}
               onChange={p => updateSlot(key, p)}
               defaults={defaults}
@@ -154,7 +160,7 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
                     onChange={e => toggleSlot(key, e.target.checked)}
                     className="rounded border-gray-300"
                   />
-                  Override
+                  {t('llm_override_label')}
                 </label>
               }
             />
@@ -168,13 +174,13 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
           disabled={!dirty}
           className="text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
         >
-          Save LLM override
+          {t('llm_override_save')}
         </button>
         <button
           onClick={refreshProviders}
           className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-1.5 hover:bg-gray-50"
         >
-          Refresh providers
+          {t('llm_override_refresh_providers')}
         </button>
       </div>
     </div>
