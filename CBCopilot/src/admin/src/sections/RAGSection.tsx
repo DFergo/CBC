@@ -161,8 +161,8 @@ export default function RAGSection({ frontendId, companySlug, company, onCompany
   const onReindexCascade = async () => {
     const isGlobal = tierLabel === 'global'
     const warn = isGlobal
-      ? 'Esto reindexa TODO el corpus: global + todos los frontends + todas las empresas. Con un corpus grande puede tardar varios minutos y las consultas devolverán resultados degradados mientras se ejecuta. ¿Continuar?'
-      : `Esto reindexa el frontend "${frontendId}" + todas sus empresas. Las consultas contra este frontend devolverán resultados degradados mientras se ejecuta. ¿Continuar?`
+      ? 'This reindexes the ENTIRE corpus: global + every frontend + every company. On a large corpus it can take several minutes, and queries will return degraded results while it runs. Continue?'
+      : `This reindexes the "${frontendId}" frontend + all its companies. Queries against this frontend will return degraded results while it runs. Continue?`
     if (!confirm(warn)) return
     setError('')
     setBusy(true)
@@ -174,7 +174,7 @@ export default function RAGSection({ frontendId, companySlug, company, onCompany
       await refresh()
       const errs = r.stats.filter(s => s.error)
       if (errs.length) {
-        setError(`${r.scopes_reindexed - errs.length} / ${r.scopes_reindexed} scopes ok; ${errs.length} con errores (ver logs del backend).`)
+        setError(`${r.scopes_reindexed - errs.length} / ${r.scopes_reindexed} scopes ok; ${errs.length} failed (check backend logs).`)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

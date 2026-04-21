@@ -25,21 +25,20 @@ export default function RAGPipelineSection() {
 
   const handleToggle = async (next: boolean) => {
     if (!settings) return
-    const verb = next ? 'Activar' : 'Desactivar'
     const warn = next
-      ? 'Activar Contextual Retrieval reindexa TODO el corpus y llama al LLM summariser una vez por chunk. En un corpus grande esto puede tardar horas y durante ese tiempo las consultas devolverán resultados degradados. ¿Continuar?'
-      : 'Desactivar Contextual Retrieval reindexa todo el corpus sin la línea de contexto prepuesta. Va rápido, pero las consultas durante el reindex se degradan. ¿Continuar?'
+      ? 'Enabling Contextual Retrieval reindexes the ENTIRE corpus and calls the summariser LLM once per chunk. On a large corpus this can take hours, and queries will return degraded results while it runs. Continue?'
+      : 'Disabling Contextual Retrieval reindexes the entire corpus without the prepended context line. Fast, but queries during the reindex are degraded. Continue?'
     if (!confirm(warn)) return
 
     setBusy(true)
-    setStatus(`${verb}ando y reindexando…`)
+    setStatus(next ? 'Enabling + reindexing…' : 'Disabling + reindexing…')
     setError('')
     try {
       const result = await toggleContextualRetrieval(next)
       setStatus(
         result.changed
-          ? `Reindexados ${result.scopes_reindexed} scopes.`
-          : 'Ya estaba en ese estado.',
+          ? `Reindexed ${result.scopes_reindexed} scopes.`
+          : 'Already in that state.',
       )
       await reload()
       setTimeout(() => setStatus(''), 6000)
@@ -62,7 +61,7 @@ export default function RAGPipelineSection() {
         <div>
           <h3 className="text-lg font-semibold text-gray-800">RAG pipeline</h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            Embedder, reranker, y Contextual Retrieval. Aplica a todos los scopes.
+            Embedder, reranker, and Contextual Retrieval. Applies to every scope.
             {status && <span className="ml-2 text-green-700">{status}</span>}
           </p>
         </div>
@@ -72,7 +71,7 @@ export default function RAGPipelineSection() {
       {expanded && (
         <div className="mt-5 space-y-4">
           {error && <p className="text-uni-red text-sm">{error}</p>}
-          {!settings && !error && <p className="text-sm text-gray-400">Cargando…</p>}
+          {!settings && !error && <p className="text-sm text-gray-400">Loading…</p>}
 
           {settings && (
             <>
@@ -81,8 +80,8 @@ export default function RAGPipelineSection() {
                   <div className="text-xs text-gray-500 mb-0.5">Embedder</div>
                   <code className="text-sm text-gray-800">{settings.embedding_model}</code>
                   <p className="text-[11px] text-gray-500 mt-1">
-                    Cambiar este modelo requiere editar <code>deployment_backend.json</code> y
-                    reconstruir la imagen Docker (los pesos se pre-descargan).
+                    Changing this model requires editing <code>deployment_backend.json</code> and
+                    rebuilding the Docker image (weights are pre-downloaded).
                   </p>
                 </div>
                 <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
@@ -91,8 +90,8 @@ export default function RAGPipelineSection() {
                     {settings.reranker_enabled ? settings.reranker_model : 'disabled'}
                   </code>
                   <p className="text-[11px] text-gray-500 mt-1">
-                    Se fetchean {settings.reranker_fetch_k} candidatos (BM25 + dense), se rerankean
-                    a {settings.reranker_top_n}.
+                    Fetches {settings.reranker_fetch_k} candidates (BM25 + dense), reranks down to
+                    {' '}{settings.reranker_top_n}.
                   </p>
                 </div>
                 <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
@@ -100,7 +99,7 @@ export default function RAGPipelineSection() {
                   <div className="text-sm text-gray-800">{settings.chunk_size} tokens</div>
                 </div>
                 <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
-                  <div className="text-xs text-gray-500 mb-0.5">Retrieval estrategia</div>
+                  <div className="text-xs text-gray-500 mb-0.5">Retrieval strategy</div>
                   <div className="text-sm text-gray-800">Hybrid BM25 + vector + cross-encoder rerank</div>
                 </div>
               </div>
@@ -110,14 +109,14 @@ export default function RAGPipelineSection() {
                   <div>
                     <div className="text-sm font-semibold text-gray-800">Contextual Retrieval</div>
                     <p className="text-xs text-gray-600 mt-0.5">
-                      Anthropic (2024): antes de embebir cada chunk, el summariser LLM genera una
-                      línea de contexto que lo sitúa en el documento. Mejora recall en documentos
-                      con muchas tablas / referencias cruzadas.
+                      Anthropic (2024): before embedding each chunk, the summariser LLM generates a
+                      short context line that situates it within the document. Improves recall on
+                      documents with many tables / cross-references.
                     </p>
                   </div>
                   <label className="flex items-center gap-2 ml-3">
                     <span className="text-xs text-gray-600">
-                      {settings.contextual_enabled ? 'activo' : 'desactivado'}
+                      {settings.contextual_enabled ? 'on' : 'off'}
                     </span>
                     <input
                       type="checkbox"
@@ -129,9 +128,9 @@ export default function RAGPipelineSection() {
                   </label>
                 </div>
                 <p className="text-[11px] text-amber-800">
-                  ⚠ Activar/desactivar reindexa TODO el corpus. Con CR activo, cada chunk gasta una
-                  llamada al summariser → minutos u horas según volumen. Durante el reindex las
-                  consultas del chat devuelven resultados degradados.
+                  ⚠ Toggling either way reindexes the ENTIRE corpus. With CR on, each chunk costs a
+                  summariser call → minutes to hours depending on volume. Queries return degraded
+                  results during the reindex.
                 </p>
               </div>
             </>
