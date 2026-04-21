@@ -1,7 +1,18 @@
 # CBC — Project Status
 
-**Current Sprint:** 9 — RAG Overhaul + HRDD-parity Architecture Hardening — **CLOSED 2026-04-21**
+**Current Sprint:** 10 — Chat UX + Pure Pull-Inverse + ChromaDB — **CLOSED 2026-04-21**
 **Last Updated:** 2026-04-21
+
+Sprint 10 closed. Three focused upgrades from real-use feedback:
+1. Chat UX: ported HRDD's scroll-during-streaming guard + pulsing activity bubble.
+2. Auth pull-inverse: last sidecar→backend HTTP call eliminated. `httpx` dropped from sidecar entirely. Pure HRDD architecture restored end-to-end.
+3. ChromaDB: single embedded collection with `scope_key` as metadata filter. HNSW search, native filtering, one DB for global / frontend / company tiers. Existing per-scope JSON indexes are swept on next reindex.
+
+Next on the bench (separate sprint per Daniel's spec): CBA sidepanel — show retrieved documents in a side panel during chat with citation links (page number, fallback to article number) and download buttons.
+
+---
+
+## Sprint 9 (previous) — RAG Overhaul + HRDD-parity Architecture Hardening — CLOSED 2026-04-21
 
 Sprint 9 closed. Two workstreams landed together while Daniel was standing up the first real deployment in Portainer across two hosts (backend on Mac Studio, frontends on M4s over Tailscale):
 

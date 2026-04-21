@@ -18,6 +18,13 @@ llama-index-embeddings-huggingface>=0.6
 # the older 0.4 series pinned core to <0.13 which deadlocked pip resolution.
 # Brings in `rank_bm25` as a pure-Python transitive dep.
 llama-index-retrievers-bm25>=0.5
+# ChromaDB embedded vector store (Sprint 10C). Single persistent collection at
+# /app/data/chroma; HNSW index + native metadata filtering. Replaces
+# LlamaIndex's SimpleVectorStore. `chromadb` brings its own pinned numpy /
+# posthog / opentelemetry; `llama-index-vector-stores-chroma` is the LlamaIndex
+# adapter wired into `rag_service`.
+chromadb>=0.5,<2.0
+llama-index-vector-stores-chroma>=0.4
 sentence-transformers>=2.2
 docx2txt>=0.8
 watchdog>=4.0

@@ -1,5 +1,85 @@
 # CBC — Changelog
 
+## Sprint 10 — UX polish + pure pull-inverse + ChromaDB (2026-04-21)
+
+Three focused upgrades shipped together off the back of the first real
+deployment. All three were "blocking" in different ways: the chat UX made
+the system feel broken, the auth relay was the last violation of the
+pull-inverse contract that scoping CBC across two hosts depends on, and
+the vector store choice was the next scaling cliff.
+
+### A — Chat UX (port from HRDD)
+
+- `ChatShell.tsx`: scroll guard via a `userScrolledUp` ref + `window` scroll
+  listener. Auto-scroll fires only when the user is at the bottom; the
+  moment they scroll up to read past content the shell stops yanking them
+  down on every streamed token. Sending a new message resets the flag so
+  they get pulled back to see the response.
+- New activity bubble — pulsing blue dot + i18n `chat_thinking` label,
+  shown when `isStreaming` and no token has arrived yet. Replaces the
+  ambiguous grey-text "Thinking…". Same look HRDD has had since Sprint 6.
+
+### B — Pull-inverse auth (last sidecar→backend call eliminated)
+
+The auth relay (`request-code` / `verify-code`) was the only outbound HTTP
+left in the sidecar. Refactored to the same queue + push-back pattern as
+recovery and uploads:
+
+- Backend `api/v1/auth.py`: extracted reusable `process_request_code` and
+  `process_verify_code` from the HTTP endpoints. The endpoints stay as a
+  thin wrapper for direct admin-shell debugging; the sidecar no longer
+  calls them.
+- Sidecar `main.py`: `POST /internal/auth/request-code` and `verify-code`
+  now queue an `auth_request` in `/internal/queue`, returning immediately
+  (`pending` / `verifying`). New `GET /internal/auth/status/{token}` for
+  React polling. New `POST /internal/auth/{token}/result` for the
+  backend's push-back. State machine: `none → pending|verifying →
+  code_sent|verified|invalid_code|not_authorized|smtp_error|...`.
+- Backend `polling.py`: new `_handle_auth_request` walks the drained
+  `auth_requests` list, resolves via the new internal API, POSTs the
+  result back to the sidecar.
+- React `AuthPage.tsx`: replaces the blocking POST with a POST + 400 ms
+  poll loop (20 s deadline) over the new `/status` endpoint.
+- Sidecar: `import httpx` removed. `_backend_call` removed. The CBC
+  frontend container now makes ZERO outbound HTTP calls. `CBC_BACKEND_URL`
+  env var dropped from `docker-compose.frontend.yml`.
+
+### C — ChromaDB migration (single collection, scope as metadata)
+
+`SimpleVectorStore` had taken us as far as it could; it's brute-force
+cosine search with one persisted JSON dir per scope. Swapped for an
+embedded ChromaDB collection — HNSW-backed, native metadata filtering,
+one persistent client + one collection at `/app/data/chroma/`.
+
+- One collection (`cbc_chunks`) holds every chunk for every scope. Each
+  node carries `scope_key` in metadata. Query-time `MetadataFilters`
+  (`ExactMatchFilter(key="scope_key", value=...)`) keeps tier semantics
+  — global / frontend / company queries stay isolated.
+- BM25 retrieval now reads scope-filtered nodes back from Chroma via
+  `collection.get(where={"scope_key": ...})` so the lexical channel
+  stays scope-aware too.
+- Dependencies: `chromadb>=0.5,<2.0`,
+  `llama-index-vector-stores-chroma>=0.4`. Backend image grows ~150 MB
+  for the chromadb stack (sqlite-backed, no separate server). Verified
+  build clean locally.
+- Migration: existing per-scope `rag_index/` JSON dirs are swept on the
+  next reindex of each scope; old chunks ignored. First query against
+  any scope after upgrade triggers a rebuild into Chroma. Admins who
+  want it instant can run Reindex per scope or use the global "reindex
+  all scopes" path.
+- All Sprint 9 retrieval features (markdown chunker, BGE-M3, hybrid
+  BM25+dense, cross-encoder rerank, optional Contextual Retrieval) ride
+  on top unchanged.
+
+### Operations
+
+- Frontend stack no longer needs `CBC_BACKEND_URL`. Drop it from any
+  Portainer stack envs you set when first wiring cross-host.
+- Backend redeploy + per-scope reindex required (chunk vectors moved
+  from `*.json` to Chroma collection). Same drill as Sprint 9.
+- `INSTALL.md` notes about `CBC_BACKEND_URL` are now stale; will refresh
+  in the next docs pass.
+
 ## Sprint 9 — RAG overhaul + HRDD-parity architecture hardening (2026-04-21)
 
 Triggered by the first real deployment across two Docker hosts (backend on Mac Studio, frontends on Mac M4 over Tailscale) + an RAG stress test against the Amcor-Lezo CBA. Two distinct workstreams landed together because both were blocking real use.

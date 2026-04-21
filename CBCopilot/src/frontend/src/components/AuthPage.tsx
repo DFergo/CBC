@@ -1,6 +1,7 @@
 // Adapted from HRDDHelper/src/frontend/src/components/AuthPage.tsx
-// Sprint 2 stub: sidecar returns the 6-digit code inline (dev_code) so the UI
-// can display it in a dev banner. Real SMTP flow lands in Sprint 7.
+// Sprint 10B: pull-inverse — React POSTs to the sidecar to queue an auth
+// action and then polls /internal/auth/status/{token} for the result that
+// the backend pushes back when its polling loop resolves the request.
 import { useState } from 'react'
 import { t } from '../i18n'
 import type { LangCode } from '../types'
@@ -13,6 +14,36 @@ interface Props {
 }
 
 const MAX_RETRIES = 3
+const POLL_INTERVAL_MS = 400
+const POLL_DEADLINE_MS = 20_000
+
+interface AuthStatus {
+  status: string
+  email?: string
+  dev_code?: string
+  detail?: string
+}
+
+async function pollAuthStatus(
+  sessionToken: string,
+  pendingStatuses: ReadonlyArray<string>,
+): Promise<AuthStatus> {
+  const deadline = Date.now() + POLL_DEADLINE_MS
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
+    try {
+      const r = await fetch(`/internal/auth/status/${encodeURIComponent(sessionToken)}`)
+      if (!r.ok) continue
+      const body = (await r.json()) as AuthStatus
+      if (!pendingStatuses.includes(body.status)) {
+        return body
+      }
+    } catch {
+      // sidecar transient hiccup — keep polling until deadline
+    }
+  }
+  return { status: 'timeout' }
+}
 
 export default function AuthPage({ lang, sessionToken, onVerified, onBack }: Props) {
   const [email, setEmail] = useState('')
@@ -29,21 +60,25 @@ export default function AuthPage({ lang, sessionToken, onVerified, onBack }: Pro
     setLoading(true)
 
     try {
-      const resp = await fetch('/internal/auth/request-code', {
+      const queued = await fetch('/internal/auth/request-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_token: sessionToken, email }),
+        body: JSON.stringify({ session_token: sessionToken, email, language: lang }),
       })
-      if (!resp.ok) throw new Error('Request failed')
-      const data = await resp.json()
-      if (data.status === 'code_sent') {
+      if (!queued.ok) throw new Error('Request failed')
+      const result = await pollAuthStatus(sessionToken, ['none', 'pending'])
+      if (result.status === 'code_sent') {
         setCodeSent(true)
-        if (data.dev_code) setDevCode(data.dev_code)
+        if (result.dev_code) setDevCode(result.dev_code)
+      } else if (result.status === 'not_authorized') {
+        setError(t('auth_contact_admin', lang))
+      } else if (result.status === 'timeout') {
+        setError(t('session_resume_error', lang))
       } else {
-        setError('Unexpected response')
+        setError(t('chat_error', lang))
       }
     } catch {
-      setError('Could not reach the server. Try again.')
+      setError(t('session_resume_error', lang))
     } finally {
       setLoading(false)
     }
@@ -55,22 +90,26 @@ export default function AuthPage({ lang, sessionToken, onVerified, onBack }: Pro
     setLoading(true)
 
     try {
-      const resp = await fetch('/internal/auth/verify-code', {
+      const queued = await fetch('/internal/auth/verify-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_token: sessionToken, code }),
+        body: JSON.stringify({ session_token: sessionToken, code, language: lang }),
       })
-      if (!resp.ok) throw new Error('Request failed')
-      const data = await resp.json()
-      if (data.status === 'verified') {
-        onVerified(email)
-      } else {
+      if (!queued.ok) throw new Error('Request failed')
+      const result = await pollAuthStatus(sessionToken, ['none', 'verifying'])
+      if (result.status === 'verified') {
+        onVerified(result.email || email)
+      } else if (result.status === 'invalid_code') {
         const newRetries = retries + 1
         setRetries(newRetries)
         setError(newRetries >= MAX_RETRIES ? t('auth_max_retries', lang) : t('auth_invalid_code', lang))
+      } else if (result.status === 'timeout') {
+        setError(t('session_resume_error', lang))
+      } else {
+        setError(t('chat_error', lang))
       }
     } catch {
-      setError('Could not reach the server. Try again.')
+      setError(t('session_resume_error', lang))
     } finally {
       setLoading(false)
     }

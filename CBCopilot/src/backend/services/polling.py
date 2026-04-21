@@ -233,6 +233,54 @@ async def _push_recovery_result(
         logger.warning(f"Push recovery result for {token} failed: {e}")
 
 
+async def _handle_auth_request(
+    client: httpx.AsyncClient,
+    url: str,
+    auth_req: dict[str, Any],
+    fid: str,
+) -> None:
+    """Resolve a queued auth action (request_code or verify_code) against the
+    real auth logic, then POST the result back to the sidecar so it can be
+    served from /internal/auth/status. Pull-inverse — sidecar never calls
+    the backend directly.
+    """
+    from src.api.v1.auth import process_request_code, process_verify_code
+
+    session_token = (auth_req.get("session_token") or "").strip()
+    kind = auth_req.get("kind") or ("verify_code" if auth_req.get("code") else "request_code")
+    if not session_token:
+        return
+
+    try:
+        if kind == "verify_code":
+            result = process_verify_code(session_token, auth_req.get("code") or "")
+        else:
+            result = await process_request_code(
+                session_token=session_token,
+                email=auth_req.get("email") or "",
+                language=auth_req.get("language") or "en",
+                frontend_id=auth_req.get("frontend_id") or fid,
+            )
+    except Exception as e:
+        logger.exception(f"Auth handler failed for {session_token}: {e}")
+        result = {"status": "error", "detail": str(e)[:200]}
+
+    payload = {
+        "status": str(result.get("status", "error")),
+        "email": str(result.get("email", "")),
+        "dev_code": str(result.get("dev_code", "")),
+        "detail": str(result.get("detail", "")),
+    }
+    try:
+        await client.post(
+            f"{url.rstrip('/')}/internal/auth/{session_token}/result",
+            json=payload,
+            timeout=PUSH_TIMEOUT,
+        )
+    except httpx.HTTPError as e:
+        logger.warning(f"Push auth result for {session_token} failed: {e}")
+
+
 async def _handle_uploads(client: httpx.AsyncClient, url: str, fid: str) -> None:
     """Poll the sidecar for pending uploads, ingest each one, then tell the
     sidecar to clean up its temp copy. Matches HRDD upload pull-inverse.
@@ -623,6 +671,14 @@ async def _tick(client: httpx.AsyncClient) -> None:
                 await _handle_recovery_request(client, url, token)
             except Exception as e:
                 logger.exception(f"Recovery for {token} from {fid} failed: {e}")
+
+        # 4b. Handle auth requests (pull-inverse: drain queued request_code /
+        #     verify_code actions, resolve via auth.py, push result back).
+        for auth_req in drained.get("auth_requests") or []:
+            try:
+                await _handle_auth_request(client, url, auth_req, fid)
+            except Exception as e:
+                logger.exception(f"Auth handler from {fid} failed: {e}")
 
         # 5. Handle uploads (pull-inverse: fetch, ingest, cleanup)
         try:

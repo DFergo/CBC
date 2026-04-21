@@ -91,6 +91,12 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
   const streamingTextRef = useRef('')
   const isSummaryStreamRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // HRDD-style scroll guard. While the LLM is streaming a long response, the
+  // user often wants to scroll back up to read what already came through.
+  // We auto-scroll to the bottom only when the user IS at the bottom; the
+  // moment they scroll up, we leave them in peace until they send the next
+  // message (which resets the flag — see send / endSession below).
+  const userScrolledUp = useRef(false)
 
   const bangedOnGuardrails = violations >= endAt
 
@@ -200,8 +206,24 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
   }, [sessionToken])
 
   // --- Auto-scroll + textarea auto-resize ---
+  //
+  // The chat is rendered inside the page's natural flow, so the scroll
+  // container is `window`. Track whether the user has scrolled up: if they
+  // have, suspend auto-scroll until they hit the bottom again or send a new
+  // message. Lets them read past content without being yanked down by every
+  // streamed token.
+  useEffect(() => {
+    const onScroll = () => {
+      const doc = document.documentElement
+      const distanceFromBottom = doc.scrollHeight - (window.scrollY + window.innerHeight)
+      userScrolledUp.current = distanceFromBottom > 80
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   useEffect(() => {
+    if (userScrolledUp.current) return
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamingText])
 
@@ -222,6 +244,9 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
     // Allow file-only turns: user drops a PDF without typing anything and
     // expects CBC to examine it. Backend seeds a default prompt in that case.
     if ((!text && readyChips.length === 0) || isStreaming || sessionEnded) return
+    // Sending a new message means the user wants to see the response; pull
+    // them back to the bottom even if they had scrolled up to read history.
+    userScrolledUp.current = false
     setMessages(prev => [...prev, {
       role: 'user',
       content: text || `Please examine: ${readyChips.join(', ')}`,
@@ -266,6 +291,7 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
   const endSession = async () => {
     setShowEndConfirm(false)
     if (sessionEnded) return
+    userScrolledUp.current = false
     setError('')
     streamingTextRef.current = ''
     setStreamingText('')
@@ -374,7 +400,19 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
           <Bubble message={{ role: isSummaryStream ? 'summary' : 'assistant', content: streamingText }} lang={lang} streaming />
         )}
         {isStreaming && !streamingText && (
-          <div className="text-xs text-gray-400 px-3 py-1">{t('chat_thinking', lang)}</div>
+          // HRDD-style activity bubble: makes it visually obvious the system
+          // hasn't hung. Pulsing dot + label that switches between "preparing"
+          // (haven't seen a token yet) and "thinking" (i18n default), so the
+          // user can tell the difference between "still warming up" and
+          // "actively generating but slow first token".
+          <div className="flex justify-start">
+            <div className="max-w-[80%] rounded-lg px-4 py-3 bg-white border border-gray-200 text-gray-600">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="inline-block w-2 h-2 bg-uni-blue rounded-full animate-pulse" />
+                {t('chat_thinking', lang)}
+              </div>
+            </div>
+          </div>
         )}
         <div ref={chatEndRef} />
       </div>

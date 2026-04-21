@@ -1,29 +1,33 @@
-"""LlamaIndex-backed RAG service.
+"""LlamaIndex-backed RAG service over a single ChromaDB collection.
 
 A "scope" is one of (global, frontend_id, frontend_id+company_slug). Each
-scope has its own `documents/` folder and a sibling `rag_index/` folder
-where the persisted index lives. The service caches in-memory
-VectorStoreIndex objects keyed by `scope_key` and uses the same scope_key
-shape that `resolvers.resolve_rag_paths` returns — the chat engine in
-Sprint 6 just calls `query_scopes(resolver_paths, query)`.
+scope has its own `documents/` folder on disk; in storage every chunk
+lives in ONE ChromaDB collection at `/app/data/chroma/`, tagged with its
+`scope_key` in metadata. Query-time filtering by `scope_key` keeps each
+scope's results isolated, while retrieval / reranking / BM25 all run over
+the same collection — no per-scope index files, no in-memory dance.
 
-Pipeline (Sprint 9):
+Pipeline (Sprint 10C):
 1. Ingest — SimpleDirectoryReader → markdown-aware parser for .md, sentence
    splitter for everything else. Optional Contextual Retrieval prepends a
    short LLM-generated context to each chunk (off by default).
 2. Embed — BGE-M3 (1024-dim, multilingual). Drop-in via HuggingFaceEmbedding.
-3. Retrieve — hybrid BM25 + vector via QueryFusionRetriever, fetch top
-   `rag_reranker_fetch_k` candidates.
-4. Rerank — cross-encoder bge-reranker-v2-m3 reduces to top
-   `rag_reranker_top_n`. Skipped if rag_reranker_enabled = False.
+3. Store — ChromaDB persistent collection (HNSW under the hood); `scope_key`
+   carried as metadata so one collection serves global / frontend / company
+   tiers via metadata filters at query time.
+4. Retrieve — hybrid BM25 + vector via QueryFusionRetriever, fetched within
+   the scope-filtered candidate pool. BM25 corpus is rebuilt per query from
+   the scope's nodes (cheap — Chroma `.get(where=)` is fast).
+5. Rerank — cross-encoder bge-reranker-v2-m3 narrows candidates down to
+   `rag_reranker_top_n`. Skipped when `rag_reranker_enabled = False`.
 
 Design rules:
-- Lazy load: indexes load from disk on first use, build if absent.
-- `invalidate(scope_key)` drops the in-memory entry. The next query reloads
-  from disk. Used by the file watcher on document changes.
-- `reindex(scope_key)` forces a rebuild from disk and persists.
-- Heavy imports (`llama_index`, `sentence_transformers`) defer until first
-  use — keeps `import` graph cheap for tests + cold paths.
+- Single persistent Chroma collection. No per-scope JSON index files.
+- `invalidate(scope_key)` drops the in-memory wrapper; collection is intact.
+- `reindex(scope_key)` deletes that scope's chunks from the collection and
+  re-ingests from disk.
+- Heavy imports (`chromadb`, `llama_index`, `sentence_transformers`) defer
+  until first use — keeps `import` graph cheap for tests + cold paths.
 """
 import logging
 import shutil
@@ -59,8 +63,15 @@ _embed_lock = threading.Lock()
 _reranker: Any = None
 _reranker_lock = threading.Lock()
 
-# Per-scope cached indexes. Keyed by `scope_key` (e.g. "global",
-# "packaging-eu", "packaging-eu/amcor").
+# Single Chroma persistent client + collection. All scopes live here.
+_chroma_client: Any = None
+_chroma_collection: Any = None
+_chroma_lock = threading.Lock()
+CHROMA_DIR = DATA_DIR / "chroma"
+CHROMA_COLLECTION_NAME = "cbc_chunks"
+
+# Per-scope cached LlamaIndex wrappers. Wrapping is cheap, but keeping the
+# index objects around avoids reconstructing the StorageContext per query.
 _indexes: dict[str, Any] = {}
 _indexes_lock = threading.Lock()
 
@@ -163,6 +174,38 @@ def _setup_settings() -> None:
     Settings.llm = None  # we drive the LLM ourselves; LlamaIndex never calls one
     Settings.chunk_size = backend_config.rag_chunk_size
     Settings.chunk_overlap = CHUNK_OVERLAP
+
+
+def _get_chroma_collection() -> Any:
+    """Lazy-init the persistent Chroma client + the single shared collection
+    that holds every scope's chunks. Returned object is a ``chromadb`` Collection.
+    """
+    global _chroma_client, _chroma_collection
+    if _chroma_collection is not None:
+        return _chroma_collection
+    with _chroma_lock:
+        if _chroma_collection is None:
+            import chromadb
+            CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+            _chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+            _chroma_collection = _chroma_client.get_or_create_collection(
+                name=CHROMA_COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+            logger.info(
+                f"Chroma collection {CHROMA_COLLECTION_NAME!r} ready at {CHROMA_DIR} "
+                f"({_chroma_collection.count()} chunks total)"
+            )
+    return _chroma_collection
+
+
+def _scope_metadata_filter(scope_key: str) -> Any:
+    """Return a LlamaIndex MetadataFilters that pins the search to one scope."""
+    from llama_index.core.vector_stores.types import (
+        ExactMatchFilter,
+        MetadataFilters,
+    )
+    return MetadataFilters(filters=[ExactMatchFilter(key="scope_key", value=scope_key)])
 
 
 # --- Indexing ---
@@ -303,78 +346,119 @@ def _contextualise_nodes(nodes: list[Any], documents: list[Any]) -> None:
             logger.info(f"Contextual enrichment: {i + 1}/{total} chunks ({enriched} enriched)")
 
 
+def _scope_index_wrapper(scope_key: str) -> Any:
+    """Build a thin LlamaIndex VectorStoreIndex that points at the shared
+    Chroma collection. The same wrapper works for query-time use; ingest-time
+    use is the same call but with explicit `nodes`. Wrapper objects are cheap
+    to construct but we cache them per-scope to avoid the StorageContext
+    rebuild cost on every query."""
+    from llama_index.core import StorageContext, VectorStoreIndex
+    from llama_index.vector_stores.chroma import ChromaVectorStore
+
+    _setup_settings()
+    collection = _get_chroma_collection()
+    vector_store = ChromaVectorStore(chroma_collection=collection)
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+    return VectorStoreIndex.from_vector_store(
+        vector_store=vector_store,
+        storage_context=storage_context,
+    )
+
+
+def _scope_chunk_count(scope_key: str) -> int:
+    """How many chunks the Chroma collection currently holds for this scope.
+    Used by stats endpoints + the get_index existence check."""
+    try:
+        collection = _get_chroma_collection()
+        result = collection.get(where={"scope_key": scope_key}, limit=1, include=[])
+        # `include=[]` returns just the IDs — counting via .count() with where
+        # is not supported by all chroma versions, so do a small probe instead
+        # then fall back to a full IDs fetch only when we need the actual
+        # number rather than "is it > 0".
+        if not result.get("ids"):
+            return 0
+        # Need the full count — fetch all IDs (cheap; metadata only).
+        full = collection.get(where={"scope_key": scope_key}, include=[])
+        return len(full.get("ids") or [])
+    except Exception as e:
+        logger.warning(f"Could not count chunks for scope {scope_key}: {e}")
+        return 0
+
+
 def _build_index(scope_key: str) -> Any | None:
-    """Build a fresh VectorStoreIndex from disk. Returns None if no docs."""
-    from llama_index.core import SimpleDirectoryReader, VectorStoreIndex
+    """Ingest every doc in this scope into the shared Chroma collection.
+    Replaces any existing chunks for the scope first. Returns the LlamaIndex
+    wrapper (or None if there are no docs)."""
+    from llama_index.core import SimpleDirectoryReader
 
     _setup_settings()
     docs_dir = _docs_dir_for(scope_key)
     files = _list_indexable_files(docs_dir)
     if not files:
+        # Make sure stale chunks for this scope are gone.
+        _delete_scope(scope_key)
         return None
     try:
         reader = SimpleDirectoryReader(input_files=[str(f) for f in files])
         documents = reader.load_data()
         nodes = _parse_nodes(documents)
-        # Tag every node so retrieved chunks know where they came from. The
-        # node parsers copy doc metadata onto each node already, we just add
-        # scope_key + tier on top.
         for n in nodes:
             n.metadata["scope_key"] = scope_key
             n.metadata["tier"] = _tier_for(scope_key)
-        # Anthropic Contextual Retrieval: prepend an LLM-generated context
-        # line to every chunk. Gated behind the global toggle because it adds
-        # substantial LLM cost at index time.
         if backend_config.rag_contextual_enabled:
             logger.info(
                 f"Contextual enrichment ON — generating context for "
                 f"{len(nodes)} chunks in scope {scope_key} (this will take a while)"
             )
             _contextualise_nodes(nodes, documents)
-        index = VectorStoreIndex(nodes)
-        index_dir = _index_dir_for(scope_key)
-        index_dir.mkdir(parents=True, exist_ok=True)
-        index.storage_context.persist(persist_dir=str(index_dir))
+
+        # Drop existing chunks for this scope so we don't accumulate ghosts
+        # on re-ingest. Then insert fresh nodes via LlamaIndex's wrapper —
+        # ChromaVectorStore.add() handles the embeddings + metadata write.
+        _delete_scope(scope_key)
+        wrapper = _scope_index_wrapper(scope_key)
+        wrapper.insert_nodes(nodes)
+
         logger.info(
-            f"Built index for scope {scope_key}: {len(files)} files → {len(nodes)} nodes "
+            f"Built Chroma chunks for scope {scope_key}: {len(files)} files → "
+            f"{len(nodes)} nodes "
             f"({sum(1 for d in documents if (d.metadata or {}).get('file_name','').lower().endswith('.md'))} markdown)"
         )
-        return index
+        return wrapper
     except Exception as e:
         logger.error(f"Failed to build index for scope {scope_key}: {e}")
         return None
 
 
-def _load_index(scope_key: str) -> Any | None:
-    """Load a persisted index from disk, or None if not present / broken."""
-    from llama_index.core import StorageContext, load_index_from_storage
-
-    index_dir = _index_dir_for(scope_key)
-    if not (index_dir / "index_store.json").exists():
-        return None
-    _setup_settings()
+def _delete_scope(scope_key: str) -> None:
+    """Remove every chunk tagged with this scope_key from the Chroma collection."""
     try:
-        sc = StorageContext.from_defaults(persist_dir=str(index_dir))
-        idx = load_index_from_storage(sc)
-        node_count = len(idx.docstore.docs) if hasattr(idx, "docstore") else 0
-        logger.info(f"Loaded existing index for scope {scope_key} ({node_count} nodes)")
-        return idx
+        collection = _get_chroma_collection()
+        collection.delete(where={"scope_key": scope_key})
     except Exception as e:
-        logger.warning(f"Failed to load index for scope {scope_key} ({e}); will rebuild on next access")
-        return None
+        logger.warning(f"Could not delete chunks for scope {scope_key}: {e}")
 
 
 def get_index(scope_key: str) -> Any | None:
-    """Return the index for a scope (cache → disk → build). Thread-safe."""
+    """Return the LlamaIndex wrapper for a scope (cache → build-if-empty).
+
+    With Chroma the storage is the collection itself — the wrapper is just a
+    LlamaIndex façade. We cache the wrapper to skip StorageContext rebuilds
+    on hot paths but it's safe to discard at any time.
+    """
     with _indexes_lock:
         if scope_key in _indexes:
             return _indexes[scope_key]
-    # Heavy work outside the lock to avoid blocking other scopes
-    idx = _load_index(scope_key) or _build_index(scope_key)
+
+    if _scope_chunk_count(scope_key) > 0:
+        wrapper = _scope_index_wrapper(scope_key)
+    else:
+        wrapper = _build_index(scope_key)
+
     with _indexes_lock:
-        if idx is not None:
-            _indexes[scope_key] = idx
-    return idx
+        if wrapper is not None:
+            _indexes[scope_key] = wrapper
+    return wrapper
 
 
 # --- Public API ---
@@ -383,22 +467,28 @@ def reindex(scope_key: str) -> dict[str, Any]:
     """Force a rebuild for a single scope. Used by:
     - Admin "Reindex" button
     - Sprint 5 file watcher when a debounce window expires for the scope
+    Also wipes any legacy `rag_index/` JSON dir left over from the
+    pre-Sprint-10C SimpleVectorStore layout.
     """
     docs_dir = _docs_dir_for(scope_key)
     files = _list_indexable_files(docs_dir)
+
+    # Sweep legacy per-scope JSON index directory if still around.
+    legacy_dir = _index_dir_for(scope_key)
+    if legacy_dir.exists():
+        shutil.rmtree(legacy_dir, ignore_errors=True)
+
     if not files:
         with _indexes_lock:
             _indexes.pop(scope_key, None)
-        index_dir = _index_dir_for(scope_key)
-        if index_dir.exists():
-            shutil.rmtree(index_dir, ignore_errors=True)
-        logger.info(f"Reindex {scope_key}: no docs — index cleared")
+        _delete_scope(scope_key)
+        logger.info(f"Reindex {scope_key}: no docs — chunks cleared")
         return {"scope_key": scope_key, "document_count": 0, "node_count": 0}
 
     new_idx = _build_index(scope_key)
     with _indexes_lock:
         _indexes[scope_key] = new_idx
-    node_count = len(new_idx.docstore.docs) if new_idx and hasattr(new_idx, "docstore") else 0
+    node_count = _scope_chunk_count(scope_key)
     _sync_derived_country_tags(scope_key)
     return {"scope_key": scope_key, "document_count": len(files), "node_count": node_count}
 
@@ -470,22 +560,56 @@ def reindex_all_scopes() -> list[dict[str, Any]]:
     return out
 
 
-def _hybrid_retrieve(idx: Any, query_text: str, fetch_k: int) -> list[Any]:
-    """Fuse dense (BGE-M3) + lexical (BM25) retrieval and return ranked
-    NodeWithScore objects. BGE-M3 is strong multilingual, BM25 catches exact
-    keyword hits ("Anexo I", "Salarios diarios") that dense retrievers can
-    still miss on short-form numeric content. Reciprocal rank fusion combines
+def _scope_nodes_from_chroma(scope_key: str) -> list[Any]:
+    """Pull every TextNode for a scope back out of the Chroma collection.
+    Used to feed the per-query BM25 corpus. Cheap because we only fetch the
+    (text, metadata) projection, no embeddings."""
+    from llama_index.core.schema import TextNode
+
+    collection = _get_chroma_collection()
+    try:
+        raw = collection.get(
+            where={"scope_key": scope_key},
+            include=["documents", "metadatas"],
+        )
+    except Exception as e:
+        logger.warning(f"Could not fetch nodes for BM25 in scope {scope_key}: {e}")
+        return []
+
+    ids = raw.get("ids") or []
+    docs = raw.get("documents") or []
+    metas = raw.get("metadatas") or []
+    nodes: list[Any] = []
+    for i, doc_id in enumerate(ids):
+        text = docs[i] if i < len(docs) else ""
+        meta = metas[i] if i < len(metas) else {}
+        nodes.append(TextNode(id_=doc_id, text=text or "", metadata=meta or {}))
+    return nodes
+
+
+def _hybrid_retrieve(scope_key: str, idx: Any, query_text: str, fetch_k: int) -> list[Any]:
+    """Fuse dense (BGE-M3, scope-filtered) + lexical (BM25 over scope nodes)
+    and return ranked NodeWithScore objects. Reciprocal rank fusion combines
     them. Falls back to pure vector retrieval if BM25 isn't available.
+
+    Both retrievers are pinned to the same scope: the vector side via a
+    Chroma metadata filter, the BM25 side via the docs we hand to it.
     """
-    vector_retriever = idx.as_retriever(similarity_top_k=fetch_k)
+    vector_retriever = idx.as_retriever(
+        similarity_top_k=fetch_k,
+        filters=_scope_metadata_filter(scope_key),
+    )
     try:
         from llama_index.core.retrievers import QueryFusionRetriever
         from llama_index.retrievers.bm25 import BM25Retriever
 
-        nodes = list(idx.docstore.docs.values())
-        if not nodes:
+        scope_nodes = _scope_nodes_from_chroma(scope_key)
+        if not scope_nodes:
             return vector_retriever.retrieve(query_text)
-        bm25_retriever = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=fetch_k)
+        bm25_retriever = BM25Retriever.from_defaults(
+            nodes=scope_nodes,
+            similarity_top_k=fetch_k,
+        )
         fused = QueryFusionRetriever(
             [vector_retriever, bm25_retriever],
             similarity_top_k=fetch_k,
@@ -517,20 +641,22 @@ def _rerank(nodes: list[Any], query_text: str, top_n: int) -> list[Any]:
 
 
 def query(scope_key: str, query_text: str, top_k: int | None = None) -> list[Chunk]:
-    """Retrieve top-k chunks from one scope. Returns [] when there's no index.
+    """Retrieve top-k chunks from one scope. Returns [] when the scope is
+    empty (no docs ingested yet).
 
-    Pipeline: hybrid retrieve `rag_reranker_fetch_k` → cross-encoder rerank to
+    Pipeline: scope-filtered hybrid retrieve `rag_reranker_fetch_k` chunks
+    from the shared Chroma collection → cross-encoder rerank to
     `rag_reranker_top_n` (or the explicit `top_k` if passed).
     """
     idx = get_index(scope_key)
-    if idx is None:
+    if idx is None or _scope_chunk_count(scope_key) == 0:
         return []
     try:
         fetch_k = max(
             backend_config.rag_reranker_fetch_k,
             top_k or backend_config.rag_reranker_top_n,
         )
-        nodes = _hybrid_retrieve(idx, query_text, fetch_k)
+        nodes = _hybrid_retrieve(scope_key, idx, query_text, fetch_k)
         final_top_n = top_k or backend_config.rag_reranker_top_n
         nodes = _rerank(nodes, query_text, final_top_n)
         return [
@@ -565,13 +691,14 @@ def query_scopes(
 
 
 def index_stats(scope_key: str) -> dict[str, Any]:
-    """Cheap read of file count + on-disk index presence. Doesn't load the index."""
+    """Cheap read of file count + Chroma chunk count for the scope.
+    "indexed" is True iff at least one chunk lives in the collection for it."""
     docs_dir = _docs_dir_for(scope_key)
     files = _list_indexable_files(docs_dir)
-    index_dir = _index_dir_for(scope_key)
-    has_index = (index_dir / "index_store.json").exists()
+    n_chunks = _scope_chunk_count(scope_key)
     return {
         "scope_key": scope_key,
         "document_count": len(files),
-        "indexed": has_index,
+        "indexed": n_chunks > 0,
+        "node_count": n_chunks,
     }

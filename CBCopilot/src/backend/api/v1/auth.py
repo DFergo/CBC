@@ -1,6 +1,13 @@
 """Email-code auth for end users (session-scoped).
 
-Sidecars on `cbc-net` relay the user's email + session_token here. We:
+The flow is pull-inverse end to end (Sprint 10B). Sidecars queue auth
+requests in `/internal/queue`; the backend polling loop drains them and
+calls `process_request_code` / `process_verify_code` from this module
+directly, then POSTs the result back to `/internal/auth/{token}/result`
+on the sidecar. The HTTP endpoints below stay as a small admin-side
+debug surface but the sidecar no longer hits them.
+
+We:
 1. Check the Contacts allowlist (SPEC §4.11) when `auth_allowlist_enabled`.
 2. Generate a 6-digit code with a TTL (default 15 min).
 3. Send it via SMTP if `smtp_service.is_configured()`.
@@ -67,19 +74,27 @@ def _is_email_allowed(email: str, frontend_id: str) -> bool:
     return any((c.get("email") or "").strip().lower() == target for c in allowed)
 
 
-@router.post("/request-code")
-async def request_code(body: RequestCodeBody):
-    email = body.email.strip().lower()
-    session_token = body.session_token.strip()
-    if not session_token:
-        raise HTTPException(status_code=400, detail="session_token is required")
+# --- Internal API used by the polling loop (pull-inverse path) ---
 
-    if not _is_email_allowed(email, body.frontend_id):
-        logger.info(f"Auth denied (not in allowlist): email={email} frontend={body.frontend_id!r}")
-        raise HTTPException(
-            status_code=403,
-            detail="This email is not authorized for this deployment. Contact your administrator.",
-        )
+async def process_request_code(
+    session_token: str,
+    email: str,
+    language: str,
+    frontend_id: str,
+) -> dict[str, Any]:
+    """Pure backend logic — generates a code, persists, sends or returns dev_code.
+    Used by both the HTTP endpoint (legacy) and the polling loop's
+    `_handle_auth_request`. Never raises; returns a status dict the sidecar
+    will push back to the React app verbatim.
+    """
+    email = (email or "").strip().lower()
+    session_token = (session_token or "").strip()
+    if not session_token:
+        return {"status": "error", "detail": "session_token is required"}
+
+    if not _is_email_allowed(email, frontend_id):
+        logger.info(f"Auth denied (not in allowlist): email={email} frontend={frontend_id!r}")
+        return {"status": "not_authorized", "email": email}
 
     code = _gen_code()
     with _codes_lock:
@@ -89,7 +104,7 @@ async def request_code(body: RequestCodeBody):
             "expires_at": time.time() + config.auth_code_ttl_seconds,
         }
 
-    response: dict[str, Any] = {"status": "code_sent"}
+    response: dict[str, Any] = {"status": "code_sent", "email": email}
 
     if smtp_service.is_configured():
         subject = "Your Collective Bargaining Copilot verification code"
@@ -122,10 +137,13 @@ async def request_code(body: RequestCodeBody):
     return response
 
 
-@router.post("/verify-code")
-async def verify_code(body: VerifyCodeBody):
-    session_token = body.session_token.strip()
-    code = body.code.strip()
+def process_verify_code(session_token: str, code: str) -> dict[str, Any]:
+    """Pure backend logic — checks the in-memory code store, burns on success.
+    Synchronous (no async I/O). Used by both the HTTP endpoint and the
+    polling auth handler.
+    """
+    session_token = (session_token or "").strip()
+    code = (code or "").strip()
 
     with _codes_lock:
         entry = _codes.get(session_token)
@@ -142,3 +160,27 @@ async def verify_code(body: VerifyCodeBody):
 
     logger.info(f"Auth code verified: session={session_token} email={email}")
     return {"status": "verified", "email": email}
+
+
+# --- HTTP endpoints (legacy thin wrappers) ---
+# Kept so you can curl the backend directly from an admin shell while
+# debugging. The sidecar no longer hits these — see polling._handle_auth_request.
+
+@router.post("/request-code")
+async def request_code(body: RequestCodeBody):
+    if not body.session_token.strip():
+        raise HTTPException(status_code=400, detail="session_token is required")
+    result = await process_request_code(
+        body.session_token, body.email, body.language, body.frontend_id,
+    )
+    if result.get("status") == "not_authorized":
+        raise HTTPException(
+            status_code=403,
+            detail="This email is not authorized for this deployment. Contact your administrator.",
+        )
+    return result
+
+
+@router.post("/verify-code")
+async def verify_code(body: VerifyCodeBody):
+    return process_verify_code(body.session_token, body.code)

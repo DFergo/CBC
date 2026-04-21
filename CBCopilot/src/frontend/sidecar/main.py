@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx  # used only by the auth relay below — follow-up to also pull-invert
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -226,56 +225,139 @@ async def get_companies():
     return {"companies": [dict(_COMPARE_ALL_ENTRY), *items]}
 
 
-# --- Auth (Sprint 7: relay to backend for SMTP + Contacts allowlist) ---
+# --- Auth (pull-inverse, HRDD pattern, Sprint 10B) ---
+# React POSTs request-code or verify-code → sidecar queues an auth_request
+# in /internal/queue. Backend polling drains it, calls process_request_code /
+# process_verify_code (auth.py), POSTs the result here at /result. React
+# polls /status/{session_token} to see when the result lands.
+#
+# State machine for /status:
+#   none      - no request pending
+#   pending   - request queued, backend hasn't resolved yet
+#   verifying - verify request queued, backend hasn't resolved yet
+#   code_sent - backend issued the code (dev_code may be present)
+#   verified  - code accepted, email persisted
+#   invalid_code | not_authorized | smtp_error | smtp_not_configured | error
+#             - terminal failure states; React shows the error and lets user retry
+
+_auth_requests: dict[str, dict[str, Any]] = {}
+_auth_queue: list[dict[str, Any]] = []
+_auth_lock = asyncio.Lock()
+_AUTH_TTL = 600.0  # how long pending state lives in memory before GC
 
 
 class AuthRequestCode(BaseModel):
     session_token: str
     email: str
+    language: str = "en"
 
 
 class AuthVerifyCode(BaseModel):
     session_token: str
     code: str
+    language: str = "en"
 
 
-async def _backend_call(method: str, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
-    url = f"{os.environ.get('CBC_BACKEND_URL', 'http://cbc-backend:8000').rstrip('/')}{path}"
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.request(method, url, json=json_body)
-    except httpx.HTTPError as e:
-        logger.warning(f"Backend call to {url} failed: {e}")
-        raise HTTPException(502, f"Backend unreachable: {e}")
-    if r.status_code == 403:
-        raise HTTPException(403, r.json().get("detail", "Not authorized"))
-    if r.status_code // 100 != 2:
-        raise HTTPException(r.status_code, r.text[:300])
-    return r.json()
+class AuthResultPush(BaseModel):
+    status: str
+    email: str = ""
+    dev_code: str = ""
+    detail: str = ""
 
 
 @app.post("/internal/auth/request-code")
 async def request_auth_code(req: AuthRequestCode):
-    """Relay to backend. Backend handles SMTP + Contacts allowlist. Sprint 7."""
-    body = {
-        "session_token": req.session_token,
-        "email": req.email,
-        "language": "en",  # sidecar doesn't know the user's language yet
-        "frontend_id": _base_config.get("frontend_id", ""),
-    }
-    data = await _backend_call("POST", "/api/v1/auth/request-code", body)
-    logger.info(
-        f"Auth code requested via backend: email={req.email} session={req.session_token} "
-        + ("(SMTP)" if "dev_code" not in data else "(dev fallback)")
-    )
-    return data
+    """React queues a code-request. Backend resolves on its next poll
+    (~2 s) and POSTs the result back to /internal/auth/{token}/result."""
+    if not req.session_token.strip() or not req.email.strip():
+        raise HTTPException(400, "session_token and email required")
+    async with _auth_lock:
+        _auth_requests[req.session_token] = {
+            "status": "pending",
+            "email": req.email.strip().lower(),
+            "created_at": time.time(),
+        }
+        _auth_queue.append({
+            "session_token": req.session_token,
+            "email": req.email,
+            "language": req.language,
+            "frontend_id": _base_config.get("frontend_id", ""),
+            "kind": "request_code",
+        })
+    logger.info(f"Auth code requested: email={req.email} session={req.session_token}")
+    return {"status": "pending"}
 
 
 @app.post("/internal/auth/verify-code")
 async def verify_auth_code(req: AuthVerifyCode):
-    """Relay to backend. Sprint 7."""
-    body = {"session_token": req.session_token, "code": req.code}
-    return await _backend_call("POST", "/api/v1/auth/verify-code", body)
+    """React queues a code-verify attempt. Same flow as request-code."""
+    if not req.session_token.strip() or not req.code.strip():
+        raise HTTPException(400, "session_token and code required")
+    async with _auth_lock:
+        existing = _auth_requests.get(req.session_token, {})
+        _auth_requests[req.session_token] = {
+            "status": "verifying",
+            "email": existing.get("email", ""),
+            "created_at": time.time(),
+        }
+        _auth_queue.append({
+            "session_token": req.session_token,
+            "code": req.code,
+            "email": existing.get("email", ""),
+            "language": req.language,
+            "kind": "verify_code",
+        })
+    logger.info(f"Auth verify queued: session={req.session_token}")
+    return {"status": "verifying"}
+
+
+@app.get("/internal/auth/status/{session_token}")
+async def get_auth_status(session_token: str):
+    """React polls this every ~400 ms after sending a code request / verify
+    attempt to find out what the backend decided. Returns the cached state
+    or {"status": "none"} when there's no pending or recent request.
+
+    Terminal states (verified, invalid_code, etc.) are NOT auto-cleared —
+    the React app just stops polling. The 10-min GC in /result handles
+    eventual cleanup."""
+    async with _auth_lock:
+        state = _auth_requests.get(session_token)
+        if state and time.time() - state["created_at"] > _AUTH_TTL:
+            _auth_requests.pop(session_token, None)
+            state = None
+    if not state:
+        return {"status": "none"}
+    return {
+        "status": state["status"],
+        "email": state.get("email", ""),
+        "dev_code": state.get("dev_code", ""),
+        "detail": state.get("detail", ""),
+    }
+
+
+@app.post("/internal/auth/{session_token}/result")
+async def push_auth_result(session_token: str, body: AuthResultPush):
+    """Backend pushes the resolved result here after processing a queued
+    auth request. Schedules a GC of the entry after the TTL so the dict
+    doesn't grow unbounded."""
+    async with _auth_lock:
+        existing = _auth_requests.get(session_token, {})
+        _auth_requests[session_token] = {
+            "status": body.status,
+            "email": body.email or existing.get("email", ""),
+            "dev_code": body.dev_code,
+            "detail": body.detail,
+            "created_at": time.time(),
+        }
+    logger.info(f"Auth result pushed for {session_token}: {body.status}")
+
+    async def _gc() -> None:
+        await asyncio.sleep(_AUTH_TTL)
+        async with _auth_lock:
+            _auth_requests.pop(session_token, None)
+    asyncio.create_task(_gc())
+
+    return {"status": "ok"}
 
 
 # --- Survey queue (Sprint 2) ---
@@ -358,17 +440,22 @@ async def enqueue_chat(msg: ChatMessage):
 @app.get("/internal/queue")
 async def dequeue_messages():
     """Backend poll target — drains pending chat/survey/close messages and
-    surfaces pending recovery_requests (tokens) so the backend can resolve
-    them in the same tick."""
+    surfaces pending recovery_requests (tokens) + auth_requests (queued auth
+    actions) so the backend can resolve them in the same tick."""
     now = time.time()
     async with _queue_lock:
         valid = [m for m in _queue if now - m["created_at"] < MESSAGE_TTL]
         _queue.clear()
     async with _recovery_lock:
         pending_tokens = [tok for tok, s in _recovery.items() if s["status"] == "pending"]
+    async with _auth_lock:
+        auth_drain = list(_auth_queue)
+        _auth_queue.clear()
     result: dict[str, Any] = {"messages": valid}
     if pending_tokens:
         result["recovery_requests"] = pending_tokens
+    if auth_drain:
+        result["auth_requests"] = auth_drain
     return result
 
 
