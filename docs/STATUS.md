@@ -1,14 +1,16 @@
 # CBC — Project Status
 
-**Current Sprint:** 10 — Chat UX + Pure Pull-Inverse + ChromaDB — **CLOSED 2026-04-21**
+**Current Sprint:** 11 Phase A — CBA sidepanel + downloads — **CLOSED 2026-04-21**
 **Last Updated:** 2026-04-21
 
-Sprint 10 closed. Three focused upgrades from real-use feedback:
-1. Chat UX: ported HRDD's scroll-during-streaming guard + pulsing activity bubble.
-2. Auth pull-inverse: last sidecar→backend HTTP call eliminated. `httpx` dropped from sidecar entirely. Pure HRDD architecture restored end-to-end.
-3. ChromaDB: single embedded collection with `scope_key` as metadata filter. HNSW search, native filtering, one DB for global / frontend / company tiers. Existing per-scope JSON indexes are swept on next reindex.
+Sprint 11 Phase A closed. Delivers the CBA sidepanel with per-session accumulating document citations and pull-inverse downloads, plus two fixes that showed up during real-use testing (mobile table overflow, cascade reindex buttons).
 
-Next on the bench (separate sprint per Daniel's spec): CBA sidepanel — show retrieved documents in a side panel during chat with citation links (page number, fallback to article number) and download buttons.
+Phase B (inline page / article citations in response text) is scaffolded end-to-end via a new per-frontend flag `cba_citations_enabled` but the feature itself is deferred to the next sprint — required changes: PDFReader metadata preservation, prompt_assembler update to instruct the LLM on citation format, panel cross-links between inline citations and the source list.
+
+### Prior sprints
+- Sprint 10 (2026-04-21) — Chat UX + pure pull-inverse + ChromaDB.
+- Sprint 9 (2026-04-21) — RAG overhaul + HRDD-parity architecture hardening.
+- Sprint 8 (2026-04-20) — Polish, testing, deployment + full i18n.
 
 ---
 

@@ -1,5 +1,93 @@
 # CBC — Changelog
 
+## Sprint 11 Phase A — CBA sidepanel + cascade reindex + polish (2026-04-21)
+
+Phase A of the "CBA sidepanel" feature Daniel scoped right after Sprint 10
+settled. Delivers the panel + downloads; Phase B (page / article citations
+inline in responses) is intentionally deferred but the feature flag is
+plumbed end-to-end so enabling it in the next sprint won't require config
+schema changes.
+
+### CBA sidepanel with citations + downloads
+
+- **Toggle** `cba_sidepanel_enabled` on `SessionSettings` (per-frontend, default
+  on). Disables the entire feature — no backend SSE events, no React panel,
+  no button — when an operator doesn't want it.
+- **Citation capture** in `prompt_assembler.assemble` — returns a new `sources`
+  field with deduped `{scope_key, filename, tier}` for the chunks that
+  actually made it into the prompt.
+- **SSE event** `sources`: `polling._process_turn` emits it right before `done`
+  with the JSON-encoded list. Sidecar relays unchanged (the SSE channel was
+  already generic).
+- **CitationsPanel** (`src/frontend/src/components/CitationsPanel.tsx`) — new
+  component. Slide-over from the right on every viewport (320 px on mobile,
+  384 px on desktop); semi-transparent backdrop, Escape + tap dismiss. List
+  grows across the whole session deduped by (scope, filename). Per-entry
+  download button runs the pull-inverse poll loop and triggers a browser
+  download when the blob arrives. Tier badge (Global / Frontend / Company)
+  helps the user place the source.
+- **ChatShell integration** — listens for the `sources` SSE event, accumulates
+  state, shows a "Documents" button with a count badge next to End session.
+  Panel opens by default on `md+`, closed on mobile so the chat starts clean.
+
+### Pull-inverse file downloads
+
+- New sidecar endpoints: `POST /internal/document-request` queues a
+  `{scope_key, filename}` and returns a request_id. `GET /internal/document/{id}`
+  returns JSON `{status: "pending"}` until the bytes land, then streams the
+  file. `POST /internal/document/{id}/result` is the backend push target;
+  `POST .../error` surfaces fetch failures.
+- `polling._handle_document_request` reads files from the matching
+  `documents/` dir with path-traversal guards (only admin-curated content in
+  the resolved scope is reachable; filename is treated as a bare basename).
+- `document_requests` surfaced in `/internal/queue` alongside the other
+  pull-inverse queues (recovery / auth / uploads). Sidecar still makes zero
+  outbound HTTP.
+
+### Phase B scaffolding (no behaviour yet)
+
+- `cba_citations_enabled` on `SessionSettings` (default off). Plumbed through
+  to `DeploymentConfig` and the admin UI as a dependent toggle that greys out
+  when the parent sidepanel flag is off. Phase B (LLM instructed to emit
+  `[filename, p. N]` / `[filename, Art. N]` references inline) will consume
+  the flag in a follow-up sprint.
+
+### Mobile table overflow
+
+- `ChatShell`'s `Bubble` component now renders markdown through custom
+  `components` that wrap `<table>` in an `overflow-x-auto` container and let
+  `<pre>` scroll horizontally — tables in responses stay inside the 85%
+  bubble width on mobile with a horizontal swipe instead of bleeding out.
+- `min-w-0` added to the bubble flex child so it can shrink below intrinsic
+  content width. Fix applies to assistant bubbles + summary bubble.
+
+### Cascade reindex (admin UX)
+
+- New backend helpers `reindex_frontend_cascade(fid)` + admin endpoints
+  `/admin/api/v1/rag/reindex-all` + `/admin/api/v1/rag/reindex-frontend-cascade/{fid}`.
+- Admin `RAGSection` gets a tier-aware second button next to the existing
+  per-scope "Reindex":
+  - Global tier → "Reindex everything" (confirm, then global + every
+    frontend + every company).
+  - Frontend tier → "Reindex frontend + companies" (confirm, global
+    untouched).
+  - Company tier → unchanged.
+
+### Polish
+
+- Admin RAG cascade-reindex confirm prompts + `RAGPipelineSection` (CR
+  toggle UI) translated to English to match the rest of the admin panel.
+  No logic change.
+
+### Phase B backlog (for the next sprint)
+
+- PDFReader metadata preservation (`page_label` in node metadata).
+- Prompt change to make the LLM emit structured citations.
+- Regex fallback to article number in the chunk text when no page is
+  available (OCRed legacy CBAs).
+- Panel cross-links: clicking a citation in the response jumps to that
+  document in the panel.
+
 ## Sprint 10 — UX polish + pure pull-inverse + ChromaDB (2026-04-21)
 
 Three focused upgrades shipped together off the back of the first real
