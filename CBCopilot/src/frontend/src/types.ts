@@ -57,6 +57,9 @@ export interface CitationSource {
   scope_key: string
   filename: string
   tier: 'global' | 'frontend' | 'company' | string
+  // Phase B — per-source locator hints ("p. 14", "Art. 12") that were
+  // surfaced to the LLM. Undefined when citations are off for the frontend.
+  labels?: string[]
 }
 
 export interface Company {

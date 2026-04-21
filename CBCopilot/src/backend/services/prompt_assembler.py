@@ -19,6 +19,7 @@ replaces the role prompt, core + guardrails still land first (lessons-
 learned #5).
 """
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,6 +35,40 @@ logger = logging.getLogger("prompt_assembler")
 # Per SPEC §4.2 — admin-configurable later.
 RAG_TOP_K_PER_SCOPE = 5
 
+# Phase B citation helpers — best-effort pointer inside the source document
+# when the chunk has no page_label (markdown, plain text, OCR failures).
+# Matches common multilingual forms: Spanish, English, Portuguese, French,
+# Italian. We pick the LAST occurrence in the chunk body because earlier
+# mentions are often forward-references to a section the chunk introduces
+# rather than discusses.
+_ARTICLE_RE = re.compile(
+    r"\bart(?:[íi]culo|icle|igo|icolo)?\.?\s+(\d+(?:[.\-]\d+)?)",
+    re.IGNORECASE,
+)
+_ANNEX_RE = re.compile(
+    r"\b(?:anexo|annex|annexe|allegato)\s+([IVXLCDM]+|\d+)\b",
+    re.IGNORECASE,
+)
+
+
+def _citation_label_for(chunk: rag_service.Chunk) -> str:
+    """Best-available short reference inside the chunk's source document.
+
+    Order of preference: PDF page label → article number found in the chunk
+    body → annex reference → empty string (panel will still show the doc,
+    the inline cite just won't include a location).
+    """
+    if chunk.page_label and chunk.page_label.strip():
+        return f"p. {chunk.page_label.strip()}"
+    text = chunk.text or ""
+    art_matches = _ARTICLE_RE.findall(text)
+    if art_matches:
+        return f"Art. {art_matches[-1]}"
+    annex_matches = _ANNEX_RE.findall(text)
+    if annex_matches:
+        return f"Anexo {annex_matches[-1]}"
+    return ""
+
 
 @dataclass
 class AssembledPrompt:
@@ -44,9 +79,11 @@ class AssembledPrompt:
     rag_paths: list[dict[str, Any]]
     # Sprint 11: unique documents that contributed chunks to this prompt.
     # Surfaced to the frontend as SSE `sources` event so the CBA sidepanel
-    # can list them and offer downloads. Each entry is {scope_key, filename,
-    # tier}.
-    sources: list[dict[str, str]] = None  # type: ignore[assignment]
+    # can list them and offer downloads. Each entry is
+    # {scope_key, filename, tier}, plus an optional `labels: [str, ...]`
+    # with per-source locator hints ("p. 14", "Art. 12") when Phase B's
+    # cite_inline flag is on.
+    sources: list[dict[str, Any]] = None  # type: ignore[assignment]
 
 
 # --- Layer 1-2: core + guardrails ---
@@ -237,15 +274,65 @@ def _resolve_rag(
     ]
 
 
-def _render_chunks(chunks: list[rag_service.Chunk], max_chunks: int) -> str:
+_CITATION_INSTRUCTION = """\
+
+## Citation format
+
+When citing information from the excerpts above, append a bracketed reference
+in the format `[filename, locator]` immediately after the relevant sentence.
+Use the locator shown in each excerpt's heading (page number or article /
+annex number). If an excerpt has no locator, cite just the filename in
+brackets: `[filename]`. Do not invent locators. When the same clause is
+discussed across multiple excerpts, cite each distinct source once.
+"""
+
+
+def _render_chunks(
+    chunks: list[rag_service.Chunk],
+    max_chunks: int,
+    cite_inline: bool = False,
+) -> str:
+    """Render retrieved RAG chunks into the system prompt's context block.
+
+    When `cite_inline` is True (Phase B: admin toggled on for this frontend),
+    each chunk's heading also carries its best-available citation label and
+    a short instruction block tells the LLM to reference sources inline in
+    `[filename, locator]` form. When False, the prompt stays as it was in
+    Sprint 9 — no locators, no instruction.
+    """
     if not chunks:
         return ""
     take = chunks[:max_chunks]
     lines = ["## Retrieved CBA / policy excerpts"]
     for c in take:
-        lines.append(f"\n### Source: {c.source}  (tier={c.tier})")
+        if cite_inline:
+            locator = _citation_label_for(c)
+            head = f"\n### Source: {c.source}  (tier={c.tier}"
+            head += f", {locator}" if locator else ""
+            head += ")"
+            lines.append(head)
+        else:
+            lines.append(f"\n### Source: {c.source}  (tier={c.tier})")
         lines.append(c.text.strip())
+    if cite_inline:
+        lines.append(_CITATION_INSTRUCTION)
     return "\n".join(lines)
+
+
+def _chunk_citation_labels(chunks: list[rag_service.Chunk], max_chunks: int) -> dict[str, list[str]]:
+    """Group citation labels by source filename, preserving order, deduped.
+    Shipped to the frontend in the `sources` SSE event so the panel can show
+    per-document locator hints — e.g. a Lezo entry with ["p. 14", "Art. 12"].
+    """
+    out: dict[str, list[str]] = {}
+    for c in chunks[:max_chunks]:
+        label = _citation_label_for(c)
+        if not label:
+            continue
+        bucket = out.setdefault(c.source, [])
+        if label not in bucket:
+            bucket.append(label)
+    return out
 
 
 # --- Top-level assembly ---
@@ -258,6 +345,7 @@ def assemble(
     session_token: str | None = None,
     max_rag_chunks: int = 20,
     fresh_attachments: list[str] | None = None,
+    cite_inline: bool = False,
 ) -> AssembledPrompt:
     """Build the system prompt for a session's next LLM call.
 
@@ -290,7 +378,7 @@ def assemble(
         session_token=session_token,
         fresh_attachments=fresh_attachments,
     )
-    rag_text = _render_chunks(chunks, max_chunks=max_rag_chunks)
+    rag_text = _render_chunks(chunks, max_chunks=max_rag_chunks, cite_inline=cite_inline)
 
     layers = {
         "core": core_text,
@@ -305,18 +393,26 @@ def assemble(
     text = "\n\n".join(ordered).strip()
     # Dedup sources preserving first-seen order. Chunks beyond `max_rag_chunks`
     # are not part of the prompt so they don't belong in the citation list.
+    # When the Phase B flag is on, also attach the distinct locator hints we
+    # showed the LLM for each source so the sidepanel can surface them.
     used_chunks = chunks[:max_rag_chunks]
+    labels_by_source: dict[str, list[str]] = (
+        _chunk_citation_labels(used_chunks, max_rag_chunks) if cite_inline else {}
+    )
     seen: set[tuple[str, str]] = set()
-    sources: list[dict[str, str]] = []
+    sources: list[dict[str, Any]] = []
     for c in used_chunks:
         key = (c.scope_key, c.source)
         if c.source and key not in seen:
             seen.add(key)
-            sources.append({
+            entry: dict[str, Any] = {
                 "scope_key": c.scope_key,
                 "filename": c.source,
                 "tier": c.tier,
-            })
+            }
+            if cite_inline and labels_by_source.get(c.source):
+                entry["labels"] = labels_by_source[c.source]
+            sources.append(entry)
     return AssembledPrompt(
         text=text,
         layers=layers,

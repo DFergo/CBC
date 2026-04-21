@@ -8,7 +8,7 @@
 // Downloads are pull-inverse (Sprint 11): sidecar queues a document-request,
 // backend polls + pushes bytes back, React polls this panel's poll hook
 // until the bytes are ready, then triggers a browser download.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { t } from '../i18n'
 import type { LangCode, CitationSource } from '../types'
 
@@ -17,6 +17,11 @@ interface Props {
   sources: CitationSource[]
   open: boolean
   onClose: () => void
+  // Phase B — when the user clicks a `[filename, locator]` citation in the
+  // chat response, ChatShell bumps this so the panel scrolls that entry into
+  // view and briefly pulses it. The parent is responsible for clearing /
+  // overwriting it; the panel just reads it.
+  highlightedFilename?: string | null
 }
 
 type DownloadState = 'idle' | 'downloading' | 'failed'
@@ -74,12 +79,32 @@ function tierLabel(tier: string, lang: LangCode): string {
   return tier
 }
 
-export default function CitationsPanel({ lang, sources, open, onClose }: Props) {
+export default function CitationsPanel({
+  lang, sources, open, onClose, highlightedFilename,
+}: Props) {
   const [downloads, setDownloads] = useState<Record<string, DownloadState>>({})
+  const itemRefs = useRef<Record<string, HTMLLIElement | null>>({})
+  const [pulseKey, setPulseKey] = useState<string | null>(null)
 
   const updateStatus = useCallback((key: string, s: DownloadState) => {
     setDownloads(prev => ({ ...prev, [key]: s }))
   }, [])
+
+  // Phase B — when the chat triggers a citation click, scroll the matching
+  // entry into view + trigger a brief pulse so the user's eye finds it.
+  useEffect(() => {
+    if (!highlightedFilename || !open) return
+    const match = sources.find(s => s.filename === highlightedFilename)
+    if (!match) return
+    const key = `${match.scope_key}::${match.filename}`
+    const el = itemRefs.current[key]
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+    setPulseKey(key)
+    const timer = window.setTimeout(() => setPulseKey(null), 1600)
+    return () => window.clearTimeout(timer)
+  }, [highlightedFilename, open, sources])
 
   // Dedup by (scope_key, filename). Preserve insertion order — newest citations
   // land at the bottom so the user sees them pile up as the conversation runs.
@@ -144,11 +169,28 @@ export default function CitationsPanel({ lang, sources, open, onClose }: Props) 
               {unique.map(s => {
                 const key = `${s.scope_key}::${s.filename}`
                 const state = downloads[key] || 'idle'
+                const isPulsing = pulseKey === key
                 return (
-                  <li key={key} className="border border-gray-200 rounded-lg p-2.5 bg-gray-50/60">
+                  <li
+                    key={key}
+                    ref={el => { itemRefs.current[key] = el }}
+                    className={`
+                      border rounded-lg p-2.5 transition-colors duration-500
+                      ${isPulsing ? 'border-uni-blue bg-blue-50' : 'border-gray-200 bg-gray-50/60'}
+                    `}
+                  >
                     <div className="text-xs font-mono text-gray-800 break-all mb-1">
                       {s.filename}
                     </div>
+                    {s.labels && s.labels.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-1.5">
+                        {s.labels.map(l => (
+                          <span key={l} className="text-[10px] rounded px-1.5 py-0.5 bg-uni-blue/10 text-uni-blue font-medium">
+                            {l}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <div className="flex items-center justify-between text-[11px] text-gray-500">
                       <span className="uppercase tracking-wide">{tierLabel(s.tier, lang)}</span>
                       <button

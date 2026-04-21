@@ -84,6 +84,11 @@ class Chunk:
     source: str        # original filename (e.g. "amcor_australia_2024.pdf")
     tier: str          # 'global' | 'frontend' | 'company' | 'session'
     scope_key: str     # 'global', 'packaging-eu', 'packaging-eu/amcor', 'session-XXXX'
+    # Sprint 11 Phase B — best-available citation pointer inside the source
+    # document. Populated from PDFReader's `page_label` metadata when present;
+    # empty otherwise (the prompt assembler will fall back to an article /
+    # annex regex on the chunk body when it needs a human-readable reference).
+    page_label: str = ""
 
 
 # --- Path helpers ---
@@ -688,6 +693,7 @@ def query(scope_key: str, query_text: str, top_k: int | None = None) -> list[Chu
                 source=n.node.metadata.get("file_name", "(unknown)"),
                 tier=n.node.metadata.get("tier", _tier_for(scope_key)),
                 scope_key=scope_key,
+                page_label=str(n.node.metadata.get("page_label") or ""),
             )
             for n in nodes
         ]

@@ -511,6 +511,15 @@ async def _process_turn(
 
     # Assemble + store system prompt for this turn. Fresh attachments are
     # force-injected into the RAG context so the model can't ignore them.
+    # Phase B: look up the per-frontend CBA-citations flag. The sidepanel
+    # flag gates whether we emit the `sources` event at all; the separate
+    # citations flag gates whether the prompt asks the LLM for inline
+    # `[filename, locator]` references.
+    fe_settings = session_settings_store.load(frontend_id)
+    cite_inline = bool(
+        fe_settings and getattr(fe_settings, "cba_citations_enabled", False)
+        and getattr(fe_settings, "cba_sidepanel_enabled", True)
+    )
     assembled = prompt_assembler.assemble(
         survey=survey,
         frontend_id=frontend_id,
@@ -518,6 +527,7 @@ async def _process_turn(
         query_text=user_content,
         session_token=session_token,
         fresh_attachments=attachments,
+        cite_inline=cite_inline,
     )
     session_store.init_session(
         token=session_token,

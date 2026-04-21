@@ -1,7 +1,37 @@
 # CBC — Project Status
 
-**Current Sprint:** 11 Phase A — CBA sidepanel + downloads — **CLOSED 2026-04-21**
+**Current Sprint:** 11 Phase B — Inline citations with page / article references — **CLOSED 2026-04-21**
 **Last Updated:** 2026-04-21
+
+Phase B closed. Gated by the existing `cba_citations_enabled` flag (off by default, requires `cba_sidepanel_enabled` first). When on: retrieved chunks expose locator hints (PDF `page_label`, article / annex regex fallback), the prompt asks the LLM to cite `[filename, locator]` inline, and the React chat renders these references as clickable chips that scroll + pulse the matching doc in the sidepanel. All three tiers (chunk metadata → prompt → UI) respect the flag so turning it off returns the pipeline to Phase A behaviour with no stale references left over.
+
+Phase A's sidepanel answers "which CBAs did the model draw on for this answer". Phase B is the complementary half: **where inside each document**. The user sees `[filename, p. 14]` or `[filename, Art. 12]` references inline with the response prose, and clicking one jumps to that document in the panel.
+
+### Sprint 11 Phase B plan
+
+Gated end-to-end by the `cba_citations_enabled` flag that Phase A already plumbed (off by default). When off, Phase B is a no-op.
+
+1. **Chunk metadata pipeline** — Surface `page_label` from LlamaIndex's PDF reader through the chunk pipeline. `rag_service.Chunk` gains a `page_label: str = ""` field; `_hybrid_retrieve` populates it from node metadata. Chroma already stores arbitrary metadata so no schema migration needed.
+2. **Article regex fallback** — When a chunk has no page (markdown, plain text, OCR failures), scan its body for an article reference using a multilingual regex (`Art(?:ículo|icle|igo|icolo)?\.?\s+\d+(?:[.\-]\d+)?`). Use the last hit as the best-effort citation pointer. Same helper also catches `Anexo N` / `Annex N` as a deeper fallback.
+3. **Prompt update (gated)** — `prompt_assembler._render_chunks` emits each chunk heading with the citation label embedded (`### Source: amcor_lezo.md | Art. 12`) and appends a small instruction block telling the LLM to cite with `[filename, ref]` brackets inline. Only when the flag is on — otherwise the existing behaviour.
+4. **Session-settings plumbing** — `polling._process_turn` reads `session_settings.cba_citations_enabled` for the frontend and threads it into `prompt_assembler.assemble(..., cite_inline=True)`.
+5. **Enriched sources SSE** — each entry in the `sources` event now includes a per-chunk `citation_label` dict (`{"p. 14": 2, "Art. 12": 1}`) so the panel can show "referenced 3 times" and cross-highlight on click.
+6. **React citation chips** — in `ChatShell`'s markdown renderer, intercept anchor tags with `href` starting with `#cite:` and render them as clickable pills. The backend doesn't emit link syntax; instead we regex-post-process the streamed text to turn `[filename, p. N]` occurrences into `[filename, p. N](#cite:filename)` before it hits ReactMarkdown.
+7. **Panel cross-highlight** — `CitationsPanel` accepts `highlightedFilename` + briefly pulses + scrolls that entry into view. `ChatShell` orchestrates: citation click → `setHighlighted(filename)` → `setPanelOpen(true)` → effect in the panel handles the visual.
+
+### Risks / known limits
+- LLMs will sometimes forget the citation format or hallucinate numbers. Accept — the user still has the panel + download as ground truth. Monitor in real use; if it's bad, tighten prompt.
+- Article regex is best-effort for ES/EN/PT/FR/IT. Other languages fall back to no inline citation but still show the doc in the panel.
+- PDF page labels depend on the reader. If PyMuPDFReader isn't the default resolved reader for a given PDF, the system silently falls back to article regex.
+
+### Deferred (not in this sprint)
+- Per-page jump links that open the PDF at the cited page (needs a PDF viewer component — separate piece of work).
+- Composite citations ("see Arts. 12 and 14 of ...").
+- Native-language article patterns beyond ES/EN/PT/FR/IT.
+
+---
+
+## Sprint 11 Phase A — CLOSED 2026-04-21
 
 Sprint 11 Phase A closed. Delivers the CBA sidepanel with per-session accumulating document citations and pull-inverse downloads, plus two fixes that showed up during real-use testing (mobile table overflow, cascade reindex buttons).
 

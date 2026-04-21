@@ -1,5 +1,78 @@
 # CBC — Changelog
 
+## Sprint 11 Phase B — Inline citations with page / article references (2026-04-21)
+
+Phase A answered "which CBAs did the model draw on". Phase B answers
+"where inside each document". Gated end-to-end by the
+`cba_citations_enabled` session-setting flag (off by default, requires
+`cba_sidepanel_enabled` on). Flag off → pipeline identical to Phase A.
+
+### Chunk metadata
+
+- `rag_service.Chunk` gains `page_label: str = ""` — populated from
+  LlamaIndex's PDFReader metadata (preserved through `SentenceSplitter`
+  and into Chroma).
+- New `_citation_label_for(chunk)` helper in `prompt_assembler`:
+  PDF page → multilingual article regex (`Art(?:ículo|icle|igo|icolo)?.?\s+N`
+  covering ES / EN / PT / FR / IT) → annex regex (`Anexo / Annex / Allegato N`)
+  → empty string. Used both at prompt-render time and when building the
+  `sources` SSE payload.
+
+### Prompt (gated by flag)
+
+- `_render_chunks` now accepts `cite_inline`. When True it appends each
+  chunk's locator to its heading (`### Source: foo.md (tier=company, p. 12)`)
+  and tails a "Citation format" instruction block: the LLM must append
+  `[filename, locator]` brackets immediately after the relevant sentence;
+  no locator → just `[filename]`; do not invent locators.
+- `polling._process_turn` reads the per-frontend setting, computes
+  `cite_inline = cba_citations_enabled AND cba_sidepanel_enabled`, and
+  passes it into `prompt_assembler.assemble(..., cite_inline=...)`.
+
+### SSE / sources enrichment
+
+- New `_chunk_citation_labels` aggregator in `prompt_assembler`. When
+  Phase B is on, each `sources` entry gains a `labels: ["p. 14", "Art. 12"]`
+  array listing every distinct locator hint shown to the LLM for that
+  source. Off → entries stay as-is.
+- `AssembledPrompt.sources` type widened from `list[dict[str, str]]` to
+  `list[dict[str, Any]]`.
+- TypeScript `CitationSource` interface gains `labels?: string[]`.
+
+### React — citation chips + panel cross-link
+
+- `injectCitationLinks(text)` regex-rewrites `[filename, locator]`
+  occurrences into markdown links with a `#cite:` pseudo-scheme before
+  the text hits ReactMarkdown. Fenced code blocks are skipped so code
+  samples aren't chewed up.
+- New `buildMarkdownComponents(onCitationClick)` in `ChatShell`: the `a`
+  component intercepts `#cite:` hrefs and renders them as inline pills
+  (`bg-uni-blue/10`). Regular links fall through to `target="_blank"`.
+- `ChatShell.openCitation(filename)` opens the panel and bumps a
+  `highlightedCitation` state (with a null-then-set cycle so identical
+  repeat clicks still fire the effect).
+- `CitationsPanel` accepts `highlightedFilename`, scrolls that entry
+  into view and pulses it with a 1.6 s blue background animation. Also
+  renders the `labels[]` chips ("p. 14", "Art. 12") under each entry so
+  the user sees the locator coverage at a glance.
+
+### Testing / known limits
+
+- LLMs will occasionally forget the citation format or hallucinate a
+  page number. Panel remains the ground truth; if this happens at rate,
+  tighten the Citation format instruction.
+- Article regex covers ES / EN / PT / FR / IT. Other languages fall
+  back to no inline locator but still appear in the panel.
+- Page metadata depends on LlamaIndex's PDF reader. When absent the
+  article / annex regex takes over, so missing page labels aren't a
+  hard failure.
+
+### Deferred (not this sprint)
+
+- Open PDF at the cited page — requires a viewer component.
+- Composite citations ("see Arts. 12 and 14 of …").
+- Locator patterns for non-Latin-script languages.
+
 ## Sprint 11 Phase A — CBA sidepanel + cascade reindex + polish (2026-04-21)
 
 Phase A of the "CBA sidepanel" feature Daniel scoped right after Sprint 10

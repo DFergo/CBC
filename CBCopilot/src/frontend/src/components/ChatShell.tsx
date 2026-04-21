@@ -101,6 +101,19 @@ export default function ChatShell({
   const [panelOpen, setPanelOpen] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : false,
   )
+  // Phase B — filename whose panel entry we want to scroll to / pulse after
+  // a citation pill is clicked in the markdown. Bumped by the click handler
+  // with a trailing timestamp so the panel's effect re-fires even if the user
+  // clicks the same citation twice.
+  const [highlightedCitation, setHighlightedCitation] = useState<string | null>(null)
+
+  const openCitation = useCallback((filename: string) => {
+    setPanelOpen(true)
+    // Bust any prior state so the effect in CitationsPanel reruns even when
+    // the user clicks the same citation in a row.
+    setHighlightedCitation(null)
+    setTimeout(() => setHighlightedCitation(filename), 0)
+  }, [])
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -437,9 +450,23 @@ export default function ChatShell({
       )}
 
       <div className="flex-1 space-y-4 mb-4">
-        {messages.map((m, i) => <Bubble key={i} message={m} lang={lang} onCopySummary={copySummary} summaryCopied={summaryCopied} />)}
+        {messages.map((m, i) => (
+          <Bubble
+            key={i}
+            message={m}
+            lang={lang}
+            onCopySummary={copySummary}
+            summaryCopied={summaryCopied}
+            onCitationClick={openCitation}
+          />
+        ))}
         {isStreaming && streamingText && (
-          <Bubble message={{ role: isSummaryStream ? 'summary' : 'assistant', content: streamingText }} lang={lang} streaming />
+          <Bubble
+            message={{ role: isSummaryStream ? 'summary' : 'assistant', content: streamingText }}
+            lang={lang}
+            streaming
+            onCitationClick={openCitation}
+          />
         )}
         {isStreaming && !streamingText && (
           // HRDD-style activity bubble: makes it visually obvious the system
@@ -565,6 +592,7 @@ export default function ChatShell({
           sources={sources}
           open={panelOpen}
           onClose={() => setPanelOpen(false)}
+          highlightedFilename={highlightedCitation}
         />
       )}
     </div>
@@ -572,34 +600,82 @@ export default function ChatShell({
 }
 
 
-// Custom markdown components. Salary tables and code blocks in CBA prose
-// often stretch wider than a chat bubble on mobile. Instead of letting the
-// bubble blow out (and cut off content on scroll), we wrap the table in a
-// horizontally scrollable container that stays inside the bubble. Same
-// treatment for <pre> — long URLs, regex patterns, curl commands get
-// scroll-inside-bubble behaviour rather than overflow.
-const MARKDOWN_COMPONENTS: Components = {
-  table: ({ children, ...props }) => (
-    <div className="overflow-x-auto my-2 -mx-1 max-w-full">
-      <table className="text-xs border-collapse" {...props}>{children}</table>
-    </div>
-  ),
-  pre: ({ children, ...props }) => (
-    <pre className="overflow-x-auto max-w-full" {...props}>{children}</pre>
-  ),
+// Phase B — turn backend-provided `[filename, locator]` references into
+// clickable pills. The backend doesn't emit link syntax; we regex-wrap the
+// patterns here just before handing the text to ReactMarkdown. The href
+// uses a `#cite:` pseudo-scheme we intercept in the `a` component below.
+const CITATION_TEXT_RE = /\[([A-Za-z0-9_.\- ]+\.(?:md|pdf|txt|docx))\s*,\s*([^[\]]+?)\]/g
+
+function injectCitationLinks(text: string): string {
+  // Skip the substitution inside fenced code blocks (``` … ```) so we don't
+  // wrap something that looks like a citation in code samples.
+  const parts = text.split(/(```[\s\S]*?```)/g)
+  return parts.map(p => p.startsWith('```')
+    ? p
+    : p.replace(CITATION_TEXT_RE, (_m, file: string, loc: string) => {
+      const f = file.trim()
+      return `[${f}, ${loc.trim()}](#cite:${encodeURIComponent(f)})`
+    }),
+  ).join('')
 }
 
+function buildMarkdownComponents(onCitationClick?: (filename: string) => void): Components {
+  return {
+    table: ({ children, ...props }) => (
+      <div className="overflow-x-auto my-2 -mx-1 max-w-full">
+        <table className="text-xs border-collapse" {...props}>{children}</table>
+      </div>
+    ),
+    pre: ({ children, ...props }) => (
+      <pre className="overflow-x-auto max-w-full" {...props}>{children}</pre>
+    ),
+    // Intercept #cite: pseudo-links. Everything else is rendered as a normal
+    // external link that opens in a new tab.
+    a: ({ href, children, ...props }) => {
+      const h = href || ''
+      if (onCitationClick && h.startsWith('#cite:')) {
+        const filename = decodeURIComponent(h.slice(6))
+        return (
+          <button
+            type="button"
+            onClick={e => {
+              e.preventDefault()
+              onCitationClick(filename)
+            }}
+            className="inline-flex items-baseline gap-0.5 px-1.5 py-0 text-[11px] font-medium rounded bg-uni-blue/10 text-uni-blue hover:bg-uni-blue/20 border border-uni-blue/20 align-baseline"
+          >
+            {children}
+          </button>
+        )
+      }
+      return <a href={href} target="_blank" rel="noreferrer noopener" {...props}>{children}</a>
+    },
+  }
+}
+
+// Legacy alias used by the summary bubble where no citation click-target
+// exists. Keeps the summary layout and table-overflow fix intact.
+const MARKDOWN_COMPONENTS: Components = buildMarkdownComponents()
+
 function Bubble({
-  message, lang, streaming, onCopySummary, summaryCopied,
+  message, lang, streaming, onCopySummary, summaryCopied, onCitationClick,
 }: {
   message: ChatMessage
   lang: LangCode
   streaming?: boolean
   onCopySummary?: () => void
   summaryCopied?: boolean
+  onCitationClick?: (filename: string) => void
 }) {
   const isUser = message.role === 'user'
   const isSummary = message.role === 'summary'
+
+  // Build the citation-aware markdown components on every render when we have
+  // a click handler. Cheap — the function just closes over the handler.
+  const mdComponents = onCitationClick
+    ? buildMarkdownComponents(onCitationClick)
+    : MARKDOWN_COMPONENTS
+  const mdText = onCitationClick ? injectCitationLinks(message.content) : message.content
 
   if (isSummary) {
     return (
@@ -615,8 +691,8 @@ function Bubble({
           )}
         </div>
         <div className="prose prose-sm max-w-none text-gray-800 overflow-x-hidden">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-            {message.content}
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+            {mdText}
           </ReactMarkdown>
         </div>
       </div>
@@ -640,8 +716,8 @@ function Bubble({
           <div className="whitespace-pre-wrap">{message.content}</div>
         ) : (
           <div className="prose prose-sm max-w-none text-gray-800 overflow-x-hidden">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-              {message.content}
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+              {mdText}
             </ReactMarkdown>
           </div>
         )}
