@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   listRAG, uploadRAG, deleteRAG, getRAGStats, reindexRAG,
+  reindexAllRAG, reindexFrontendCascade,
   previewRAGResolution,
   getFrontendRAGSettings, saveFrontendRAGSettings,
   updateCompany,
@@ -153,6 +154,35 @@ export default function RAGSection({ frontendId, companySlug, company, onCompany
     }
   }
 
+  // Cascade reindex. At global tier this rebuilds every scope in the deployment
+  // (global + every frontend + every company). At frontend tier it rebuilds this
+  // frontend + all its companies. Hidden at company tier — per-scope Reindex is
+  // already the right button there.
+  const onReindexCascade = async () => {
+    const isGlobal = tierLabel === 'global'
+    const warn = isGlobal
+      ? 'Esto reindexa TODO el corpus: global + todos los frontends + todas las empresas. Con un corpus grande puede tardar varios minutos y las consultas devolverán resultados degradados mientras se ejecuta. ¿Continuar?'
+      : `Esto reindexa el frontend "${frontendId}" + todas sus empresas. Las consultas contra este frontend devolverán resultados degradados mientras se ejecuta. ¿Continuar?`
+    if (!confirm(warn)) return
+    setError('')
+    setBusy(true)
+    try {
+      const r = isGlobal
+        ? await reindexAllRAG()
+        : await reindexFrontendCascade(frontendId!)
+      // Refresh THIS section's stats so the admin sees the current tier update.
+      await refresh()
+      const errs = r.stats.filter(s => s.error)
+      if (errs.length) {
+        setError(`${r.scopes_reindexed - errs.length} / ${r.scopes_reindexed} scopes ok; ${errs.length} con errores (ver logs del backend).`)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const runPreview = async () => {
     if (!frontendId) return
     setError('')
@@ -248,6 +278,26 @@ export default function RAGSection({ frontendId, companySlug, company, onCompany
         <button onClick={onReindex} disabled={busy} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50 disabled:opacity-50">
           Reindex
         </button>
+        {tierLabel === 'global' && (
+          <button
+            onClick={onReindexCascade}
+            disabled={busy}
+            title="Rebuilds the global index AND every frontend / company under it."
+            className="text-sm border border-amber-300 bg-amber-50 text-amber-900 rounded-lg px-3 py-2 hover:bg-amber-100 disabled:opacity-50"
+          >
+            Reindex everything
+          </button>
+        )}
+        {tierLabel === 'frontend' && (
+          <button
+            onClick={onReindexCascade}
+            disabled={busy}
+            title="Rebuilds this frontend's index AND every company under it. Global is not touched."
+            className="text-sm border border-amber-300 bg-amber-50 text-amber-900 rounded-lg px-3 py-2 hover:bg-amber-100 disabled:opacity-50"
+          >
+            Reindex frontend + companies
+          </button>
+        )}
         {frontendId && (
           <button onClick={runPreview} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50">
             Preview resolution

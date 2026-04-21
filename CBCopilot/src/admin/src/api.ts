@@ -180,6 +180,24 @@ export async function reindexRAG(frontendId?: string, companySlug?: string): Pro
   return request(`/admin/api/v1/rag/reindex${ragQuery(frontendId, companySlug)}`, { method: 'POST' })
 }
 
+export interface CascadeReindexResult {
+  status: string
+  scopes_reindexed: number
+  frontend_id?: string
+  stats: { scope_key: string; document_count?: number; node_count?: number; error?: string }[]
+}
+
+export async function reindexAllRAG(): Promise<CascadeReindexResult> {
+  return request('/admin/api/v1/rag/reindex-all', { method: 'POST' })
+}
+
+export async function reindexFrontendCascade(frontendId: string): Promise<CascadeReindexResult> {
+  return request(
+    `/admin/api/v1/rag/reindex-frontend-cascade/${encodeURIComponent(frontendId)}`,
+    { method: 'POST' },
+  )
+}
+
 export async function getDocMetadata(frontendId?: string, companySlug?: string): Promise<{ scope_key: string; metadata: DocMetadataMap }> {
   return request(`/admin/api/v1/rag/metadata${ragQuery(frontendId, companySlug)}`)
 }

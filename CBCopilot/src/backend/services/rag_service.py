@@ -547,8 +547,8 @@ def _discover_all_scope_keys() -> list[str]:
 
 def reindex_all_scopes() -> list[dict[str, Any]]:
     """Rebuild every scope's index. Used when a pipeline-wide setting changes
-    (embedder, chunk size, Contextual Retrieval). Returns one stats dict per
-    scope so the caller can surface per-scope counts.
+    (embedder, chunk size, Contextual Retrieval) or when the admin triggers a
+    global-cascade reindex. Returns one stats dict per scope.
     """
     out: list[dict[str, Any]] = []
     for sk in _discover_all_scope_keys():
@@ -556,6 +556,28 @@ def reindex_all_scopes() -> list[dict[str, Any]]:
             out.append(reindex(sk))
         except Exception as e:
             logger.exception(f"reindex_all_scopes: scope {sk} failed: {e}")
+            out.append({"scope_key": sk, "error": str(e)})
+    return out
+
+
+def reindex_frontend_cascade(frontend_id: str) -> list[dict[str, Any]]:
+    """Rebuild the frontend-tier index plus every company under it. Used by
+    the frontend-tier RAGSection's "Reindex frontend + companies" button.
+    The global scope is NOT touched.
+    """
+    from src.services._paths import CAMPAIGNS_DIR
+    targets: list[str] = [frontend_id]
+    companies_dir = CAMPAIGNS_DIR / frontend_id / "companies"
+    if companies_dir.exists():
+        for co_dir in companies_dir.iterdir():
+            if co_dir.is_dir() and (co_dir / "documents").exists():
+                targets.append(f"{frontend_id}/{co_dir.name}")
+    out: list[dict[str, Any]] = []
+    for sk in targets:
+        try:
+            out.append(reindex(sk))
+        except Exception as e:
+            logger.exception(f"reindex_frontend_cascade: scope {sk} failed: {e}")
             out.append({"scope_key": sk, "error": str(e)})
     return out
 

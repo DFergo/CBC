@@ -91,6 +91,29 @@ async def reindex(frontend_id: str | None = None, company_slug: str | None = Non
     }
 
 
+@router.post("/rag/reindex-all")
+async def reindex_all(_admin: dict = Depends(require_admin)):
+    """Cascade reindex: rebuild global + every frontend + every company.
+    Intended for the "Reindex entire corpus" button on the global RAG
+    section. Synchronous — admin UI shows a spinner + per-scope stats."""
+    stats = rag_service.reindex_all_scopes()
+    return {"status": "ok", "scopes_reindexed": len(stats), "stats": stats}
+
+
+@router.post("/rag/reindex-frontend-cascade/{frontend_id}")
+async def reindex_frontend_cascade(frontend_id: str, _admin: dict = Depends(require_admin)):
+    """Cascade reindex for one frontend: the frontend-tier index + every
+    company under it. Global is not touched. Used by the frontend-tier
+    "Reindex frontend + its companies" button."""
+    stats = rag_service.reindex_frontend_cascade(frontend_id)
+    return {
+        "status": "ok",
+        "frontend_id": frontend_id,
+        "scopes_reindexed": len(stats),
+        "stats": stats,
+    }
+
+
 # --- Document metadata (per-directory metadata.json) ---
 
 class DocMetadataPatch(BaseModel):
