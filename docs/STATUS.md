@@ -1,9 +1,79 @@
 # CBC — Project Status
 
-**Current Sprint:** 8 — Polish, Testing & Deployment + Full i18n — **CLOSED 2026-04-20**
-**Last Updated:** 2026-04-20
+**Current Sprint:** 9 — RAG Overhaul + HRDD-parity Architecture Hardening — **CLOSED 2026-04-21**
+**Last Updated:** 2026-04-21
 
-Sprint 8 closed: all 31 UI language bundles shipped, per-tier admin-editable translations with download/upload + LLM auto-translate workflow landed, DisclaimerPage/InstructionsPage cascade wired, RTL flip on `<html dir>`, `docs/INSTALL.md` written, SPEC §7 rewritten. Browser-level responsive/RTL QA + Compare-All ≥10 companies perf check left for Daniel's host env.
+Sprint 9 closed. Two workstreams landed together while Daniel was standing up the first real deployment in Portainer across two hosts (backend on Mac Studio, frontends on M4s over Tailscale):
+
+1. **HRDD-parity architecture hardening.** CBC had silently accreted coupling to a shared Docker network (`cbc-net`) and three direct sidecar→backend HTTP calls over Sprints 7/7.5. That broke the cross-host deployment model (frontend and backend on different Docker hosts by design). Reverted to pure pull-inverse.
+2. **RAG overhaul.** The Amcor-Lezo CBA exposed retrieval failing on its own content — the system couldn't surface the Annex I salary tables even when asked literally. Swapped the embedder (MiniLM → BGE-M3), added a cross-encoder reranker, and wired an optional Contextual Retrieval toggle. Verified on Daniel's corpus: "works much better".
+
+Next decision gates (after real-use measurement):
+- Activate Contextual Retrieval if recall still lags on table-heavy documents.
+- Migrate vector store to ChromaDB when corpus crosses ~100+ companies (captured in `docs/IDEAS.md`).
+
+---
+
+## Sprint 9 — CLOSED
+
+### Part 1 — Architecture hardening (HRDD parity)
+
+- **Compose files stripped of `cbc-net`.** Both stacks now run on Docker's default bridge; each one is self-contained on its Docker host. The backend polls registered frontend URLs over LAN / Tailscale / Bonjour, same as HRDD Helper. Removed `container_name:` declarations so Portainer stack-name prefixing works for multi-frontend on one host.
+- **`CBC_BACKEND_URL`** exposed on the frontend compose as an optional env var for the one remaining (auth) sidecar→backend relay. Empty default means same-host deployments keep working with service-name DNS; cross-host points it at the Tailscale / hostname of the backend.
+- **Three pull-inverse refactors** to match HRDD's architecture:
+  - **Guardrails thresholds**: backend pushes on each poll cycle (HRDD branding-push pattern). Sidecar caches to disk; ChatShell reads via `/internal/guardrails/thresholds` with 2/5 fallback.
+  - **Session recovery**: React `POST /internal/session/recover` queues a `recovery_request`. Backend drains on its next poll, resolves, `POST`s back to `/internal/session/{token}/recovery-data`. SessionPage now polls every 400 ms with a 15 s deadline.
+  - **Uploads**: React `POST /internal/upload/{token}` stores file locally + queues notification. Backend polls `/internal/uploads`, GETs each file, ingests into session RAG, DELETEs the sidecar copy. SMTP admin alert moved into the ingest path.
+- **Company list pull-inverse.** Backend polling pushes admin-registered companies to the sidecar; sidecar caches them and serves `/internal/companies` (admin CRUD invalidates via `polling.invalidate_companies_pushed(fid)`). Compare All is now synthesised at read-time as a frontend-level concept (it's NOT a registered company — it has its own `compare_all.md` prompt and combined-RAG routing in `resolvers.py`, which was already correct).
+- **CompanySelectPage branded buttons.** All buttons use the primary colour; Compare All gets a subtle ring + subtitle to stand out while the rest of the list stays visually consistent.
+- **`docs/INSTALL.md`** rewritten: pull-inverse architecture explained up front; Portainer Repository + Web-editor modes; cross-host deployment with `CBC_BACKEND_URL`; no pre-existing Docker network required.
+
+### Part 2 — RAG overhaul
+
+The Amcor-Lezo stress test: the CBA Markdown file had complete salary tables in Annex I (lines 1296-1335), yet the LLM reported "no dispongo de información sobre tablas salariales" and, when asked to cite Annex I literally, "no está presente en los documentos". Two stacked causes: the old `SentenceSplitter` at 512/50 tokens was orphaning the `ANEXO I` heading from its numeric content, and `all-MiniLM-L6-v2` (English-primary, 384-dim) can't match Spanish/Basque abstract queries against numeric table bodies.
+
+Three sequential changes landed to `src/backend/services/rag_service.py`:
+
+- **Markdown-aware chunker + bigger chunks** (commit `5f55e8a`): route `.md` through `MarkdownNodeParser` (splits by header boundaries, keeps each section contiguous); keep `SentenceSplitter` for PDFs/TXT but bump `CHUNK_SIZE` 512→1024 and `CHUNK_OVERLAP` 50→100. Hybrid BM25 + dense via `QueryFusionRetriever` (reciprocal rerank). `DEFAULT_TOP_K` 5→8. First fix — made a dent but still missed Annex I under literal query.
+- **BGE-M3 + cross-encoder reranker** (commit `f488ec1`): swap embedder to `BAAI/bge-m3` (1024-dim, 100+ languages, 568M params) — single biggest quality lever for a multilingual corpus. New post-processor stage: fetch `rag_reranker_fetch_k=30` candidates from hybrid retrieval, rerank with `BAAI/bge-reranker-v2-m3` down to `rag_reranker_top_n=8`. Model names admin-configurable via `deployment_backend.json`. Dockerfile pre-downloads both models (+ MiniLM fallback) so cold starts stay instant; image grows ~3 GB.
+- **Contextual Retrieval toggle** (commit `f488ec1`): Anthropic's Sept-2024 recipe. When enabled, `_contextualise_nodes` synchronously calls the summariser LLM for each chunk to generate a 1–2 sentence context line, prepended at index time so embeddings carry document-level grounding. Off by default — adds one LLM call per chunk, which means minutes-to-hours for a big corpus. Runtime toggle via new `POST /admin/api/v1/rag/settings/contextual`; endpoint reindexes every scope and rolls the toggle back on failure. Admin UI: new `RAGPipelineSection` on General tab shows the embedder/reranker read-only + exposes the CR switch with a clear warning.
+
+### Build fixes (Portainer)
+
+Portainer on Daniel's Mac Studio hid build logs behind a paywall. Reproduced the build locally to see the actual pip error:
+
+- First error: dependency resolver deadlock from `llama-index-core>=0.12,<0.15` colliding with newer `llama-index-embeddings-huggingface` needing core `>=0.13`. Fix: bump core / readers-file / embeddings-huggingface / retrievers-bm25 pins to the 0.13/0.14 line.
+- Second error: new core line pulled in `llama-index-workflows` which requires `pydantic>=2.11.5`; our pin was `pydantic==2.10.4`. Loosen to `>=2.11.5`.
+- Added `build-essential` to `Dockerfile.backend` defensively so any C-extension dep (PyStemmer via bm25 is one) can compile wheels on `python:3.11-slim`.
+
+Final working versions: `llama-index-core 0.14.20`, `readers-file 0.6.0`, `embeddings-huggingface 0.7.0`, `retrievers-bm25 0.7.1`, `pydantic 2.13.3`.
+
+### Delivered commits
+
+```
+7adcca0  Allow CBC_BACKEND_URL override on frontend stack for cross-host deploy
+6e4aea1  Restore pull-inverse (HRDD parity): drop cbc-net + refactor 3 sidecar→backend calls
+40c8b01  Push per-frontend companies to sidecar so admin list beats the hardcoded stub
+310eaad  CompanySelectPage: auto-inject Compare All + branded blue buttons
+9394aa6  Compare All is a frontend concept, not a registered company
+5f55e8a  RAG: markdown-aware chunker + hybrid BM25/semantic retrieval
+f488ec1  RAG overhaul: BGE-M3 + bge-reranker-v2-m3 + Contextual Retrieval toggle
+8fff682  Fix backend build: loosen bm25 pin + install build-essential
+ff9afc6  Fix backend build: bump llama-index + pydantic to compatible versions
+```
+
+### Validated on Daniel's corpus
+
+- Indexing works with the new chunker + BGE-M3 on `CBA—Amcor_Flexibles—Lezo—Spain.md`.
+- Retrieval for salary questions is "much better" (Daniel, 2026-04-21) — the Anexo I tables surface on relevant queries.
+- Cross-host deployment functional: Mac Studio backend + M4 frontend over Tailscale, no shared Docker network.
+
+### Open items (future sprints)
+
+- **Measure recall properly**. We upgraded three things in sequence. If residual gaps show up as the corpus grows, activate Contextual Retrieval with one click from the admin.
+- **ChromaDB migration** (captured in `docs/IDEAS.md`). Trigger at ~100+ companies with active docs or when query latency crosses ~50 ms. Drop-in via `llama-index-vector-stores-chroma`; enables collapsing multi-scope into a single collection with metadata filters.
+- **Auth relay still not pull-inverse**. The one remaining sidecar→backend call (`/api/v1/auth/request-code`, `/verify-code`) uses `CBC_BACKEND_URL`. HRDD does this pull-inverse too; easy follow-up when we next touch auth.
+- **PDF ingestion quality**. The markdown-aware path helps `.md` docs. Most real CBAs will arrive as PDFs; the default `PyMuPDFReader` / `PDFReader` handles text well but mangles complex tables. Worth revisiting with Docling or Unstructured.io if table recall in PDFs lags.
 
 ---
 
