@@ -10,6 +10,7 @@ import {
   SESSION_DEFAULTS,
 } from '../api'
 import type { FrontendSessionSettings } from '../api'
+import { useT } from '../i18n'
 
 export default function SessionSettingsPanel({ frontendId }: { frontendId: string }) {
   const [settings, setSettings] = useState<FrontendSessionSettings>(SESSION_DEFAULTS)
@@ -17,6 +18,7 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
   const [dirty, setDirty] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  const { t } = useT()
 
   useEffect(() => {
     setError('')
@@ -36,13 +38,13 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
   }
 
   const save = async () => {
-    setStatus('Saving…')
+    setStatus('…')
     setError('')
     try {
       await saveFrontendSessionSettings(frontendId, settings)
       setHasOverride(true)
       setDirty(false)
-      setStatus('Saved — pushed to sidecar')
+      setStatus(t('generic_saved'))
       setTimeout(() => setStatus(''), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -51,13 +53,13 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
   }
 
   const reset = async () => {
-    if (!confirm('Reset session settings to defaults? The override file is deleted; the panel below shows the defaults.')) return
+    if (!confirm(t('confirm_destructive_action'))) return
     try {
       await deleteFrontendSessionSettings(frontendId)
       setSettings(SESSION_DEFAULTS)
       setHasOverride(false)
       setDirty(false)
-      setStatus('Reset to defaults')
+      setStatus(t('generic_saved'))
       setTimeout(() => setStatus(''), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -67,63 +69,55 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
   return (
     <div className="border border-gray-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-1">
-        <h4 className="text-sm font-semibold text-gray-700">Session settings + feature toggles</h4>
+        <h4 className="text-sm font-semibold text-gray-700">{t('session_settings_title')}</h4>
         <span className="text-xs text-gray-500">
-          {hasOverride ? 'custom ◆' : 'defaults'}
+          {hasOverride ? t('branding_custom_badge') : '—'}
           {status && <span className="ml-2 text-green-700">{status}</span>}
         </span>
       </div>
       <p className="text-xs text-gray-500 mb-4">
-        Per-frontend behaviour. Defaults are 48 / 72 / 0 hours and all toggles ON; change here to override for this deployment.
-        RAG resolution settings live in the RAG section below.
+        {t('session_settings_description')}
       </p>
 
       {error && <p className="text-uni-red text-xs mb-2">{error}</p>}
 
       <div className="space-y-4">
         <NumField
-          label="Session resume (hours)"
-          help="How long after creating a session the user can come back with the same token and pick up where they left off. After this window the token stops working."
+          label={t('field_session_resume_hours')}
           value={settings.session_resume_hours}
           onChange={v => update({ session_resume_hours: v })}
         />
         <NumField
-          label="Session auto-close (hours idle)"
-          help="How long the session can stay idle before being marked complete. When it closes, the user-summary prompt runs and the summary is emailed (if the user provided their email)."
+          label={t('field_auto_close_hours')}
           value={settings.auto_close_hours}
           onChange={v => update({ auto_close_hours: v })}
         />
         <NumField
-          label="Session auto-destroy (hours, 0 = never)"
-          help="Privacy wipe. After the session closes, wait this many hours then delete the conversation, uploads, and any session-derived RAG. 0 = keep indefinitely."
+          label={t('field_auto_destroy_hours')}
           value={settings.auto_destroy_hours}
           onChange={v => update({ auto_destroy_hours: v })}
         />
       </div>
 
       <div className="mt-5 space-y-2">
-        <BoolField label="Auth required (email verification)"
+        <BoolField label={t('field_auth_required')}
           value={settings.auth_required} onChange={v => update({ auth_required: v })} />
-        <BoolField label="Disclaimer page enabled"
+        <BoolField label={t('field_disclaimer_enabled')}
           value={settings.disclaimer_enabled} onChange={v => update({ disclaimer_enabled: v })} />
-        <BoolField label="Instructions page enabled"
+        <BoolField label={t('field_instructions_enabled')}
           value={settings.instructions_enabled} onChange={v => update({ instructions_enabled: v })} />
-        <BoolField label='"Compare All" button visible on CompanySelectPage'
+        <BoolField label={t('field_compare_all_enabled')}
           value={settings.compare_all_enabled} onChange={v => update({ compare_all_enabled: v })} />
-        <BoolField label="CBA sidepanel in chat (lists cited documents + download, click-to-highlight)"
+        <BoolField label={t('field_cba_sidepanel_enabled')}
           value={settings.cba_sidepanel_enabled} onChange={v => update({ cba_sidepanel_enabled: v })} />
         <div className={settings.cba_sidepanel_enabled ? '' : 'opacity-50 pointer-events-none'}>
           <BoolField
-            label="Ask the LLM to cite page / article numbers in responses"
+            label={t('field_cba_citations_enabled')}
             value={settings.cba_citations_enabled}
             onChange={v => update({ cba_citations_enabled: v })}
           />
           <p className="text-[11px] text-gray-500 mt-0.5 ml-6">
-            Only takes effect when the CBA sidepanel is on. When on, the prompt asks the LLM to
-            append <code>[filename, p. N]</code> / <code>[filename, Art. N]</code> brackets inline;
-            the UI renders them as clickable pills that jump to the matching document in the
-            sidepanel. LLMs occasionally miss the format — the panel + downloads keep working
-            regardless.
+            {t('field_cba_citations_help')}
           </p>
         </div>
       </div>
@@ -131,12 +125,12 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
       <div className="flex gap-2 mt-5">
         <button onClick={save} disabled={!dirty}
           className="text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50">
-          Save + push
+          {t('session_settings_save_push')}
         </button>
         {hasOverride && (
           <button onClick={reset}
             className="text-sm border border-uni-red text-uni-red rounded-lg px-3 py-1.5 hover:bg-red-50">
-            Reset to defaults
+            {t('session_settings_reset_button')}
           </button>
         )}
       </div>
@@ -144,11 +138,10 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
   )
 }
 
-function NumField({ label, help, value, onChange }: { label: string; help: string; value: number; onChange: (v: number) => void }) {
+function NumField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-gray-700 mb-0.5">{label}</label>
-      <p className="text-[11px] text-gray-500 mb-1.5">{help}</p>
+      <label className="block text-xs font-medium text-gray-700 mb-1">{label}</label>
       <input
         type="number"
         min={0}

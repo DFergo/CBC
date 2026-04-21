@@ -1,5 +1,89 @@
 # CBC — Changelog
 
+## Sprint 12 Phase A — Admin i18n + branded header (2026-04-21)
+
+Transferring CBC to UNI affiliates means the admin is the first surface a
+local operator opens — and imposing English on that surface is both a
+friction wall and a cultural signal we don't want to send. This sprint
+lays the admin-i18n foundation and delivers the chrome + the frequently
+touched panels in 15 languages. Rest of the admin sections keep their
+English labels for now (Phase B follow-up).
+
+### Languages (15, G&P affiliate coverage)
+
+EN, ES, DE, FR, IT, PT, NL, PL, HR, SV, AR, JA, TH, ID, TR. Picked for
+G&P — KO dropped (no affiliates), ID added (Indonesia), TR added. RTL
+for AR only.
+
+### Branded header (HRDD parity)
+
+New `Dashboard` layout copies HRDD's admin header style:
+- `bg-uni-dark` (#1a1a2e) band with title + subtitle + language selector
+  + logout on the top row.
+- White tab strip beneath with `shadow-sm` to separate navigation from
+  main content.
+- `max-w-6xl mx-auto` for the main container so sections don't stretch
+  edge-to-edge on wide screens.
+
+`LoginPage` + `SetupPage` get the same dark-chip language selector so an
+operator whose only shared language isn't English can switch before they
+authenticate.
+
+### i18n infrastructure (`src/admin/src/i18n.ts`)
+
+- `AdminLangCode` union (15 langs), `ADMIN_LANGUAGES` metadata list,
+  `ADMIN_RTL_LANGS = ['ar']`.
+- `AdminTranslationKeys` union covering ~140 keys: header / tabs /
+  login / setup / generic verbs (Save/Cancel/…) / section titles /
+  branding defaults + translation controls / session settings fields /
+  RAG docs + pipeline / sessions tab columns + filters / users
+  (contacts) / cross-cutting confirms.
+- EN source bundle + 14 translated dictionaries populated by the
+  i18n-translator subagent in three parallel batches
+  (ES/DE/FR/IT/PT → NL/PL/HR/SV/TR → AR/JA/TH/ID). Quality flagged as
+  MVP pending native-speaker review before each affiliate handover.
+- `AdminLangContext` provider lifted to `App.tsx` so login + setup
+  share the same picker + `localStorage`-backed choice as the
+  dashboard. `document.documentElement.{lang,dir}` sync'd on every
+  change.
+- `tAdmin(key, lang, vars)` supports `{placeholder}` interpolation for
+  strings like `rag_pipeline_reindexed` ("Reindexed {count} scopes.").
+  `useT()` hook returns `{ lang, t }` for the common component pattern.
+- `loadStoredAdminLang` + `persistAdminLang` helpers for the
+  localStorage + navigator-fallback flow.
+
+### Wired this phase
+
+- `App.tsx` — provider at the root + html lang/dir effect.
+- `Dashboard.tsx` — full rewrite with new header + tabs, everything
+  translated.
+- `LoginPage.tsx` + `SetupPage.tsx` — dark-chip selector + all copy i18n'd.
+- `AdminLanguageSelector.tsx` — new native-select picker.
+- `panels/SessionSettingsPanel.tsx` — all fields, confirms, buttons, help
+  text (including the Phase B CBA citations explainer). Numbers-only
+  fields dropped their per-field help prose in favour of bundled labels
+  so the translator didn't have to render long sentences three times per
+  language.
+
+### Not wired yet (Phase B follow-up)
+
+BrandingSection + BrandingPanel, RAGSection + RAGPipelineSection,
+PromptsSection, LLMSection, SMTPSection, GuardrailsSection, GlossarySection,
+OrgsSection, SessionsTab detail drawer, RegisteredUsersTab body, FrontendsTab
+body, all modal dialogs inside those. The keys exist in the bundle — each
+component just needs a `const { t } = useT()` and literal replacements.
+
+### Known limits
+
+- Quality: translations are Claude-generated. Fine as MVP, but the admin
+  is specifically a first-contact surface for affiliates — each language
+  should get a native-speaker review before real handover.
+- RTL: layout not yet audited for AR. The wrap (`<html dir="rtl">`)
+  works; individual flex rows with absolute chevrons / action-button
+  clusters may need manual checks. Queued for Phase B.
+- No format localisation (dates/numbers) — intentional. dd/mm/yyyy or
+  ISO is universal enough for the countries covered.
+
 ## Sprint 11 Phase B — Inline citations with page / article references (2026-04-21)
 
 Phase A answered "which CBAs did the model draw on". Phase B answers

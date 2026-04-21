@@ -1,9 +1,22 @@
 # CBC — Project Status
 
-**Current Sprint:** 11 Phase B — Inline citations with page / article references — **CLOSED 2026-04-21**
+**Current Sprint:** 12 Phase A — Admin i18n + branded header — **CLOSED 2026-04-21**
 **Last Updated:** 2026-04-21
 
-Phase B closed. Gated by the existing `cba_citations_enabled` flag (off by default, requires `cba_sidepanel_enabled` first). When on: retrieved chunks expose locator hints (PDF `page_label`, article / annex regex fallback), the prompt asks the LLM to cite `[filename, locator]` inline, and the React chat renders these references as clickable chips that scroll + pulse the matching doc in the sidepanel. All three tiers (chunk metadata → prompt → UI) respect the flag so turning it off returns the pipeline to Phase A behaviour with no stale references left over.
+Sprint 12 Phase A closed: admin panel shell speaks 15 languages + switches at runtime. Full translation bundle ready for the whole surface; only the frequently-touched chrome (header, tabs, login, setup, per-frontend session settings incl. the CBA citation toggles) has been wired to consume it in this phase. Remaining sections (Branding / RAG / Prompts / LLM / SMTP / Sessions detail / Users / Frontends tab body) still render English — the i18n keys exist, wiring them is mechanical.
+
+- 15 languages: EN, ES, DE, FR, IT, PT, NL, PL, HR, SV, AR, JA, TH, ID, TR. Picked for G&P-relevant UNI affiliates (Daniel 2026-04-21); KO dropped (no G&P affiliates), ID added (Bahasa for Indonesian affiliates), TR added.
+- HRDD-parity header: `bg-uni-dark` band with title + language selector + logout, tab strip on `bg-white`, clear separation before main content. Works on mobile.
+- Language selector in the header, persisted in `localStorage` (`cbc_admin_lang`), fallback to `navigator.language` when unseen.
+- RTL wired: `<html dir>` flips for AR on every lang change. Layout not yet audited end-to-end in RTL — follow-up for Phase B.
+- Translations produced by i18n-translator subagent in three parallel batches (ES/DE/FR/IT/PT → NL/PL/HR/SV/TR → AR/JA/TH/ID). Flagged as MVP-quality pending native-speaker review before each affiliate handover.
+
+### Sprint 12 Phase B (follow-up, separate sprint)
+
+- Replace hardcoded English in the remaining sections with `t()` calls:
+  BrandingSection, BrandingPanel, RAGSection, RAGPipelineSection, PromptsSection, LLMSection, SMTPSection, GuardrailsSection, GlossarySection, OrgsSection, FrontendsTab detail, SessionsTab detail drawer, RegisteredUsersTab.
+- RTL layout audit for AR — especially flex rows with left/right assumptions (chevrons, dropdowns, action-button groups).
+- Native-speaker review round for each language before first affiliate handover.
 
 Phase A's sidepanel answers "which CBAs did the model draw on for this answer". Phase B is the complementary half: **where inside each document**. The user sees `[filename, p. 14]` or `[filename, Art. 12]` references inline with the response prose, and clicking one jumps to that document in the panel.
 
