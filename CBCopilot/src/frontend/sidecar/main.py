@@ -131,6 +131,7 @@ async def get_config():
         "disclaimer_enabled": pick("disclaimer_enabled", True),
         "instructions_enabled": pick("instructions_enabled", True),
         "compare_all_enabled": pick("compare_all_enabled", True),
+        "cba_sidepanel_enabled": pick("cba_sidepanel_enabled", True),
         "session_resume_hours": pick("session_resume_hours", 48),
         "auto_close_hours": pick("auto_close_hours", 72),
         "auto_destroy_hours": pick("auto_destroy_hours", 0),
@@ -440,8 +441,9 @@ async def enqueue_chat(msg: ChatMessage):
 @app.get("/internal/queue")
 async def dequeue_messages():
     """Backend poll target — drains pending chat/survey/close messages and
-    surfaces pending recovery_requests (tokens) + auth_requests (queued auth
-    actions) so the backend can resolve them in the same tick."""
+    surfaces pending recovery_requests (tokens), auth_requests, and
+    document_requests (CBA sidepanel downloads) so the backend can resolve
+    them in the same tick."""
     now = time.time()
     async with _queue_lock:
         valid = [m for m in _queue if now - m["created_at"] < MESSAGE_TTL]
@@ -451,11 +453,16 @@ async def dequeue_messages():
     async with _auth_lock:
         auth_drain = list(_auth_queue)
         _auth_queue.clear()
+    async with _document_lock:
+        doc_drain = list(_document_queue)
+        _document_queue.clear()
     result: dict[str, Any] = {"messages": valid}
     if pending_tokens:
         result["recovery_requests"] = pending_tokens
     if auth_drain:
         result["auth_requests"] = auth_drain
+    if doc_drain:
+        result["document_requests"] = doc_drain
     return result
 
 
@@ -627,6 +634,118 @@ async def push_recovery_data(token: str, body: RecoveryData):
                 "data": body.data,
                 "created_at": _recovery[token].get("created_at", time.time()),
             }
+    return {"status": "ok"}
+
+
+# --- CBA document downloads (pull-inverse, Sprint 11) ---
+# React requests a doc download by (scope_key, filename). Sidecar queues a
+# document_request in /internal/queue. Backend polls, reads the file from
+# disk, POSTs the bytes back to /internal/document/{request_id}/result.
+# React polls /internal/document/{request_id} which returns 202 "pending"
+# until the bytes arrive, then 200 with the file body.
+
+_DOCUMENT_DIR = Path(tempfile.mkdtemp(prefix="cbc_documents_"))
+_document_requests: dict[str, dict[str, Any]] = {}
+_document_queue: list[dict[str, Any]] = []
+_document_lock = asyncio.Lock()
+_DOCUMENT_TTL = 120.0
+
+
+class DocumentRequest(BaseModel):
+    scope_key: str
+    filename: str
+
+
+@app.post("/internal/document-request")
+async def queue_document_request(req: DocumentRequest):
+    """React queues a download. Returns a request_id the UI will poll."""
+    if not req.scope_key.strip() or not req.filename.strip():
+        raise HTTPException(400, "scope_key and filename required")
+    request_id = f"{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
+    async with _document_lock:
+        _document_requests[request_id] = {
+            "status": "pending",
+            "scope_key": req.scope_key,
+            "filename": req.filename,
+            "created_at": time.time(),
+        }
+        _document_queue.append({
+            "request_id": request_id,
+            "scope_key": req.scope_key,
+            "filename": req.filename,
+        })
+    logger.info(f"Document request queued: {request_id} {req.scope_key}/{req.filename}")
+    return {"request_id": request_id, "status": "pending"}
+
+
+@app.get("/internal/document/{request_id}")
+async def poll_document(request_id: str):
+    """React polls this every ~500 ms after queueing a document-request. While
+    the backend hasn't pushed the bytes back we return 202 pending. Once the
+    file is here we stream it as a FileResponse."""
+    async with _document_lock:
+        state = _document_requests.get(request_id)
+        if state and time.time() - state["created_at"] > _DOCUMENT_TTL:
+            _document_requests.pop(request_id, None)
+            state = None
+    if not state:
+        raise HTTPException(404, "Unknown or expired document request")
+    if state["status"] != "ready":
+        # FastAPI returns 202 JSON; React loops until it sees a non-JSON body.
+        return {"status": state["status"], "detail": state.get("detail", "")}
+    path = _DOCUMENT_DIR / request_id / state["filename"]
+    if not path.exists():
+        raise HTTPException(500, "Document file missing on sidecar")
+    return FileResponse(
+        path,
+        filename=state["filename"],
+        media_type=state.get("content_type") or "application/octet-stream",
+    )
+
+
+@app.post("/internal/document/{request_id}/result")
+async def push_document_bytes(request_id: str, file: UploadFile = File(...)):
+    """Backend pushes the fetched file here. Stored under a per-request dir
+    so the cleanup task knows exactly what to remove on TTL expiry."""
+    async with _document_lock:
+        state = _document_requests.get(request_id)
+    if not state:
+        raise HTTPException(404, "Unknown document request")
+    target_dir = _DOCUMENT_DIR / request_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    content = await file.read()
+    (target_dir / state["filename"]).write_bytes(content)
+    async with _document_lock:
+        st = _document_requests.get(request_id)
+        if st:
+            st["status"] = "ready"
+            st["size"] = len(content)
+            st["content_type"] = file.content_type or "application/octet-stream"
+
+    async def _gc() -> None:
+        await asyncio.sleep(_DOCUMENT_TTL)
+        async with _document_lock:
+            _document_requests.pop(request_id, None)
+        try:
+            if target_dir.exists():
+                for p in target_dir.iterdir():
+                    p.unlink(missing_ok=True)
+                target_dir.rmdir()
+        except OSError:
+            pass
+    asyncio.create_task(_gc())
+    logger.info(f"Document bytes received for {request_id}: {len(content)} bytes")
+    return {"status": "ok"}
+
+
+@app.post("/internal/document/{request_id}/error")
+async def push_document_error(request_id: str, body: dict[str, Any]):
+    """Backend couldn't fetch the file — surface to React via status poll."""
+    async with _document_lock:
+        st = _document_requests.get(request_id)
+        if st:
+            st["status"] = "error"
+            st["detail"] = str(body.get("detail") or "backend could not fetch the file")
     return {"status": "ok"}
 
 

@@ -110,6 +110,8 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
           value={settings.instructions_enabled} onChange={v => update({ instructions_enabled: v })} />
         <BoolField label='"Compare All" button visible on CompanySelectPage'
           value={settings.compare_all_enabled} onChange={v => update({ compare_all_enabled: v })} />
+        <BoolField label="CBA sidepanel in chat (lists cited documents + download)"
+          value={settings.cba_sidepanel_enabled} onChange={v => update({ cba_sidepanel_enabled: v })} />
       </div>
 
       <div className="flex gap-2 mt-5">

@@ -42,6 +42,11 @@ class AssembledPrompt:
     layers: dict[str, str]       # "core" → rendered text, "guardrails" → ..., etc.
     rag_chunks_used: int
     rag_paths: list[dict[str, Any]]
+    # Sprint 11: unique documents that contributed chunks to this prompt.
+    # Surfaced to the frontend as SSE `sources` event so the CBA sidepanel
+    # can list them and offer downloads. Each entry is {scope_key, filename,
+    # tier}.
+    sources: list[dict[str, str]] = None  # type: ignore[assignment]
 
 
 # --- Layer 1-2: core + guardrails ---
@@ -298,9 +303,24 @@ def assemble(
     }
     ordered = [v for v in (core_text, guardrails_text, role_text, context_text, glossary_text, orgs_text, rag_text) if v]
     text = "\n\n".join(ordered).strip()
+    # Dedup sources preserving first-seen order. Chunks beyond `max_rag_chunks`
+    # are not part of the prompt so they don't belong in the citation list.
+    used_chunks = chunks[:max_rag_chunks]
+    seen: set[tuple[str, str]] = set()
+    sources: list[dict[str, str]] = []
+    for c in used_chunks:
+        key = (c.scope_key, c.source)
+        if c.source and key not in seen:
+            seen.add(key)
+            sources.append({
+                "scope_key": c.scope_key,
+                "filename": c.source,
+                "tier": c.tier,
+            })
     return AssembledPrompt(
         text=text,
         layers=layers,
-        rag_chunks_used=min(len(chunks), max_rag_chunks),
+        rag_chunks_used=len(used_chunks),
         rag_paths=rag_paths,
+        sources=sources,
     )

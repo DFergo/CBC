@@ -18,6 +18,9 @@ Fields covered:
     instructions_enabled   — show or skip the Instructions page
     compare_all_enabled    — show or hide the "Compare All" button on
                              CompanySelectPage
+    cba_sidepanel_enabled  — show a side panel in ChatShell listing the CBA
+                             documents that contributed to each response,
+                             with download links
 
 Admin saves override → backend pushes to sidecar via POST /internal/session-settings
 (sidecar caches + merges into /internal/config).
@@ -41,6 +44,7 @@ class SessionSettings(BaseModel):
     disclaimer_enabled: bool = True
     instructions_enabled: bool = True
     compare_all_enabled: bool = True
+    cba_sidepanel_enabled: bool = True
 
 
 def _path(frontend_id: str) -> Path:

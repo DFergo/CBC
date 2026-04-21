@@ -195,7 +195,14 @@ export default function App() {
         )}
 
         {phase === 'chat' && survey && (
-          <ChatShell lang={lang} sessionToken={sessionToken} survey={survey} branding={branding} recoveryData={recoveryData} />
+          <ChatShell
+            lang={lang}
+            sessionToken={sessionToken}
+            survey={survey}
+            branding={branding}
+            recoveryData={recoveryData}
+            cbaSidepanelEnabled={config?.cba_sidepanel_enabled !== false}
+          />
         )}
       </main>
 

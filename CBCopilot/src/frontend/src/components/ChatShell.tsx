@@ -13,7 +13,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { t } from '../i18n'
-import type { BrandingConfig, LangCode, RecoveryData, SurveyData } from '../types'
+import type { BrandingConfig, CitationSource, LangCode, RecoveryData, SurveyData } from '../types'
+import CitationsPanel from './CitationsPanel'
 
 const SUMMARY_MARKER = 'summary'
 // Fallbacks used until /internal/guardrails/thresholds resolves. Match the
@@ -48,6 +49,10 @@ interface Props {
   survey: SurveyData
   branding?: BrandingConfig
   recoveryData?: RecoveryData | null
+  // Sprint 11 — when false, the CBA sidepanel + its toggle are hidden
+  // entirely (per-frontend switch in SessionSettings). Defaults to true
+  // when the deployment config didn't include the key.
+  cbaSidepanelEnabled?: boolean
 }
 
 function mapRecovery(rec: RecoveryData | null | undefined): ChatMessage[] {
@@ -59,7 +64,10 @@ function mapRecovery(rec: RecoveryData | null | undefined): ChatMessage[] {
   }))
 }
 
-export default function ChatShell({ lang, sessionToken, survey, branding: _branding, recoveryData }: Props) {
+export default function ChatShell({
+  lang, sessionToken, survey, branding: _branding, recoveryData,
+  cbaSidepanelEnabled = true,
+}: Props) {
   const initialQuery = (survey.initial_query || '').trim()
   const recoveredMessages = mapRecovery(recoveryData)
   const isRecovering = recoveredMessages.length > 0
@@ -84,6 +92,15 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
   const [attachments, setAttachments] = useState<AttachmentChip[]>([])
   const [warnAt, setWarnAt] = useState(DEFAULT_WARN_AT)
   const [endAt, setEndAt] = useState(DEFAULT_END_AT)
+  // Sprint 11 — CBA citations piling up across this session. The panel renders
+  // them deduped by (scope_key, filename) and offers a pull-inverse download.
+  const [sources, setSources] = useState<CitationSource[]>([])
+  // Sidepanel open state. Default open on md+ viewports, closed on mobile so
+  // the chat starts clean. Re-checked on resize so rotating a tablet doesn't
+  // leave the user stuck.
+  const [panelOpen, setPanelOpen] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : false,
+  )
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -113,6 +130,31 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
       streamingTextRef.current += e.data
       setStreamingText(streamingTextRef.current)
       setIsStreaming(true)
+    })
+
+    // Sprint 11: the backend emits a `sources` event right before `done`
+    // carrying the JSON list of documents that contributed chunks to this
+    // turn's response. We dedup against whatever is already in state so the
+    // panel shows an accumulating but unique list over the whole chat.
+    es.addEventListener('sources', (e: MessageEvent) => {
+      try {
+        const incoming = JSON.parse(e.data) as CitationSource[]
+        if (!Array.isArray(incoming)) return
+        setSources(prev => {
+          const seen = new Set(prev.map(s => `${s.scope_key}::${s.filename}`))
+          const next = [...prev]
+          for (const s of incoming) {
+            const k = `${s.scope_key}::${s.filename}`
+            if (s.filename && !seen.has(k)) {
+              seen.add(k)
+              next.push(s)
+            }
+          }
+          return next
+        })
+      } catch {
+        // ignore malformed payload — drop silently
+      }
     })
 
     es.addEventListener('done', (e: MessageEvent) => {
@@ -475,6 +517,21 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
               >
                 {t('chat_end_session', lang)}
               </button>
+              {cbaSidepanelEnabled && (
+                <button
+                  type="button"
+                  onClick={() => setPanelOpen(true)}
+                  className="text-xs border border-gray-300 text-gray-600 rounded-lg px-2.5 py-1 hover:bg-gray-50 relative"
+                  title={t('citations_panel_title', lang)}
+                >
+                  {t('citations_panel_open', lang)}
+                  {sources.length > 0 && (
+                    <span className="ml-1.5 inline-flex items-center justify-center text-[10px] font-semibold w-4 h-4 rounded-full bg-uni-blue text-white">
+                      {sources.length}
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
             <button type="button" onClick={send}
               disabled={inputDisabled || (!input.trim() && !attachments.some(a => a.status === 'ready'))}
@@ -501,6 +558,14 @@ export default function ChatShell({ lang, sessionToken, survey, branding: _brand
             </div>
           </div>
         </div>
+      )}
+      {cbaSidepanelEnabled && (
+        <CitationsPanel
+          lang={lang}
+          sources={sources}
+          open={panelOpen}
+          onClose={() => setPanelOpen(false)}
+        />
       )}
     </div>
   )

@@ -41,8 +41,18 @@ export interface DeploymentConfig {
   disclaimer_enabled: boolean
   instructions_enabled: boolean
   compare_all_enabled: boolean
+  cba_sidepanel_enabled?: boolean
   session_resume_hours: number
   branding?: BrandingConfig
+}
+
+// Sprint 11 — one document that contributed chunks to an assistant response.
+// Aggregated by the CBA sidepanel so the user sees what CBAs the model
+// drew from and can download them.
+export interface CitationSource {
+  scope_key: string
+  filename: string
+  tier: 'global' | 'frontend' | 'company' | string
 }
 
 export interface Company {

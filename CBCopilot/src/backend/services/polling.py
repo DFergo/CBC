@@ -24,6 +24,7 @@ user closes the tab mid-stream, tokens land in the sidecar queue and get
 drained the next time the UI reconnects (within 30s keepalive window).
 """
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -231,6 +232,72 @@ async def _push_recovery_result(
         )
     except httpx.HTTPError as e:
         logger.warning(f"Push recovery result for {token} failed: {e}")
+
+
+async def _handle_document_request(
+    client: httpx.AsyncClient,
+    url: str,
+    doc_req: dict[str, Any],
+) -> None:
+    """Resolve a CBA sidepanel document download. Reads the requested file
+    from the matching `documents/` dir and POSTs it back to the sidecar,
+    or POSTs an error if the file is missing / path is unsafe.
+
+    Security note: `filename` is treated as a bare basename — we strip any
+    path components and resolve against the docs_dir so sessions can't ask
+    for arbitrary disk paths. Only admin-uploaded docs in the resolved
+    scope_key are reachable.
+    """
+    request_id = (doc_req.get("request_id") or "").strip()
+    scope_key = (doc_req.get("scope_key") or "").strip()
+    filename = (doc_req.get("filename") or "").strip()
+
+    async def _push_error(detail: str) -> None:
+        try:
+            await client.post(
+                f"{url.rstrip('/')}/internal/document/{request_id}/error",
+                json={"detail": detail},
+                timeout=PUSH_TIMEOUT,
+            )
+        except httpx.HTTPError as e:
+            logger.warning(f"Push document error for {request_id} failed: {e}")
+
+    if not request_id or not scope_key or not filename:
+        await _push_error("Malformed document request")
+        return
+
+    from pathlib import Path as _Path
+    safe_name = _Path(filename).name
+    try:
+        from src.services import rag_service
+        docs_dir = rag_service._docs_dir_for(scope_key)
+    except Exception as e:
+        logger.warning(f"Bad scope_key {scope_key!r}: {e}")
+        await _push_error(f"Unknown scope {scope_key}")
+        return
+
+    file_path = docs_dir / safe_name
+    try:
+        resolved = file_path.resolve()
+        if not resolved.is_file() or not str(resolved).startswith(str(docs_dir.resolve())):
+            await _push_error("Document not found")
+            return
+        content = resolved.read_bytes()
+    except Exception as e:
+        logger.warning(f"Reading {file_path}: {e}")
+        await _push_error("Could not read document")
+        return
+
+    try:
+        files = {"file": (safe_name, content, "application/octet-stream")}
+        await client.post(
+            f"{url.rstrip('/')}/internal/document/{request_id}/result",
+            files=files,
+            timeout=60.0,
+        )
+        logger.info(f"Pushed document {scope_key}/{safe_name} → {request_id} ({len(content)} bytes)")
+    except httpx.HTTPError as e:
+        logger.warning(f"Push document bytes for {request_id} failed: {e}")
 
 
 async def _handle_auth_request(
@@ -485,6 +552,12 @@ async def _process_turn(
     full = "".join(accumulated).strip()
     if full:
         session_store.add_message(session_token, "assistant", full)
+    # Emit the citation list for this turn so the CBA sidepanel can render.
+    # Fired before `done` so the UI can attach sources to the streaming bubble
+    # before it's finalised. A no-op when retrieval returned nothing.
+    sources = assembled.sources or []
+    if sources:
+        await _push_chunk(client, url, session_token, "sources", json.dumps(sources))
     await _push_chunk(client, url, session_token, "done", "")
 
 
@@ -679,6 +752,14 @@ async def _tick(client: httpx.AsyncClient) -> None:
                 await _handle_auth_request(client, url, auth_req, fid)
             except Exception as e:
                 logger.exception(f"Auth handler from {fid} failed: {e}")
+
+        # 4c. Handle CBA sidepanel document-download requests (pull-inverse:
+        #     read file from disk, POST bytes back to the sidecar).
+        for doc_req in drained.get("document_requests") or []:
+            try:
+                await _handle_document_request(client, url, doc_req)
+            except Exception as e:
+                logger.exception(f"Document handler from {fid} failed: {e}")
 
         # 5. Handle uploads (pull-inverse: fetch, ingest, cleanup)
         try:

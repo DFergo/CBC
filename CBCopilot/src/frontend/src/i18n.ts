@@ -80,6 +80,10 @@ export type TranslationKeys =
   | 'chat_guardrail_warning' | 'chat_session_ended_guardrails'
   | 'chat_attach_button' | 'chat_attach_dragdrop' | 'chat_attach_uploading'
   | 'chat_attach_ready' | 'chat_attach_failed' | 'chat_attach_remove'
+  | 'citations_panel_title' | 'citations_panel_empty' | 'citations_panel_close'
+  | 'citations_panel_open' | 'citations_download' | 'citations_downloading'
+  | 'citations_download_failed'
+  | 'citations_tier_global' | 'citations_tier_frontend' | 'citations_tier_company'
 
 export type Translations = Partial<Record<TranslationKeys, string>>
 
@@ -184,6 +188,16 @@ const EN: Translations = {
   chat_attach_ready: 'Ready',
   chat_attach_failed: 'Failed',
   chat_attach_remove: 'Remove',
+  citations_panel_title: 'CBA documents referenced',
+  citations_panel_empty: "No documents cited yet. As CBC draws on CBAs during your chat, they'll appear here.",
+  citations_panel_close: 'Close',
+  citations_panel_open: 'Documents',
+  citations_download: 'Download',
+  citations_downloading: 'Downloading…',
+  citations_download_failed: 'Download failed',
+  citations_tier_global: 'Global',
+  citations_tier_frontend: 'Frontend',
+  citations_tier_company: 'Company',
 }
 
 // --- Spanish ---
@@ -277,6 +291,16 @@ const ES: Translations = {
   chat_attach_ready: 'Listo',
   chat_attach_failed: 'Falló',
   chat_attach_remove: 'Quitar',
+  citations_panel_title: 'Convenios consultados',
+  citations_panel_empty: 'Aún no se han citado convenios. Los que CBC consulte durante esta conversación aparecerán aquí.',
+  citations_panel_close: 'Cerrar',
+  citations_panel_open: 'Documentos',
+  citations_download: 'Descargar',
+  citations_downloading: 'Descargando…',
+  citations_download_failed: 'Descarga fallida',
+  citations_tier_global: 'Global',
+  citations_tier_frontend: 'Frontend',
+  citations_tier_company: 'Empresa',
 }
 
 // --- French ---

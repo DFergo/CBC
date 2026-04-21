@@ -512,6 +512,7 @@ export interface FrontendSessionSettings {
   disclaimer_enabled: boolean
   instructions_enabled: boolean
   compare_all_enabled: boolean
+  cba_sidepanel_enabled: boolean
 }
 
 export const SESSION_DEFAULTS: FrontendSessionSettings = {
@@ -522,6 +523,7 @@ export const SESSION_DEFAULTS: FrontendSessionSettings = {
   disclaimer_enabled: true,
   instructions_enabled: true,
   compare_all_enabled: true,
+  cba_sidepanel_enabled: true,
 }
 
 export async function getFrontendSessionSettings(frontendId: string): Promise<{ frontend_id: string; settings: FrontendSessionSettings | null }> {
