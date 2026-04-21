@@ -112,6 +112,17 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
           value={settings.compare_all_enabled} onChange={v => update({ compare_all_enabled: v })} />
         <BoolField label="CBA sidepanel in chat (lists cited documents + download)"
           value={settings.cba_sidepanel_enabled} onChange={v => update({ cba_sidepanel_enabled: v })} />
+        <div className={settings.cba_sidepanel_enabled ? '' : 'opacity-50 pointer-events-none'}>
+          <BoolField
+            label="Ask the LLM to cite page / article numbers in responses (Phase B, not yet implemented)"
+            value={settings.cba_citations_enabled}
+            onChange={v => update({ cba_citations_enabled: v })}
+          />
+          <p className="text-[11px] text-gray-500 mt-0.5 ml-6">
+            Only takes effect when the CBA sidepanel is on. You can enable the panel + downloads
+            without this flag if you'd rather see the source documents than inline citations.
+          </p>
+        </div>
       </div>
 
       <div className="flex gap-2 mt-5">

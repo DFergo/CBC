@@ -42,6 +42,10 @@ export interface DeploymentConfig {
   instructions_enabled: boolean
   compare_all_enabled: boolean
   cba_sidepanel_enabled?: boolean
+  // Phase B flag (not yet active): when true, the prompt assembler will
+  // instruct the LLM to cite page / article numbers inline. Only meaningful
+  // when cba_sidepanel_enabled is also true.
+  cba_citations_enabled?: boolean
   session_resume_hours: number
   branding?: BrandingConfig
 }

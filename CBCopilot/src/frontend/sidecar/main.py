@@ -132,6 +132,7 @@ async def get_config():
         "instructions_enabled": pick("instructions_enabled", True),
         "compare_all_enabled": pick("compare_all_enabled", True),
         "cba_sidepanel_enabled": pick("cba_sidepanel_enabled", True),
+        "cba_citations_enabled": pick("cba_citations_enabled", False),
         "session_resume_hours": pick("session_resume_hours", 48),
         "auto_close_hours": pick("auto_close_hours", 72),
         "auto_destroy_hours": pick("auto_destroy_hours", 0),

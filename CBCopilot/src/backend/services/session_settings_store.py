@@ -21,6 +21,12 @@ Fields covered:
     cba_sidepanel_enabled  — show a side panel in ChatShell listing the CBA
                              documents that contributed to each response,
                              with download links
+    cba_citations_enabled  — separate toggle (only meaningful when
+                             cba_sidepanel_enabled is true): ask the LLM to
+                             cite exact page / article numbers alongside
+                             each referenced clause. Defaults off because
+                             the feature requires extra prompt + metadata
+                             work; the admin opts in per frontend.
 
 Admin saves override → backend pushes to sidecar via POST /internal/session-settings
 (sidecar caches + merges into /internal/config).
@@ -45,6 +51,7 @@ class SessionSettings(BaseModel):
     instructions_enabled: bool = True
     compare_all_enabled: bool = True
     cba_sidepanel_enabled: bool = True
+    cba_citations_enabled: bool = False
 
 
 def _path(frontend_id: str) -> Path:

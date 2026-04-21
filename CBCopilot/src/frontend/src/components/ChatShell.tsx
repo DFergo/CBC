@@ -10,7 +10,7 @@
 // - Guardrails banner appears when session.guardrail_violations >= 2.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { t } from '../i18n'
 import type { BrandingConfig, CitationSource, LangCode, RecoveryData, SurveyData } from '../types'
@@ -572,6 +572,23 @@ export default function ChatShell({
 }
 
 
+// Custom markdown components. Salary tables and code blocks in CBA prose
+// often stretch wider than a chat bubble on mobile. Instead of letting the
+// bubble blow out (and cut off content on scroll), we wrap the table in a
+// horizontally scrollable container that stays inside the bubble. Same
+// treatment for <pre> — long URLs, regex patterns, curl commands get
+// scroll-inside-bubble behaviour rather than overflow.
+const MARKDOWN_COMPONENTS: Components = {
+  table: ({ children, ...props }) => (
+    <div className="overflow-x-auto my-2 -mx-1 max-w-full">
+      <table className="text-xs border-collapse" {...props}>{children}</table>
+    </div>
+  ),
+  pre: ({ children, ...props }) => (
+    <pre className="overflow-x-auto max-w-full" {...props}>{children}</pre>
+  ),
+}
+
 function Bubble({
   message, lang, streaming, onCopySummary, summaryCopied,
 }: {
@@ -597,8 +614,10 @@ function Bubble({
             </button>
           )}
         </div>
-        <div className="prose prose-sm max-w-none text-gray-800">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+        <div className="prose prose-sm max-w-none text-gray-800 overflow-x-hidden">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+            {message.content}
+          </ReactMarkdown>
         </div>
       </div>
     )
@@ -606,7 +625,10 @@ function Bubble({
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${isUser ? 'bg-uni-blue text-white' : 'bg-white border border-gray-200 text-gray-800'}`}>
+      {/* `min-w-0` lets the flex child shrink below its content's intrinsic
+          min-width, which is what allows tables inside the bubble to scroll
+          horizontally instead of stretching the bubble past 85% viewport. */}
+      <div className={`min-w-0 max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${isUser ? 'bg-uni-blue text-white' : 'bg-white border border-gray-200 text-gray-800'}`}>
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-2">
             {message.attachments.map(f => (
@@ -617,8 +639,10 @@ function Bubble({
         {isUser ? (
           <div className="whitespace-pre-wrap">{message.content}</div>
         ) : (
-          <div className="prose prose-sm max-w-none text-gray-800">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          <div className="prose prose-sm max-w-none text-gray-800 overflow-x-hidden">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+              {message.content}
+            </ReactMarkdown>
           </div>
         )}
       </div>
