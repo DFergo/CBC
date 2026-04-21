@@ -9,7 +9,7 @@ Statuses: `captured` → `triaged` → `planned` (→ Sprint N) → `shipped` / 
 ## ChromaDB as vector store (drop SimpleVectorStore when scale demands it)
 
 **Captured:** 2026-04-21 (Sprint 9)
-**Status:** captured
+**Status:** **shipped** in Sprint 10C (2026-04-21). Single persistent Chroma collection at `/app/data/chroma/`, `scope_key` as metadata filter — one DB serves global / frontend / company tiers. HNSW + BM25 scope-aware + cross-encoder rerank all ride on top.
 **Candidate sprint:** TBD — trigger on one of (100+ empresas con docs / latencia de query > 50 ms / consumo de RAM por multi-scope noticeable)
 **Context:** Sprint 9 overhauled the RAG quality (BGE-M3 + rerank + optional Contextual Retrieval). Persistence + framework choice were reviewed in the same breath. LlamaIndex's default `SimpleVectorStore` persists fine on disk, but it's brute-force cosine search and each scope is a separate index file — that's fine for now, becomes a problem as CBC scales to 200+ CBAs across many frontends.
 
@@ -64,8 +64,8 @@ Statuses: `captured` → `triaged` → `planned` (→ Sprint N) → `shipped` / 
 ## CBA sidepanel in chat — browse & download loaded agreements
 
 **Captured:** 2026-04-18 (Sprint 2)
-**Status:** captured
-**Candidate sprint:** 6 (Chat Engine) or a new sprint between 6 and 8
+**Status:** **shipped** across Sprint 11 Phase A (sidepanel + downloads via pull-inverse) and Sprint 11 Phase B (inline `[filename, page/article]` citation pills with click-to-highlight, 2026-04-21). Gated per-frontend by `cba_sidepanel_enabled` + the separate `cba_citations_enabled` flag.
+**Candidate sprint:** ~~6 (Chat Engine) or a new sprint between 6 and 8~~ — done in Sprint 11.
 **Context:** Company buttons on CompanySelectPage originally showed inline country tags (e.g. `AU · US · DE · BR`). Daniel removed them: cluttered, and the information belongs somewhere more useful.
 
 **Idea:** During chat, a side panel lists the CBAs loaded for the current company (for "Compare All" mode, all loaded CBAs filtered by comparison scope). Each entry shows country, language, document type, and a download button.

@@ -23,10 +23,13 @@ Fields covered:
                              with download links
     cba_citations_enabled  — separate toggle (only meaningful when
                              cba_sidepanel_enabled is true): ask the LLM to
-                             cite exact page / article numbers alongside
-                             each referenced clause. Defaults off because
-                             the feature requires extra prompt + metadata
-                             work; the admin opts in per frontend.
+                             cite exact page / article numbers inline as
+                             `[filename, p. N]` / `[filename, Art. N]`
+                             brackets. The chat UI renders those as
+                             clickable pills that highlight the matching
+                             document in the sidepanel. Defaults off —
+                             the LLM occasionally gets citation format
+                             wrong, so the admin opts in when they want it.
 
 Admin saves override → backend pushes to sidecar via POST /internal/session-settings
 (sidecar caches + merges into /internal/config).

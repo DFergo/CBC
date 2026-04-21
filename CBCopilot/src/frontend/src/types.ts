@@ -42,9 +42,11 @@ export interface DeploymentConfig {
   instructions_enabled: boolean
   compare_all_enabled: boolean
   cba_sidepanel_enabled?: boolean
-  // Phase B flag (not yet active): when true, the prompt assembler will
-  // instruct the LLM to cite page / article numbers inline. Only meaningful
-  // when cba_sidepanel_enabled is also true.
+  // When true, the prompt asks the LLM to cite `[filename, p. N]` /
+  // `[filename, Art. N]` inline, and the chat renders those as clickable
+  // pills that highlight the matching document in the sidepanel. Only
+  // meaningful when cba_sidepanel_enabled is also true. Shipped in
+  // Sprint 11 Phase B.
   cba_citations_enabled?: boolean
   session_resume_hours: number
   branding?: BrandingConfig

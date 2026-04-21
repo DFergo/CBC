@@ -110,17 +110,20 @@ export default function SessionSettingsPanel({ frontendId }: { frontendId: strin
           value={settings.instructions_enabled} onChange={v => update({ instructions_enabled: v })} />
         <BoolField label='"Compare All" button visible on CompanySelectPage'
           value={settings.compare_all_enabled} onChange={v => update({ compare_all_enabled: v })} />
-        <BoolField label="CBA sidepanel in chat (lists cited documents + download)"
+        <BoolField label="CBA sidepanel in chat (lists cited documents + download, click-to-highlight)"
           value={settings.cba_sidepanel_enabled} onChange={v => update({ cba_sidepanel_enabled: v })} />
         <div className={settings.cba_sidepanel_enabled ? '' : 'opacity-50 pointer-events-none'}>
           <BoolField
-            label="Ask the LLM to cite page / article numbers in responses (Phase B, not yet implemented)"
+            label="Ask the LLM to cite page / article numbers in responses"
             value={settings.cba_citations_enabled}
             onChange={v => update({ cba_citations_enabled: v })}
           />
           <p className="text-[11px] text-gray-500 mt-0.5 ml-6">
-            Only takes effect when the CBA sidepanel is on. You can enable the panel + downloads
-            without this flag if you'd rather see the source documents than inline citations.
+            Only takes effect when the CBA sidepanel is on. When on, the prompt asks the LLM to
+            append <code>[filename, p. N]</code> / <code>[filename, Art. N]</code> brackets inline;
+            the UI renders them as clickable pills that jump to the matching document in the
+            sidepanel. LLMs occasionally miss the format — the panel + downloads keep working
+            regardless.
           </p>
         </div>
       </div>
