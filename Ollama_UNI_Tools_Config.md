@@ -45,7 +45,7 @@ Configuradas en `~/Library/LaunchAgents/com.ollama.server.plist`:
 | Variable                    | Valor              | Efecto                                                                 |
 |-----------------------------|--------------------|------------------------------------------------------------------------|
 | `OLLAMA_HOST`               | `0.0.0.0:11434`    | Escucha en todas las interfaces (accesible desde Docker y Tailscale).  |
-| `OLLAMA_NUM_PARALLEL`       | `2`                | Hasta 2 requests simultáneos por modelo cargado. Ver sección 8.        |
+| `OLLAMA_NUM_PARALLEL`       | `4`                | Hasta 4 requests simultáneos por modelo cargado. Ver sección 8.        |
 | `OLLAMA_MAX_LOADED_MODELS`  | `6`                | Hasta 6 modelos residentes (2 permanentes embed/rerank + 4 slots on-demand). |
 | `OLLAMA_FLASH_ATTENTION`    | `1`                | Flash Attention ON. Más rápido, menos memoria. Apple Silicon lo soporta. |
 
@@ -431,3 +431,11 @@ Binario Ollama: `/usr/local/bin/ollama` → symlink a `/Applications/Ollama.app/
   NUM_PARALLEL bajado a 2, MAX_LOADED_MODELS bajado a 6. Libera ~220 GB de RAM
   para coexistir con LM Studio en paralelo durante fase de pruebas A/B del backend.
   Pendiente en cliente: disable think para qwen3.*, fijar num_ctx consistente por modelo.
+- **2026-04-24 (Sprint 14)** — `NUM_PARALLEL` subido de 2 a 4 para emparejar con
+  el nuevo cap `max_concurrent_turns` de CBC (y eventualmente HRDD). Sin cambio en
+  preload ni en MAX_LOADED_MODELS. Memoria marginal adicional por modelo cargado
+  (cada slot reserva su propio `num_ctx` completo — confirmado empíricamente):
+  ~52 GB más por gemma4:31B a ctx=256k, ~7 GB más por gemma4:26b, etc. Con el
+  uso real previsto (CBC = qwen3.6:35B, HRDD = gemma4:26b, ambos on-demand) y
+  total ~256 GB de 512 GB, queda holgura. Sprint 14 paraleliza el polling loop
+  del backend CBC para aprovechar estos 4 slots en conversaciones simultáneas.

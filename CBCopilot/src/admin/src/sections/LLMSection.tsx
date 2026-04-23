@@ -162,6 +162,27 @@ export default function LLMSection() {
         </p>
       </div>
 
+      {/* Sprint 14 — Max concurrent turns. Backend-wide cap on parallel chat
+          turns; must align with the runtime's Parallel setting. */}
+      <div className="mt-4 border border-gray-200 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-1">
+          <h4 className="text-sm font-semibold text-gray-700">{t('llm_max_concurrent_turns')}</h4>
+          <select
+            value={cfg.max_concurrent_turns}
+            onChange={e => setCfg(c => c ? { ...c, max_concurrent_turns: parseInt(e.target.value, 10) as 1 | 2 | 4 | 6 } : c)}
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+          >
+            <option value={1}>1</option>
+            <option value={2}>2</option>
+            <option value={4}>4</option>
+            <option value={6}>6</option>
+          </select>
+        </div>
+        <p className="text-xs text-gray-500">
+          {t('llm_max_concurrent_turns_description')}
+        </p>
+      </div>
+
       {/* Context compression */}
       <div className="mt-6 border border-gray-200 rounded-lg p-4">
         <div className="flex items-center justify-between mb-1">

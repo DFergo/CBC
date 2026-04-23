@@ -126,3 +126,35 @@
 ---
 
 <!-- Append new ADRs below. Never modify or delete existing ADRs. -->
+
+## ADR-008: Parallel Polling Loop (Sprint 14)
+
+**Decision:** Replace the Sprint 6A serial polling model (`for frontend: for message: await _process_message`) with parallel processing via `asyncio.gather`, bounded by a global `_turn_semaphore` whose cap is read from a new `LLMConfig.max_concurrent_turns` field (options 1 / 2 / 4 / 6, default 4). Two levels of parallelism land together: across frontends (outer gather in `_tick`) and across messages within a frontend (inner gather in `_process_frontend`). Recovery / auth / document-download handlers stay sequential per frontend — they're cheap and the parallelism win was in LLM-bound work.
+
+**Context:** Sprint 13 made the queued state visible (`GET /internal/queue/position`, "en cola — N ahead" indicator). First real usage exposed that the ceiling was 1 conversation at a time across the entire deployment — not because of Ollama or LM Studio limits (Ollama NUM_PARALLEL was set to 2, LM Studio Parallel to 4), but because CBC's polling loop itself serialised every turn. With two users on the same frontend the second waited for the first to fully finish; with two users on different frontends the second still waited, because even the outer `for fe in registry.list_enabled()` was sequential. The runtime-level parallelism was being wasted.
+
+At the same time, this Mac Studio serves two apps (CBC + HRDD) running on the same Ollama instance. Parallelising CBC (and later HRDD) puts the Ollama NP=4 slots to actual use. The Mac's 512 GB unified memory has comfortable headroom: at NP=4 with Qwen3.6:35B (CBC inference) + Gemma4:26B (HRDD inference) + Qwen3.5:9B (shared compressor) all loaded + LM Studio's Qwen3.5:122B summariser in parallel, peak use is ~306 GB — ~200 GB free.
+
+**Concurrency audit (Sprint 14 implementation time):**
+- `session_store` — disk-backed with in-memory cache, per-session files; different sessions never collide. Same session can't have two live turns because the UI locks input while `isStreaming`. Fine.
+- Guardrails counter, context compressor, session_rag, smtp — all per-session or stateless. Fine.
+- `llm_provider._fail_state` (circuit breaker) — module-level dict, simple add/clear ops that are GIL-atomic. Potential for benign miscounts under heavy contention. Accept.
+- `httpx.AsyncClient` — the shared client passed around `_tick` is task-safe; httpx is built for concurrent use.
+- `_pending_cancellations` (Sprint 14's other deliverable) — module-level `set[str]`; add/discard/`in` are GIL-atomic for str keys.
+
+**The cancel watcher restructure (same ADR because it's load-bearing for this):** Sprint 13 spawned a `_watch_cancel` task per turn that polled `/internal/cancellations`, each drain clearing the sidecar's cancel set. With serial turns that was fine (only one watcher ever active). With N parallel watchers, drains race — one watcher gets the cancel tokens, siblings get empty, specific users' cancels get lost. Fix: one backend-level `cancel_watcher_loop` (sibling of `polling_loop`, running on its own 1 s cycle), populates a module-level `_pending_cancellations` set, every `_process_turn` reads that set via `cancel_check=lambda: session_token in _pending_cancellations`. Discarded on turn completion so stale signals can't bleed across turns.
+
+**Alternatives considered:**
+- Leave serial, rely on "horizontal scale" (more frontend containers per app) — Doesn't help same-frontend concurrency, and the Mac's memory is abundant.
+- Per-frontend thread pool — Python async is cheaper than threads for I/O-bound streaming; threading adds GIL-contention concern without buying anything.
+- Process-per-turn — Way overbuilt, breaks the shared session_store cache.
+- No cap (unbounded parallelism) — Floods the downstream LLM runtime. OLLAMA_NUM_PARALLEL becomes a silent bottleneck users can't see (turns queue inside Ollama with no indicator). Explicit cap with warning text is the right UX contract.
+
+**Consequences:**
+- Up to `max_concurrent_turns` conversations stream in parallel per backend (configurable from admin: 1 / 2 / 4 / 6).
+- Admin MUST align this value with `OLLAMA_NUM_PARALLEL` (and LM Studio's Parallel). Warning text in the admin UI states this explicitly. If CBC cap > runtime cap, excess queues inside the runtime WITHOUT a visible indicator (the existing Sprint 13 "en cola" indicator covers only the sidecar queue, not the runtime's internal queue).
+- Cancel is now backend-global rather than per-turn — cleaner and race-free.
+- Per-frontend isolation preserved via `_process_message_safe`: a crash in one message doesn't abort its siblings.
+- HRDD Helper has the same serial-polling pattern and will benefit from an identical port (Sprint 14's closing deliverable is a handoff prompt for a Claude-in-HRDD session).
+
+**Revisit if:** usage patterns shift to many simultaneous document-heavy Compare All queries (memory may become the cap before NUM_PARALLEL does), or if Ollama's concurrency model changes upstream (e.g., per-request num_ctx instead of model-load-time).

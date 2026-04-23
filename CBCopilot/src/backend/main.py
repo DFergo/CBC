@@ -34,7 +34,7 @@ from src.services._paths import (
     GLOSSARY_FILE,
     ORGANIZATIONS_FILE,
 )
-from src.services.polling import polling_loop
+from src.services.polling import cancel_watcher_loop, polling_loop
 from src.services.smtp_service import check_smtp_health
 
 logging.basicConfig(level=logging.INFO)
@@ -69,12 +69,17 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(check_smtp_health())
     poll_task = asyncio.create_task(polling_loop())
     lifecycle_task = asyncio.create_task(lifecycle_loop())
+    # Sprint 14 — shared cancel watcher. Runs alongside the main polling loop
+    # so user-click Stop can fire mid-stream (main poll is on a 2s cycle and
+    # only drains queued messages, not cancellations).
+    cancel_task = asyncio.create_task(cancel_watcher_loop())
     rag_watcher.start()
-    logger.info("CBC backend started (Sprint 7 — chat engine + lifecycle scanner)")
+    logger.info("CBC backend started (Sprint 14 — parallel polling + shared cancel watcher)")
     yield
     poll_task.cancel()
     lifecycle_task.cancel()
-    for t in (poll_task, lifecycle_task):
+    cancel_task.cancel()
+    for t in (poll_task, lifecycle_task, cancel_task):
         try:
             await t
         except asyncio.CancelledError:

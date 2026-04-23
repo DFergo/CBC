@@ -170,6 +170,7 @@ export type AdminTranslationKeys =
   | 'llm_summary_routing' | 'llm_summary_routing_description'
   | 'llm_summary_document' | 'llm_summary_final'
   | 'llm_disable_thinking' | 'llm_disable_thinking_description'
+  | 'llm_max_concurrent_turns' | 'llm_max_concurrent_turns_description'
   | 'llm_save_config' | 'llm_check_health' | 'llm_refresh_providers'
   // SMTP section
   | 'smtp_description'
@@ -491,6 +492,8 @@ const EN: AdminTranslations = {
   llm_summary_final: 'Final conversation summary',
   llm_disable_thinking: 'Disable reasoning / think mode',
   llm_disable_thinking_description: 'Suppresses <think> reasoning tokens before they reach the user. Recommended ON: cuts first-token latency on qwen3 / deepseek-r1 family models, harmless no-op for models without a thinking mode (gemma, llama, mistral). Applies to whichever runtime each slot points to (Ollama, LM Studio, or API).',
+  llm_max_concurrent_turns: 'Max concurrent turns (backend-wide)',
+  llm_max_concurrent_turns_description: 'Maximum number of chat turns the backend will process in parallel, total across all frontends. Must match the per-model Parallel setting of the inference runtime: OLLAMA_NUM_PARALLEL (set in the Ollama server env) or LM Studio\'s Parallel value. If this cap is HIGHER than the runtime\'s, excess turns queue INSIDE the runtime with no queue indicator in CBC. If this cap is LOWER, the runtime\'s slots go under-used. 1 = serial processing (one conversation at a time); 4 = typical; 6 = heavy deployment.',
   llm_save_config: 'Save LLM config',
   llm_check_health: 'Check health',
   llm_refresh_providers: 'Refresh providers',
@@ -885,6 +888,8 @@ const ES: AdminTranslations = {
   llm_summary_final: 'Resumen final de la conversación',
   llm_disable_thinking: 'Desactivar reasoning / think',
   llm_disable_thinking_description: 'Suprime los tokens de razonamiento <think> antes de que lleguen al usuario. Recomendado activado: reduce la latencia hasta el primer token en modelos qwen3 / deepseek-r1, y es inofensivo en modelos sin modo thinking (gemma, llama, mistral). Se aplica al runtime que cada slot apunte (Ollama, LM Studio o API).',
+  llm_max_concurrent_turns: 'Máximo de turnos simultáneos (todo el backend)',
+  llm_max_concurrent_turns_description: 'Número máximo de turnos de chat que el backend procesa en paralelo, sumando todos los frontends. Debe coincidir con el Parallel por modelo del runtime de inferencia: OLLAMA_NUM_PARALLEL (env del servidor Ollama) o el Parallel de LM Studio. Si este límite es MAYOR que el del runtime, los turnos extra se encolan DENTRO del runtime sin indicador visible en CBC. Si es MENOR, los slots del runtime se infrautilizan. 1 = serial (una conversación a la vez); 4 = típico; 6 = despliegue con carga alta.',
   llm_save_config: 'Guardar configuración LLM',
   llm_check_health: 'Verificar estado',
   llm_refresh_providers: 'Actualizar proveedores',

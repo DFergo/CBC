@@ -281,6 +281,10 @@ export interface LLMConfig {
   // true for new configs; existing JSON files without the field migrate to
   // true on first load. Harmless no-op for non-thinking models.
   disable_thinking: boolean
+  // Sprint 14 — concurrency cap for simultaneous chat turns backend-wide.
+  // Must match OLLAMA_NUM_PARALLEL and LM Studio Parallel or excess queues
+  // silently inside the runtime. Options: 1 / 2 / 4 / 6.
+  max_concurrent_turns: 1 | 2 | 4 | 6
 }
 
 export interface SlotHealth {

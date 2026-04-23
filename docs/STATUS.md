@@ -1,7 +1,45 @@
 # CBC — Project Status
 
-**Current Sprint:** 13 — Chat resilience & UX control — **CLOSED 2026-04-24**
+**Current Sprint:** 14 — Parallel polling + concurrency control — **CLOSED 2026-04-24**
 **Last Updated:** 2026-04-24
+
+## Sprint 14 — Parallel polling + concurrency control — CLOSED 2026-04-24
+
+Direct follow-up to Sprint 13. User-visible outcome: up to `max_concurrent_turns` chat conversations stream in parallel per backend (configurable from admin: 1 / 2 / 4 / 6, default 4). Architectural outcome: polling loop rewritten from serial to `asyncio.gather`-based parallelism, bounded by a global semaphore that's resized live when admin changes the setting. See ADR-008 for rationale and concurrency audit.
+
+### Deliverables
+
+- **D — Shared cancel watcher** (bug-fix that Sprint 14 needed before paralleling). Sprint 13's per-turn `_watch_cancel` would race under parallel turns (one watcher drains the sidecar set, siblings see empty, cancels get lost for specific sessions). Replaced with a single `cancel_watcher_loop` sibling of `polling_loop`, started from `main.py` lifespan. Populates module-level `_pending_cancellations: set[str]`; each `_process_turn` reads via `cancel_check=lambda: session_token in _pending_cancellations`. Token discarded on turn completion so stale signals can't affect future turns on the same session.
+- **C — Parallelism in `polling.py`**. `_tick` now calls `asyncio.gather` across frontends. Per-frontend work (extracted into `_process_frontend`) gathers across queued messages. Each `_process_message_safe` acquires a global `_turn_semaphore` (sized from `LLMConfig.max_concurrent_turns`, resized per tick if the admin changed the value). Recovery / auth / document / upload handlers stay sequential per frontend (not LLM-bound; the parallelism win was in the stream path).
+- **B — `max_concurrent_turns` admin dropdown**. New Literal[1, 2, 4, 6] field on `LLMConfig`, default 4. Admin dropdown in `LLMSection.tsx` below the disable-thinking toggle, with warning text: "Must match OLLAMA_NUM_PARALLEL and LM Studio Parallel; excess turns otherwise queue inside the runtime without visible indicator". EN + ES i18n keys; rest fall back to EN.
+- **A — Ollama config on this Mac**. `OLLAMA_NUM_PARALLEL` raised from 2 to 4 in `~/Library/LaunchAgents/com.ollama.server.plist`, full `launchctl bootout` + `bootstrap` reload. `Ollama_UNI_Tools_Config.md` histórico updated with the change and its memory implication (each slot reserves its own full `num_ctx`).
+
+### Files touched
+
+- Backend: `services/polling.py` (parallelism + semaphore + shared cancel set + cancel_watcher_loop), `services/llm_config_store.py` (`max_concurrent_turns` field), `main.py` (start `cancel_watcher_loop` in lifespan).
+- Admin: `src/api.ts` (`max_concurrent_turns` type), `src/i18n.ts` (2 new keys EN + ES), `src/sections/LLMSection.tsx` (dropdown).
+- Ops: `~/Library/LaunchAgents/com.ollama.server.plist` (local Mac only), `Ollama_UNI_Tools_Config.md` (repo root).
+- Docs: `docs/architecture/decisions.md` (ADR-008), `docs/STATUS.md`, `docs/CHANGELOG.md`.
+- Handoff: `HRDD_Sprint14_port_prompt.md` (new, repo root) — ready-to-paste prompt for Claude-in-HRDD to replicate the same changes in HRDDHelper.
+
+### Acceptance criteria
+
+- [x] Python compiles clean (`py_compile`) on `polling.py`, `llm_config_store.py`, `main.py`.
+- [x] `OLLAMA_NUM_PARALLEL=4` active on this Mac (verified via `ps eww`).
+- [ ] **Live-test (Daniel's QA after Portainer re-pull):**
+   1. Two users on same frontend send messages simultaneously → both get first tokens within ~1 s of each other (not one waiting 20+ s for the first to finish).
+   2. Five users simultaneously → first four stream, fifth shows "en cola — 1 ahead".
+   3. Change admin dropdown from 4 to 2 → next pair of concurrent sends shows the new cap (5th, 4th, 3rd queue; previously-running 4 complete normally).
+   4. Click Stop on one of the parallel streams → only that turn cancels, the other 3 keep streaming.
+   5. Session-close summariser triggered while inference is streaming → both run in parallel (different slots).
+
+### Known follow-ups (explicitly deferred)
+
+- Per-frontend `max_concurrent_turns` override — global only for now, matches the pattern of `disable_thinking` / compression / routing. Add to `LLMOverride` if a deployment ever needs frontend-specific caps.
+- Queue-inside-runtime indicator — when CBC cap > runtime cap, extras queue inside Ollama/LM Studio and CBC can't see them. Either keep aligned (admin discipline) or surface runtime queue depth via an admin proxy endpoint. Not urgent.
+- HRDD port — handoff prompt written (`HRDD_Sprint14_port_prompt.md`); Daniel runs it in a Claude-in-HRDD session when ready.
+
+---
 
 ## Sprint 13 — Chat resilience & UX control — CLOSED 2026-04-24
 

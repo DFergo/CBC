@@ -70,6 +70,42 @@ _thresholds_pushed: set[str] = set()
 # next poll (≤ POLL_INTERVAL_SECONDS seconds).
 _companies_pushed: set[str] = set()
 
+# Sprint 14 — shared cancellation state. Populated by cancel_watcher_loop
+# (one background task per backend, NOT per turn — see ADR-008 and the Sprint
+# 13 bug note in CHANGELOG). `_process_turn` reads via `session_token in
+# _pending_cancellations`; entries are discarded when the turn completes so
+# a stale cancel signal can't affect a future turn for the same session.
+# Safe without explicit lock: set.add / set.discard / `in` are GIL-atomic for
+# simple str keys.
+_pending_cancellations: set[str] = set()
+
+# Sprint 14 — concurrency gate. Caps the number of simultaneous `_process_turn`
+# executions across the whole backend so parallel polling can't flood the
+# downstream LLM runtime. Re-read from LLMConfig.max_concurrent_turns per tick
+# so admin changes land within ~2 s without a restart. The semaphore itself
+# is re-created when the target value changes; tasks holding the previous
+# semaphore drain naturally into it.
+_turn_semaphore: asyncio.Semaphore | None = None
+_turn_semaphore_cap: int = 0
+
+
+def _ensure_turn_semaphore() -> None:
+    """Called from `_tick`. Reads the current LLMConfig and (re)creates the
+    semaphore if the cap changed. Cheap — just a config read + comparison."""
+    global _turn_semaphore, _turn_semaphore_cap
+    # Avoid a circular import at module load time.
+    from src.services.llm_config_store import load_config
+    try:
+        desired = int(load_config().max_concurrent_turns)
+    except Exception:
+        desired = 4
+    if desired < 1:
+        desired = 1
+    if _turn_semaphore is None or desired != _turn_semaphore_cap:
+        _turn_semaphore = asyncio.Semaphore(desired)
+        _turn_semaphore_cap = desired
+        logger.info(f"Turn semaphore (re)sized to {desired}")
+
 
 def invalidate_thresholds_pushed() -> None:
     """Call from admin when thresholds change so next poll re-pushes."""
@@ -556,40 +592,21 @@ async def _process_turn(
     messages = await context_compressor.compress_if_needed(session_token, messages, frontend_id)
     accumulated: list[str] = []
 
-    # Sprint 13 — cooperative cancellation. The cancel-watcher polls the
-    # sidecar's /internal/cancellations endpoint every CANCEL_POLL_INTERVAL
-    # seconds; when the user's session_token shows up there, the local flag
-    # flips and stream_chat aborts on its next chunk boundary.
-    cancel_flag = {"requested": False}
-
-    async def _watch_cancel() -> None:
-        try:
-            while not cancel_flag["requested"]:
-                await asyncio.sleep(CANCEL_POLL_INTERVAL)
-                try:
-                    r = await client.get(
-                        f"{url.rstrip('/')}/internal/cancellations",
-                        timeout=CANCEL_POLL_TIMEOUT,
-                    )
-                    if r.status_code == 200:
-                        tokens = r.json().get("cancellations") or []
-                        if session_token in tokens:
-                            cancel_flag["requested"] = True
-                            return
-                except (httpx.HTTPError, ValueError):
-                    # Network blip or malformed response — try again next tick.
-                    pass
-        except asyncio.CancelledError:
-            return
-
-    watcher = asyncio.create_task(_watch_cancel())
+    # Sprint 14 — cooperative cancellation via shared backend-level set.
+    # `cancel_watcher_loop` (started from main.py lifespan) drains each
+    # frontend's /internal/cancellations endpoint every CANCEL_POLL_INTERVAL
+    # seconds and populates `_pending_cancellations`. We poll the set
+    # between chunks; when this session shows up, stream_chat raises
+    # CancelledError on the next boundary. Discarding the token in the
+    # `finally` below prevents stale cancel signals from affecting future
+    # turns on the same session.
     cancelled = False
     try:
         async for token_text in llm_provider.stream_chat(
             messages,
             slot="inference",
             frontend_id=frontend_id,
-            cancel_check=lambda: cancel_flag["requested"],
+            cancel_check=lambda: session_token in _pending_cancellations,
         ):
             accumulated.append(token_text)
             await _push_chunk(client, url, session_token, "token", token_text)
@@ -598,12 +615,10 @@ async def _process_turn(
     except Exception as e:
         logger.exception(f"[{session_token}] LLM stream failed: {e}")
         await _push_chunk(client, url, session_token, "error", f"LLM error: {e}")
-        cancel_flag["requested"] = True  # stop the watcher
-        watcher.cancel()
+        _pending_cancellations.discard(session_token)
         return
     finally:
-        cancel_flag["requested"] = True
-        watcher.cancel()
+        _pending_cancellations.discard(session_token)
 
     if cancelled:
         # Persist whatever the user already saw (so the conversation log keeps
@@ -778,61 +793,113 @@ async def _email_summary(session_token: str, to_email: str, summary: str, langua
         logger.warning(f"[{session_token}] summary email to {to_email} failed: {e}")
 
 
-async def _tick(client: httpx.AsyncClient) -> None:
-    """One polling pass over every registered + enabled frontend."""
-    for fe in registry.list_enabled():
-        url = fe["url"]
-        fid = fe.get("frontend_id") or fe.get("id") or ""
+async def _process_frontend(client: httpx.AsyncClient, fe: dict[str, Any]) -> None:
+    """One full tick's work for ONE frontend: health check + push sync +
+    queue drain + parallel message processing + recovery / auth / document
+    handlers + uploads. Returns when everything for this frontend is done.
 
-        # 1. Health
-        status = await _check_health(client, url)
-        registry.set_status(fid, status)
-        if status != "online":
-            continue
+    Extracted from `_tick` in Sprint 14 so multiple frontends can run this in
+    parallel via `asyncio.gather`. Messages within a frontend are also
+    gathered (see below), subject to the global `_turn_semaphore` cap.
+    """
+    url = fe["url"]
+    fid = fe.get("frontend_id") or fe.get("id") or ""
 
-        # 2. Push guardrails thresholds once per frontend (pull-inverse —
-        #    sidecar caches; ChatShell reads on mount).
-        await _push_thresholds_if_needed(client, url, fid)
+    # 1. Health
+    status = await _check_health(client, url)
+    registry.set_status(fid, status)
+    if status != "online":
+        return
 
-        # 2b. Push per-frontend company list (admin-edited; invalidated on CRUD).
-        await _push_companies_if_needed(client, url, fid)
+    # 2. Push guardrails thresholds once per frontend.
+    await _push_thresholds_if_needed(client, url, fid)
 
-        # 3. Queue drain (messages + recovery_requests)
-        drained = await _drain_queue(client, url)
-        for msg in drained.get("messages") or []:
-            try:
-                await _process_message(client, fe, msg)
-            except Exception as e:
-                logger.exception(f"Processing message from {fid} failed: {e}")
+    # 2b. Push per-frontend company list.
+    await _push_companies_if_needed(client, url, fid)
 
-        # 4. Handle recovery requests (pull-inverse: backend resolves, POSTs back)
-        for token in drained.get("recovery_requests") or []:
-            try:
-                await _handle_recovery_request(client, url, token)
-            except Exception as e:
-                logger.exception(f"Recovery for {token} from {fid} failed: {e}")
+    # 3. Queue drain
+    drained = await _drain_queue(client, url)
 
-        # 4b. Handle auth requests (pull-inverse: drain queued request_code /
-        #     verify_code actions, resolve via auth.py, push result back).
-        for auth_req in drained.get("auth_requests") or []:
-            try:
-                await _handle_auth_request(client, url, auth_req, fid)
-            except Exception as e:
-                logger.exception(f"Auth handler from {fid} failed: {e}")
+    # 3a. Messages: run in parallel, bounded by the global turn semaphore
+    #     (each `_process_message` → `_process_turn` acquires the semaphore).
+    #     Exceptions per message are logged but don't cancel siblings.
+    msg_tasks = [
+        _process_message_safe(client, fe, msg, fid)
+        for msg in drained.get("messages") or []
+    ]
+    if msg_tasks:
+        await asyncio.gather(*msg_tasks)
 
-        # 4c. Handle CBA sidepanel document-download requests (pull-inverse:
-        #     read file from disk, POST bytes back to the sidecar).
-        for doc_req in drained.get("document_requests") or []:
-            try:
-                await _handle_document_request(client, url, doc_req)
-            except Exception as e:
-                logger.exception(f"Document handler from {fid} failed: {e}")
-
-        # 5. Handle uploads (pull-inverse: fetch, ingest, cleanup)
+    # 4. Recovery requests (not LLM-heavy, run sequentially for simplicity).
+    for token in drained.get("recovery_requests") or []:
         try:
-            await _handle_uploads(client, url, fid)
+            await _handle_recovery_request(client, url, token)
         except Exception as e:
-            logger.exception(f"Handling uploads from {fid} failed: {e}")
+            logger.exception(f"Recovery for {token} from {fid} failed: {e}")
+
+    # 4b. Auth requests.
+    for auth_req in drained.get("auth_requests") or []:
+        try:
+            await _handle_auth_request(client, url, auth_req, fid)
+        except Exception as e:
+            logger.exception(f"Auth handler from {fid} failed: {e}")
+
+    # 4c. Document requests.
+    for doc_req in drained.get("document_requests") or []:
+        try:
+            await _handle_document_request(client, url, doc_req)
+        except Exception as e:
+            logger.exception(f"Document handler from {fid} failed: {e}")
+
+    # 5. Uploads.
+    try:
+        await _handle_uploads(client, url, fid)
+    except Exception as e:
+        logger.exception(f"Handling uploads from {fid} failed: {e}")
+
+
+async def _process_message_safe(
+    client: httpx.AsyncClient,
+    fe: dict[str, Any],
+    msg: dict[str, Any],
+    fid: str,
+) -> None:
+    """Wrapper with Sprint 14's concurrency gate: acquires the global turn
+    semaphore BEFORE doing any LLM-bound work, so parallel polling can't
+    exceed max_concurrent_turns. Excess messages wait on the semaphore
+    (appearing in the user's sidecar queue as "en cola — N ahead").
+
+    Also isolates exceptions so a crash in one message doesn't abort sibling
+    tasks gathered in `_process_frontend`.
+    """
+    sem = _turn_semaphore
+    if sem is None:
+        # Should never happen — _tick calls _ensure_turn_semaphore first.
+        # Defensive: run without gating rather than deadlock.
+        try:
+            await _process_message(client, fe, msg)
+        except Exception as e:
+            logger.exception(f"Processing message from {fid} failed: {e}")
+        return
+    async with sem:
+        try:
+            await _process_message(client, fe, msg)
+        except Exception as e:
+            logger.exception(f"Processing message from {fid} failed: {e}")
+
+
+async def _tick(client: httpx.AsyncClient) -> None:
+    """One polling pass over every registered + enabled frontend.
+    Frontends run in parallel (Sprint 14); per-frontend work is in
+    `_process_frontend`."""
+    _ensure_turn_semaphore()
+    fes = list(registry.list_enabled())
+    if not fes:
+        return
+    await asyncio.gather(
+        *[_process_frontend(client, fe) for fe in fes],
+        return_exceptions=True,
+    )
 
 
 async def polling_loop() -> None:
@@ -849,3 +916,46 @@ async def polling_loop() -> None:
             except Exception as e:
                 logger.exception(f"Polling tick crashed: {e}")
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+
+async def cancel_watcher_loop() -> None:
+    """Sprint 14 — sibling of `polling_loop`. Runs on its own cadence
+    (CANCEL_POLL_INTERVAL = 1 s, faster than the main 2 s poll) so a user
+    clicking Stop mid-stream is picked up within ~1 s regardless of how busy
+    the main poll is with a different frontend.
+
+    For each enabled frontend:
+        GET /internal/cancellations  → drains any pending cancel tokens and
+        adds them to the module-level `_pending_cancellations` set.
+    `_process_turn` consults that set between chunks (via a lambda passed to
+    llm_provider.stream_chat's cancel_check).
+
+    Tokens are removed from the set when their turn completes (success /
+    cancel / error) so a stale signal can't bleed into a later turn on the
+    same session. The sidecar itself also TTLs cancel signals at 30 s.
+    """
+    logger.info(f"Cancel watcher loop started (interval {CANCEL_POLL_INTERVAL}s)")
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                for fe in registry.list_enabled():
+                    url = fe["url"]
+                    try:
+                        r = await client.get(
+                            f"{url.rstrip('/')}/internal/cancellations",
+                            timeout=CANCEL_POLL_TIMEOUT,
+                        )
+                        if r.status_code == 200:
+                            tokens = r.json().get("cancellations") or []
+                            for t in tokens:
+                                if isinstance(t, str) and t:
+                                    _pending_cancellations.add(t)
+                    except (httpx.HTTPError, ValueError):
+                        # Frontend offline or transient error — ignore, try next cycle.
+                        continue
+            except asyncio.CancelledError:
+                logger.info("Cancel watcher loop cancelled")
+                raise
+            except Exception as e:
+                logger.exception(f"Cancel watcher tick crashed: {e}")
+            await asyncio.sleep(CANCEL_POLL_INTERVAL)

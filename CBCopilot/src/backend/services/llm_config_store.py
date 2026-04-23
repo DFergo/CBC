@@ -102,6 +102,14 @@ class LLMConfig(BaseModel):
     # models without a thinking mode (gemma, llama, mistral). Defaults to True
     # because thinking models hurt first-token latency in CBC's chat use.
     disable_thinking: bool = True
+    # Sprint 14: concurrency ceiling for parallel chat turns across the whole
+    # backend. polling.py runs frontends + their messages in parallel and
+    # acquires a semaphore sized from this field before each LLM call.
+    # Must align with OLLAMA_NUM_PARALLEL and LM Studio's per-model Parallel
+    # setting — if CBC lets more through than the runtime can serve, the
+    # excess queues INSIDE the runtime with no user-visible indicator.
+    # 1 = serial (pre-Sprint-14 behaviour), 4 = default, 6 = heavy deployment.
+    max_concurrent_turns: Literal[1, 2, 4, 6] = 4
 
 
 def _migrate_legacy(data: dict[str, Any]) -> dict[str, Any]:
