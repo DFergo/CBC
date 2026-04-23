@@ -147,30 +147,41 @@ def _resolve_endpoint_and_headers(slot: SlotConfig) -> tuple[str, dict[str, str]
     raise ValueError(f"Unknown provider {slot.provider!r}")
 
 
+def _is_qwen3_model(model: str) -> bool:
+    """Detect qwen3 family by model tag. The `/no_think` convention is baked
+    into qwen3's chat template specifically — other thinking models (deepseek-
+    r1, gemma3-think, etc.) don't honour it and may even treat the suffix as
+    literal user text. Keep it scoped."""
+    m = (model or "").lower()
+    return "qwen3" in m or "qwen-3" in m
+
+
 def _apply_no_think(
     messages: list[dict[str, Any]],
+    *,
+    inject_qwen3_suffix: bool = False,
 ) -> list[dict[str, Any]]:
-    """Add the system-prompt hint and the `/no_think` suffix on the last user
-    message. Returns a NEW list (no mutation of the caller's data).
+    """Inject the "respond directly" system-prompt hint into the messages.
+    Returns a NEW list (no mutation of the caller's data).
 
-    The two nudges complement each other:
-    - System hint covers any model that pays attention to system instructions
-      but doesn't recognise the qwen3-specific switch.
-    - User-message suffix is the qwen3 convention; both Ollama and LM Studio
-      honour it via the model's chat template.
+    The hint alone is the universal path — any instruction-following model
+    respects it or ignores it harmlessly. For qwen3 models specifically the
+    caller sets `inject_qwen3_suffix=True` so we ALSO append the ` /no_think`
+    token to the last user message; that's a qwen3-template convention
+    honoured by both Ollama and LM Studio. For non-qwen3 models the suffix
+    would be literal user text and is skipped.
 
-    For non-thinking models (gemma, llama, etc.) the hint is a generic
-    "respond directly" line — harmless. The `/no_think` suffix becomes user
-    text the model will ignore.
+    Ollama users additionally get `"think": false` in the top-level body
+    (set by the caller, not here) which is the actual definitive switch for
+    ALL thinking models routed through Ollama.
     """
     out: list[dict[str, Any]] = []
-    # Track whether we've already amended the system prompt (only the first
-    # system message gets the hint — assemblers tend to emit one).
     system_amended = False
     last_user_idx = -1
-    for i, m in enumerate(messages):
-        if m.get("role") == "user":
-            last_user_idx = i
+    if inject_qwen3_suffix:
+        for i, m in enumerate(messages):
+            if m.get("role") == "user":
+                last_user_idx = i
     for i, m in enumerate(messages):
         new = dict(m)
         if not system_amended and m.get("role") == "system":
@@ -180,13 +191,12 @@ def _apply_no_think(
                     f"{existing}\n\n{_NO_THINK_SYSTEM_HINT}" if existing else _NO_THINK_SYSTEM_HINT
                 )
             system_amended = True
-        if i == last_user_idx and m.get("role") == "user":
+        if inject_qwen3_suffix and i == last_user_idx and m.get("role") == "user":
             existing = (new.get("content") or "").rstrip()
             if not existing.endswith(_NO_THINK_USER_SUFFIX.strip()):
                 new["content"] = f"{existing}{_NO_THINK_USER_SUFFIX}"
         out.append(new)
-    # If there was no system message and the messages started with a user turn,
-    # prepend a fresh system message carrying the hint so the model still sees it.
+    # If there was no system message, prepend a fresh one carrying the hint.
     if not system_amended:
         out.insert(0, {"role": "system", "content": _NO_THINK_SYSTEM_HINT})
     return out
@@ -197,8 +207,13 @@ def _build_body(
     messages: list[dict[str, Any]],
     disable_thinking: bool = False,
 ) -> dict[str, Any]:
+    is_qwen3 = _is_qwen3_model(slot.model)
     if disable_thinking:
-        messages = _apply_no_think(messages)
+        # Qwen3 gets the triple cinturón: system hint + `/no_think` suffix
+        # + (Ollama only) `think:false` body field.
+        # Non-qwen3 thinking models (deepseek-r1, gemma3-think, etc.) get
+        # the system hint + the body field — no qwen3-specific suffix.
+        messages = _apply_no_think(messages, inject_qwen3_suffix=is_qwen3)
 
     body: dict[str, Any] = {
         "model": slot.model,
@@ -210,11 +225,33 @@ def _build_body(
     if slot.provider == "ollama" and slot.num_ctx:
         body["options"] = {"num_ctx": slot.num_ctx}
     if disable_thinking and slot.provider == "ollama":
-        # Ollama (≥0.7) accepts a top-level `think: false` for reasoning-mode
-        # models. Other providers ignore the field silently — sending it on
-        # lm_studio / api is harmless because the OpenAI shim drops unknown
-        # top-level keys.
+        # Ollama (≥0.7) accepts a top-level `think: false` for any reasoning-
+        # mode model (qwen3, deepseek-r1, gemma3-think, future families).
+        # Universal apagado para Ollama.
         body["think"] = False
+
+    # Sprint 14-follow-up diagnostic: single INFO line per outgoing request so
+    # admins can verify in container logs what the pipeline is actually
+    # sending. Captures the fields that matter for the disable_thinking
+    # feature + context size. Does NOT dump messages content (privacy).
+    has_system_hint = any(
+        m.get("role") == "system" and _NO_THINK_SYSTEM_HINT in (m.get("content") or "")
+        for m in messages
+    )
+    last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    has_qwen3_suffix = bool(
+        last_user and (last_user.get("content") or "").rstrip().endswith(_NO_THINK_USER_SUFFIX.strip())
+    )
+    logger.info(
+        f"LLM request → provider={slot.provider} model={slot.model} "
+        f"num_ctx={slot.num_ctx} "
+        f"disable_thinking={disable_thinking} "
+        f"body_think_false={body.get('think') is False} "
+        f"qwen3_detected={is_qwen3} "
+        f"qwen3_suffix_applied={has_qwen3_suffix} "
+        f"sys_hint_injected={has_system_hint} "
+        f"n_messages={len(messages)}"
+    )
     return body
 
 
