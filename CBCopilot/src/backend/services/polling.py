@@ -54,6 +54,11 @@ QUEUE_TIMEOUT = 5.0
 STREAM_PUSH_TIMEOUT = 10.0
 UPLOAD_FETCH_TIMEOUT = 30.0
 PUSH_TIMEOUT = 5.0
+# Sprint 13 — how often the per-turn cancel-watcher polls the sidecar's
+# /internal/cancellations endpoint while a stream is running. 1s gives
+# Stop-button click-to-effect latency around 1-2 s in the typical case.
+CANCEL_POLL_INTERVAL = 1.0
+CANCEL_POLL_TIMEOUT = 2.0
 
 # Track which frontends have had the current guardrails thresholds pushed to
 # them. Cleared when the backend restarts or when thresholds change
@@ -550,13 +555,65 @@ async def _process_turn(
     # or below threshold.
     messages = await context_compressor.compress_if_needed(session_token, messages, frontend_id)
     accumulated: list[str] = []
+
+    # Sprint 13 — cooperative cancellation. The cancel-watcher polls the
+    # sidecar's /internal/cancellations endpoint every CANCEL_POLL_INTERVAL
+    # seconds; when the user's session_token shows up there, the local flag
+    # flips and stream_chat aborts on its next chunk boundary.
+    cancel_flag = {"requested": False}
+
+    async def _watch_cancel() -> None:
+        try:
+            while not cancel_flag["requested"]:
+                await asyncio.sleep(CANCEL_POLL_INTERVAL)
+                try:
+                    r = await client.get(
+                        f"{url.rstrip('/')}/internal/cancellations",
+                        timeout=CANCEL_POLL_TIMEOUT,
+                    )
+                    if r.status_code == 200:
+                        tokens = r.json().get("cancellations") or []
+                        if session_token in tokens:
+                            cancel_flag["requested"] = True
+                            return
+                except (httpx.HTTPError, ValueError):
+                    # Network blip or malformed response — try again next tick.
+                    pass
+        except asyncio.CancelledError:
+            return
+
+    watcher = asyncio.create_task(_watch_cancel())
+    cancelled = False
     try:
-        async for token_text in llm_provider.stream_chat(messages, slot="inference", frontend_id=frontend_id):
+        async for token_text in llm_provider.stream_chat(
+            messages,
+            slot="inference",
+            frontend_id=frontend_id,
+            cancel_check=lambda: cancel_flag["requested"],
+        ):
             accumulated.append(token_text)
             await _push_chunk(client, url, session_token, "token", token_text)
+    except asyncio.CancelledError:
+        cancelled = True
     except Exception as e:
         logger.exception(f"[{session_token}] LLM stream failed: {e}")
         await _push_chunk(client, url, session_token, "error", f"LLM error: {e}")
+        cancel_flag["requested"] = True  # stop the watcher
+        watcher.cancel()
+        return
+    finally:
+        cancel_flag["requested"] = True
+        watcher.cancel()
+
+    if cancelled:
+        # Persist whatever the user already saw (so the conversation log keeps
+        # the partial answer rather than dropping it) and emit a dedicated
+        # `cancelled` event so the UI can render a "(cancelled)" tail.
+        partial = "".join(accumulated).strip()
+        if partial:
+            session_store.add_message(session_token, "assistant", partial)
+        logger.info(f"[{session_token}] turn cancelled by user (partial chars={len(partial)})")
+        await _push_chunk(client, url, session_token, "cancelled", "")
         return
 
     full = "".join(accumulated).strip()

@@ -1,11 +1,62 @@
 # CBC — Project Status
 
-**Current Sprint:** 12 Phase B — Admin i18n wiring pass 1 — **IN PROGRESS 2026-04-21**
-**Last Updated:** 2026-04-21
+**Current Sprint:** 13 — Chat resilience & UX control — **CLOSED 2026-04-24**
+**Last Updated:** 2026-04-24
 
-Sprint 12 Phase B — pass 1 landed: ~200 new keys, three translator batches, 11 files wired (Glossary / Orgs / Guardrails / LLM / SMTP sections; Company / PerFrontendLLM / PerFrontendOrgs panels; TranslationBundleControls; FrontendsTab body; SessionsTab + detail drawer). Fallback path (`AdminTranslations = Partial<…>` + `DICTIONARIES[lang]?.[key] ?? EN[key]`) means untranslated slots render in EN transparently — no UI regression while Batch-3 (SessionsTab) translations splice in.
+## Sprint 13 — Chat resilience & UX control — CLOSED 2026-04-24
 
-Still-to-wire in a follow-up pass: `RAGSection`, `PromptsSection` (except prompt bodies — those stay EN by design), `RegisteredUsersTab` (XLSX import + filter + chips).
+Reactive sprint after Daniel hit a real-world LM Studio template-Jinja crash (`qwen3.6-35b-a3b`) that left the UI locked with no way to recover short of killing the chat. Three independent features that together let CBC (and HRDD when adapted) survive a wedged backend gracefully and give users / admins explicit knobs over it.
+
+### Feature 1 — "Esperando turno" indicator
+Sidecar exposes `GET /internal/queue/position/{session_token}` (cheap O(N) walk over the chat queue, nothing else). ChatShell polls it every 2 s while `isStreaming && !streamingText` (waiting for first token). Position > 0 → renders the activity bubble as `Waiting in queue — N ahead of you` instead of the generic spinner. Clears on first token or stream end. Only fires when there's actually contention on the same frontend.
+
+### Feature 2 — Universal "disable thinking / reasoning" toggle
+New `disable_thinking: bool = True` field on `LLMConfig` (sibling of `compression` / `routing`, global only — same inheritance pattern as those). Default ON because the qwen3 family's reasoning prelude was the single biggest hit on first-token latency Daniel measured. Combines four techniques in `llm_provider`:
+- Top-level `"think": false` in the body (Ollama-native, ignored by other providers).
+- ` /no_think` suffix on the last user message (qwen3 convention, honoured by both Ollama and LM Studio templates).
+- System-prompt nudge `"Respond directly. Do not output <think>..."` injected into the existing system message (or prepended if none exists).
+- Streaming-safe `_ThinkStripper` state machine that drops `<think>...</think>` blocks before the tokens reach the SSE channel — handles tags split across chunk boundaries (verified with 9-case unit test, including character-by-character splits).
+
+For models without a thinking mode (gemma, llama, mistral) every layer is a no-op. Admin checkbox in `LLMSection` between slots and context-compression block; EN + ES translations wired (others fall back to EN per the Sprint 12 Phase B pattern).
+
+### Feature 3 — Stop button + inactivity timeout + defensive UI reset
+Three layers of defence against the wedged-backend scenario:
+- **Backend inactivity timeout (60 s, `INACTIVITY_TIMEOUT`)** wraps the per-chunk `aiter_lines()` reader with `asyncio.wait_for`. The connection-level `STREAM_TIMEOUT=300s` got reset on every chunk and never fired in the qwen3.6 case; the per-chunk budget kills genuinely stalled streams in 60 s and lets the fallback chain try the next slot.
+- **Cooperative cancel via per-turn watcher.** Sidecar accepts `POST /internal/chat/cancel/{session_token}` (sets a flag with TTL); `_process_turn` spawns a 1-s-tick watcher that polls `GET /internal/cancellations` (separate endpoint, deliberately NOT bundled into `/internal/queue` so it can fire mid-stream instead of waiting for the next 2-s poll cycle). Watcher flips `cancel_flag["requested"] = True`; `stream_chat_one_slot` checks it between chunks and raises `CancelledError`. Backend then emits a `cancelled` SSE event and persists the partial assistant message so the conversation log keeps what the user already saw.
+- **ChatShell Stop button** (visible only during streaming) optimistically closes the EventSource, appends `(cancelled)` to the partial reply, unlocks the input, and fires the cancel POST in the background. New SSE listener for `cancelled` mirrors the cleanup so server-side cancels look the same. Defensive `setQueuePosition(null)` + `setStopRequested(false)` in every terminal-state handler (`done`, `error`, `cancelled`, `onerror` after 3 strikes) so the UI can't get stuck even if the sidecar hangs up dirty.
+
+### Files touched
+- `CBCopilot/src/backend/services/llm_config_store.py` — `disable_thinking` field on `LLMConfig`.
+- `CBCopilot/src/backend/services/llm_provider.py` — `INACTIVITY_TIMEOUT`, `_apply_no_think`, `_ThinkStripper`, `cancel_check` plumbing across `stream_chat` / `stream_chat_one_slot`, `_build_body` re-shaped for the disable-thinking config.
+- `CBCopilot/src/backend/services/polling.py` — per-turn `_watch_cancel` task, `cancelled` SSE emission with partial-message persistence.
+- `CBCopilot/src/frontend/sidecar/main.py` — `POST /internal/chat/cancel/{token}`, `GET /internal/cancellations`, `GET /internal/queue/position/{token}`, `cancelled` added to SSE terminal-event set.
+- `CBCopilot/src/admin/src/api.ts` + `CBCopilot/src/admin/src/i18n.ts` + `CBCopilot/src/admin/src/sections/LLMSection.tsx` — `disable_thinking` typed + checkbox + EN/ES translations.
+- `CBCopilot/src/frontend/src/i18n.ts` — 4 new keys (`chat_stop`, `chat_cancelled_suffix`, `chat_queued`, `chat_queued_alone`) in EN + ES.
+- `CBCopilot/src/frontend/src/components/ChatShell.tsx` — queue-position polling effect, `stopStream` handler + Stop button next to Send, `cancelled` SSE listener, defensive resets in every terminal handler.
+
+### Acceptance criteria
+- [x] Backend Python syntax check on all modified modules (`py_compile`).
+- [x] `_ThinkStripper` 9-test suite passes (single-chunk, split tags, multiple blocks, no-close, char-by-char streaming).
+- [x] Backend Docker image builds clean.
+- [x] Frontend Docker image builds clean (validates ChatShell + i18n + admin SPA TypeScript).
+- [ ] **Live-test (Daniel's QA)** — needs a re-pull on Portainer:
+   1. Toggle `disable_thinking` OFF, send a question to a qwen3 model → see thinking prelude in tokens. Toggle ON → thinking suppressed.
+   2. Open two browser tabs on the same frontend, send messages near-simultaneously → second tab shows "Waiting in queue — 1 ahead of you" until the first finishes.
+   3. Send a long prompt; click Stop within a few seconds → reply collapses to `(cancelled)`, input unlocks immediately, next message goes through normally.
+   4. Force a hung stream (LM Studio template error) → ChatShell unlocks itself within 60 s via inactivity timeout (no need to kill the chat).
+
+### Known follow-ups (deferred)
+- LM Studio worker-zombie recovery (admin "Eject model" button) — separate sprint, requires `lms` CLI shell-out from the backend.
+- Per-frontend `disable_thinking` override — currently global only. Add to `LLMOverride` if a deployment ever wants it different per frontend.
+- `num_ctx`-consistent loading per model in `llm_provider` to avoid Ollama reload thrashing — flagged during Sprint 13 discussion, not in scope.
+
+---
+
+## Sprint 12 Phase B — Admin i18n wiring pass 1 — **PARKED 2026-04-21**
+
+Pass 1 landed: ~200 new keys, three translator batches, 11 files wired (Glossary / Orgs / Guardrails / LLM / SMTP sections; Company / PerFrontendLLM / PerFrontendOrgs panels; TranslationBundleControls; FrontendsTab body; SessionsTab + detail drawer). Fallback path (`AdminTranslations = Partial<…>` + `DICTIONARIES[lang]?.[key] ?? EN[key]`) means untranslated slots render in EN transparently — no UI regression while Batch-3 (SessionsTab) translations splice in.
+
+Still-to-wire in a follow-up pass: `RAGSection`, `PromptsSection` (except prompt bodies — those stay EN by design), `RegisteredUsersTab` (XLSX import + filter + chips). Sprint 13 added 2 new admin keys (`llm_disable_thinking`, `llm_disable_thinking_description`) wired in EN + ES; the other 13 languages will be filled when Phase B's translator batches resume.
 
 ## Sprint 12 Phase A — Admin i18n + branded header — CLOSED 2026-04-21
 

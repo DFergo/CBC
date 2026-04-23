@@ -1,5 +1,64 @@
 # CBC — Changelog
 
+## Sprint 13 — Chat resilience & UX control (2026-04-24)
+
+Three independent features that together let CBC users (and admins) recover gracefully from a wedged or slow LLM backend, plus a global toggle to suppress reasoning-mode output. Triggered by a real production crash where `qwen3.6-35b-a3b` running under LM Studio threw a Jinja-template error that left the chat UI permanently in "thinking" with no way out short of killing the chat.
+
+### Feature 1 — "Esperando turno" indicator
+- Sidecar: `GET /internal/queue/position/{session_token}` returns the position of the user's oldest pending chat message in the per-frontend queue. -1 = not in queue (already being processed or never enqueued).
+- ChatShell: polls the new endpoint every 2 s while `isStreaming && !streamingText` (i.e. waiting for the first token); replaces the generic "Thinking…" bubble with `Waiting in queue — N ahead of you` when position > 0, or `Waiting for an available slot` at position 0. Drops the indicator on first token or stream end.
+- Only fires when there's actual contention (multiple users on the same frontend send near-simultaneously).
+
+### Feature 2 — Universal "disable reasoning / think" toggle
+- New `disable_thinking: bool = True` field on `LLMConfig` (sibling of `compression` / `routing`, global only — same inheritance semantics as those). Defaults ON because qwen3 reasoning prelude is the single biggest hit on first-token latency in CBC's measurement.
+- `llm_provider._build_body` now injects three nudges when the flag is on:
+  - `"think": false` at the top level of the request body (Ollama-native, ignored by other providers).
+  - ` /no_think` suffix on the last user message (qwen3 convention; Ollama and LM Studio both honour it via the model's chat template).
+  - System-prompt hint `Respond directly. Do not output <think>...` injected into the existing system message (or prepended if none).
+- New `_ThinkStripper` state machine post-processes the streamed tokens, dropping `<think>...</think>` blocks before they reach the SSE channel. Tag-split-across-chunks safe (verified with 9-test suite that includes char-by-char streaming).
+- Admin UI: new checkbox "Disable reasoning / think mode" between the slot grid and the context-compression block in `LLMSection`. EN + ES translations wired (other 13 languages fall back to EN per Sprint 12 Phase B's pattern; Phase B's pending translator pass will pick them up).
+- For models without a thinking mode (gemma, llama, mistral) every layer is a no-op.
+
+### Feature 3 — Stop button + inactivity timeout + defensive UI reset
+Three layers against the wedged-backend scenario:
+- **Backend per-chunk inactivity timeout (60 s, `INACTIVITY_TIMEOUT`).** `stream_chat_one_slot` now wraps `aiter_lines()` with `asyncio.wait_for`. The connection-level `STREAM_TIMEOUT=300s` resets on every chunk and never fired in the qwen3.6 case; this new budget kills genuinely stalled streams in 60 s and lets the slot fallback chain try the next provider.
+- **Cooperative cancel via per-turn watcher.** Sidecar accepts `POST /internal/chat/cancel/{session_token}` (sets a flag with TTL). `_process_turn` spawns a 1-s-tick `_watch_cancel` background task that polls the new `GET /internal/cancellations` endpoint (deliberately separate from `/internal/queue` so it can fire mid-stream instead of waiting for the next 2-s main poll). When the watcher sees this session in the drained set, it flips the local flag; `stream_chat_one_slot` checks it between chunks and raises `CancelledError`. Backend then emits a new `cancelled` SSE event and persists the partial assistant message so the conversation log keeps what the user already saw.
+- **ChatShell Stop button.** Visible only during `isStreaming`, sits next to Send. Click = optimistic UI close (append `(cancelled)` to the partial reply, unlock input, close EventSource) + background `POST /internal/chat/cancel/{token}`. New `cancelled` SSE listener mirrors the cleanup so server-side cancels look the same to the user. Defensive `setQueuePosition(null)` + `setStopRequested(false)` reset added to every terminal-state handler (`done`, `error`, `cancelled`, `onerror` after 3 strikes) so the UI cannot get stuck on `isStreaming=true` forever even if the SSE connection dies dirty.
+
+### Files touched
+
+Backend:
+- `CBCopilot/src/backend/services/llm_config_store.py` — `disable_thinking: bool = True` on `LLMConfig`.
+- `CBCopilot/src/backend/services/llm_provider.py` — `INACTIVITY_TIMEOUT = 60.0`, `_apply_no_think`, `_ThinkStripper`, `cancel_check` plumbing through `stream_chat` and `stream_chat_one_slot`, `_build_body` reshaped for `disable_thinking`.
+- `CBCopilot/src/backend/services/polling.py` — `CANCEL_POLL_INTERVAL = 1.0`, per-turn `_watch_cancel` task, `cancelled` SSE emission with partial-message persistence.
+
+Sidecar:
+- `CBCopilot/src/frontend/sidecar/main.py` — `_cancellations` dict + lock, `POST /internal/chat/cancel/{token}`, `GET /internal/cancellations`, `GET /internal/queue/position/{token}`, `cancelled` added to terminal-event set in `push_stream_chunk` + SSE generator.
+
+Admin:
+- `CBCopilot/src/admin/src/api.ts` — `disable_thinking: boolean` on `LLMConfig` interface.
+- `CBCopilot/src/admin/src/i18n.ts` — `llm_disable_thinking` + `llm_disable_thinking_description` keys (EN + ES; rest fall back to EN).
+- `CBCopilot/src/admin/src/sections/LLMSection.tsx` — checkbox between slot grid and compression block.
+
+Frontend:
+- `CBCopilot/src/frontend/src/i18n.ts` — `chat_stop`, `chat_cancelled_suffix`, `chat_queued`, `chat_queued_alone` (EN + ES; rest fall back to EN).
+- `CBCopilot/src/frontend/src/components/ChatShell.tsx` — `queuePosition` + `stopRequested` state, queue-position polling effect, `stopStream` handler, Stop button next to Send (visible during streaming only), `cancelled` SSE listener, defensive resets in every terminal handler, queue indicator wired into the activity bubble.
+
+### Verification
+
+- `python3 -m py_compile` clean on all four modified backend files.
+- 9-case unit suite for `_ThinkStripper` — single-chunk, multi-block, char-by-char split-tag, no-close-tag, edge cases.
+- Backend Docker image builds clean (validates the admin SPA TypeScript build that bundles `LLMSection.tsx` + `api.ts`).
+- Frontend Docker image builds clean (validates `ChatShell.tsx` + `i18n.ts`).
+
+### Known follow-ups (deliberately deferred)
+
+- LM Studio worker-zombie recovery (admin "Eject model" button calling `lms unload`) — separate sprint.
+- Per-frontend `disable_thinking` override — currently global only; matches the inheritance pattern of `compression` / `routing`. Add to `LLMOverride` if a deployment ever needs it different per frontend.
+- `num_ctx`-consistent loading per model in `llm_provider` to avoid Ollama reload thrashing — flagged during the Ollama-tuning conversation that triggered this sprint, captured for next time.
+
+---
+
 ## Sprint 12 Phase B — Admin i18n wiring pass 1 (2026-04-21)
 
 Continuation of Phase A. Replaced hardcoded English in the sections/panels that

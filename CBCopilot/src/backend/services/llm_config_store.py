@@ -96,6 +96,12 @@ class LLMConfig(BaseModel):
     summariser: SlotConfig = Field(default_factory=SlotConfig)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)
     routing: RoutingToggles = Field(default_factory=RoutingToggles)
+    # Sprint 13: when True, the provider request body and the system prompt are
+    # nudged to suppress reasoning/<think> tokens. Effective for qwen3 family
+    # (think:false on Ollama, /no_think on LM Studio); harmless no-op for
+    # models without a thinking mode (gemma, llama, mistral). Defaults to True
+    # because thinking models hurt first-token latency in CBC's chat use.
+    disable_thinking: bool = True
 
 
 def _migrate_legacy(data: dict[str, Any]) -> dict[str, Any]:

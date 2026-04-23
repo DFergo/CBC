@@ -439,6 +439,47 @@ async def enqueue_chat(msg: ChatMessage):
     return {"status": "queued"}
 
 
+# Sprint 13 — cancellation signals.
+#
+# React → POST /internal/chat/cancel/{session_token} when the user clicks Stop.
+# The token lands in _cancellations with a timestamp. The backend's per-turn
+# cancel-watcher (separate from the main polling loop, so it can fire while a
+# stream is in flight) drains via GET /internal/cancellations every ~1 s and
+# checks whether its own session is listed.
+_cancellations: dict[str, float] = {}
+_cancel_lock = asyncio.Lock()
+_CANCEL_TTL = 30.0  # drop signals older than this if no poll picked them up
+
+
+@app.post("/internal/chat/cancel/{session_token}")
+async def cancel_chat(session_token: str):
+    """User clicked Stop. Mark the token cancelled; the backend's in-flight
+    stream watcher will see it within ~1 s and abort."""
+    token = (session_token or "").strip()
+    if not token:
+        raise HTTPException(400, "session_token required")
+    async with _cancel_lock:
+        _cancellations[token] = time.time()
+    logger.info(f"Cancel requested for session {token}")
+    return {"status": "queued"}
+
+
+@app.get("/internal/cancellations")
+async def drain_cancellations():
+    """Backend per-turn cancel-watcher polls this. Returns and clears all
+    pending cancellation signals (older than _CANCEL_TTL are dropped silently
+    so a long-stale signal doesn't kill an unrelated future turn).
+
+    Deliberately NOT bundled into /internal/queue: that endpoint runs on a 2 s
+    main-poll cycle and only fires between turns. A user clicking Stop while
+    a stream is in flight needs a faster, dedicated channel."""
+    now = time.time()
+    async with _cancel_lock:
+        fresh = [tok for tok, ts in _cancellations.items() if now - ts < _CANCEL_TTL]
+        _cancellations.clear()
+    return {"cancellations": fresh}
+
+
 @app.get("/internal/queue")
 async def dequeue_messages():
     """Backend poll target — drains pending chat/survey/close messages and
@@ -467,6 +508,34 @@ async def dequeue_messages():
     return result
 
 
+# Sprint 13 — queue position lookup for the "esperando turno" indicator.
+#
+# Cheap O(N) walk over the chat queue (which is ~empty most of the time and
+# only fills when N concurrent users on the same frontend press Send). Returns
+# the position of the user's OLDEST pending chat message, where 0 = next up.
+# When there's nothing for this token, returns position=-1.
+
+@app.get("/internal/queue/position/{session_token}")
+async def queue_position(session_token: str):
+    """Where am I in the queue? React polls this every couple of seconds
+    while waiting for the first token. Position = number of OTHER chat
+    messages ahead of this user's oldest pending one. -1 = not in queue
+    (already processed, or never enqueued)."""
+    token = (session_token or "").strip()
+    if not token:
+        raise HTTPException(400, "session_token required")
+    async with _queue_lock:
+        chat_queue = [m for m in _queue if m.get("type") == "chat"]
+    own_idx = -1
+    for i, m in enumerate(chat_queue):
+        if m.get("session_token") == token:
+            own_idx = i
+            break
+    if own_idx == -1:
+        return {"position": -1, "total": len(chat_queue)}
+    return {"position": own_idx, "total": len(chat_queue)}
+
+
 # --- SSE stream channels (Sprint 6A) ---
 # Backend pushes tokens to POST /internal/stream/{token}/chunk; React reads
 # from GET /internal/stream/{token} with an EventSource. One queue per
@@ -490,11 +559,12 @@ async def _get_or_create_stream(token: str) -> asyncio.Queue:
 
 @app.post("/internal/stream/{session_token}/chunk")
 async def push_stream_chunk(session_token: str, chunk: StreamChunk):
-    """Backend pushes one SSE event (a token, done marker, or error)."""
+    """Backend pushes one SSE event. Terminal events (`done`, `error`,
+    `cancelled`) close the SSE connection and schedule queue cleanup so the
+    next user turn starts on a fresh stream."""
     q = await _get_or_create_stream(session_token)
     await q.put({"event": chunk.event, "data": chunk.data})
-    if chunk.event in ("done", "error"):
-        # Let the consumer drain, then clean up the queue so a new turn starts fresh.
+    if chunk.event in ("done", "error", "cancelled"):
         async def _cleanup():
             await asyncio.sleep(5)
             async with _streams_lock:
@@ -520,7 +590,7 @@ async def stream_sse(session_token: str):
                 lines = event["data"].split("\n")
                 data_block = "\n".join(f"data: {line}" for line in lines)
                 yield f"event: {event['event']}\n{data_block}\n\n"
-                if event["event"] in ("done", "error"):
+                if event["event"] in ("done", "error", "cancelled"):
                     break
             except asyncio.TimeoutError:
                 # Keepalive comment so proxies / browsers don't drop the connection

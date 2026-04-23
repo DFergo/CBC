@@ -8,13 +8,15 @@ Adapted from HRDDHelper/src/backend/services/llm_provider.py. CBC changes:
   summariser is the most capable slot in typical deployments, so it handles
   the main chat reasonably well if `inference` goes down.
 - No multimodal — Sprint 5 already routes uploads through the RAG pipeline.
+- Sprint 13: per-chunk inactivity timeout, think-mode suppression, <think>
+  tag stripping in the streamed output. Cooperative cancel via `cancel_check`.
 """
 import asyncio
 import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -30,6 +32,26 @@ FAIL_THRESHOLD = 3
 COOLDOWN_SECONDS = 300
 
 STREAM_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
+# Sprint 13: per-chunk inactivity timeout. The connection-level STREAM_TIMEOUT
+# above doesn't catch a model that "drips" tokens or stalls mid-stream — every
+# new chunk resets it. This is the gap-between-chunks budget; if a runtime
+# stops emitting for this long we abort the slot and let the fallback chain
+# try the next one (or surface an error).
+INACTIVITY_TIMEOUT = 60.0
+
+# Sprint 13: instruction appended to the system prompt when disable_thinking
+# is on. Belt-and-braces alongside the per-runtime tweaks below — for models
+# that respect neither `think:false` nor `/no_think` (deepseek-r1 etc.) the
+# system-prompt nudge is the only signal they get.
+_NO_THINK_SYSTEM_HINT = (
+    "Respond directly without any reasoning prelude. "
+    "Do not output <think>, </think>, or any chain-of-thought tokens."
+)
+# Suffix added to the last user message — qwen3 convention honoured by both
+# Ollama and LM Studio. Harmless filler text for models that don't recognise
+# it (treated as user content).
+_NO_THINK_USER_SUFFIX = " /no_think"
+
 SLOT_ORDER: tuple[SlotName, ...] = ("summariser", "inference", "compressor")
 
 
@@ -125,7 +147,59 @@ def _resolve_endpoint_and_headers(slot: SlotConfig) -> tuple[str, dict[str, str]
     raise ValueError(f"Unknown provider {slot.provider!r}")
 
 
-def _build_body(slot: SlotConfig, messages: list[dict[str, Any]]) -> dict[str, Any]:
+def _apply_no_think(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add the system-prompt hint and the `/no_think` suffix on the last user
+    message. Returns a NEW list (no mutation of the caller's data).
+
+    The two nudges complement each other:
+    - System hint covers any model that pays attention to system instructions
+      but doesn't recognise the qwen3-specific switch.
+    - User-message suffix is the qwen3 convention; both Ollama and LM Studio
+      honour it via the model's chat template.
+
+    For non-thinking models (gemma, llama, etc.) the hint is a generic
+    "respond directly" line — harmless. The `/no_think` suffix becomes user
+    text the model will ignore.
+    """
+    out: list[dict[str, Any]] = []
+    # Track whether we've already amended the system prompt (only the first
+    # system message gets the hint — assemblers tend to emit one).
+    system_amended = False
+    last_user_idx = -1
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            last_user_idx = i
+    for i, m in enumerate(messages):
+        new = dict(m)
+        if not system_amended and m.get("role") == "system":
+            existing = (new.get("content") or "").rstrip()
+            if _NO_THINK_SYSTEM_HINT not in existing:
+                new["content"] = (
+                    f"{existing}\n\n{_NO_THINK_SYSTEM_HINT}" if existing else _NO_THINK_SYSTEM_HINT
+                )
+            system_amended = True
+        if i == last_user_idx and m.get("role") == "user":
+            existing = (new.get("content") or "").rstrip()
+            if not existing.endswith(_NO_THINK_USER_SUFFIX.strip()):
+                new["content"] = f"{existing}{_NO_THINK_USER_SUFFIX}"
+        out.append(new)
+    # If there was no system message and the messages started with a user turn,
+    # prepend a fresh system message carrying the hint so the model still sees it.
+    if not system_amended:
+        out.insert(0, {"role": "system", "content": _NO_THINK_SYSTEM_HINT})
+    return out
+
+
+def _build_body(
+    slot: SlotConfig,
+    messages: list[dict[str, Any]],
+    disable_thinking: bool = False,
+) -> dict[str, Any]:
+    if disable_thinking:
+        messages = _apply_no_think(messages)
+
     body: dict[str, Any] = {
         "model": slot.model,
         "messages": messages,
@@ -135,28 +209,147 @@ def _build_body(slot: SlotConfig, messages: list[dict[str, Any]]) -> dict[str, A
     }
     if slot.provider == "ollama" and slot.num_ctx:
         body["options"] = {"num_ctx": slot.num_ctx}
+    if disable_thinking and slot.provider == "ollama":
+        # Ollama (≥0.7) accepts a top-level `think: false` for reasoning-mode
+        # models. Other providers ignore the field silently — sending it on
+        # lm_studio / api is harmless because the OpenAI shim drops unknown
+        # top-level keys.
+        body["think"] = False
     return body
+
+
+# --- <think> tag stripping (Sprint 13) ---
+
+# Streaming-safe state machine: tokens may split tags across boundaries
+# (e.g. "<th" arrives in one chunk, "ink>" in the next). We keep an internal
+# buffer of an "ambiguous prefix" until we know whether we're inside a think
+# block or whether the buffered text is real content.
+#
+# Approach: a small carryover buffer holds at most len("</think>") - 1
+# characters from the tail of each chunk. The longest tag literal we need to
+# match is "</think>" (8 chars), so 7 chars of carryover guarantee we never
+# miss a tag straddling two chunks.
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+_THINK_MAX_TAG_LEN = max(len(_THINK_OPEN), len(_THINK_CLOSE))
+
+
+class _ThinkStripper:
+    """Stateful filter applied to streamed text. Yields content with all
+    `<think>...</think>` blocks removed. Tolerant of tags split across chunks
+    and of unmatched opens/closes (treated as best-effort suppression)."""
+
+    def __init__(self) -> None:
+        self.in_think = False
+        self.buffer = ""
+
+    def feed(self, chunk: str, *, last: bool = False) -> str:
+        """Process one streamed chunk, return whatever should be emitted now.
+        Pass last=True after the stream ends to flush the carryover buffer."""
+        text = self.buffer + chunk
+        self.buffer = ""
+        out: list[str] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            if self.in_think:
+                # Looking for closing tag.
+                close_idx = text.find(_THINK_CLOSE, i)
+                if close_idx == -1:
+                    # Hold on to the tail (might be a partial close tag).
+                    if last:
+                        # Stream ended mid-think: drop everything we held.
+                        return "".join(out)
+                    keep = min(_THINK_MAX_TAG_LEN - 1, n - i)
+                    self.buffer = text[n - keep:]
+                    return "".join(out)
+                # Skip past the closing tag.
+                i = close_idx + len(_THINK_CLOSE)
+                self.in_think = False
+                continue
+            # Looking for opening tag — emit literal text up to the next tag.
+            open_idx = text.find(_THINK_OPEN, i)
+            if open_idx == -1:
+                # No open tag — but the tail might be the start of one.
+                if last:
+                    out.append(text[i:])
+                    return "".join(out)
+                keep = min(_THINK_MAX_TAG_LEN - 1, n - i)
+                if keep > 0:
+                    self.buffer = text[n - keep:]
+                    out.append(text[i:n - keep])
+                else:
+                    out.append(text[i:])
+                return "".join(out)
+            # Emit text up to the open tag, then enter think mode.
+            if open_idx > i:
+                out.append(text[i:open_idx])
+            i = open_idx + len(_THINK_OPEN)
+            self.in_think = True
+        return "".join(out)
 
 
 # --- Streaming core ---
 
+CancelCheck = Callable[[], Awaitable[bool]] | Callable[[], bool] | None
+
+
+async def _cancel_requested(check: CancelCheck) -> bool:
+    """Run the cancel-check callback; tolerate sync or async."""
+    if check is None:
+        return False
+    res = check()
+    if asyncio.iscoroutine(res):
+        res = await res
+    return bool(res)
+
+
 async def stream_chat_one_slot(
     slot: SlotConfig,
     messages: list[dict[str, Any]],
+    *,
+    disable_thinking: bool = False,
+    cancel_check: CancelCheck = None,
 ) -> AsyncIterator[str]:
     """Stream tokens from one specific slot. Raises on HTTP / config errors.
 
     Empty response (0 tokens) is treated as a silent failure in the upper
     fallback layer — see lessons-learned #4 + HRDD's zero-token check.
+
+    Sprint 13:
+    - Wraps the chunk reader with INACTIVITY_TIMEOUT per chunk so a stalled
+      stream aborts instead of hanging until the connection-level timeout.
+    - Filters `<think>...</think>` from the streamed content when the caller
+      asked for `disable_thinking` (state machine handles tags split across
+      chunks).
+    - Polls `cancel_check` between chunks so the polling loop can abort
+      cooperatively when the user clicks Stop in the UI.
     """
     base, headers = _resolve_endpoint_and_headers(slot)
-    body = _build_body(slot, messages)
+    body = _build_body(slot, messages, disable_thinking=disable_thinking)
     url = f"{base}/chat/completions"
     tokens_yielded = 0
+    stripper = _ThinkStripper() if disable_thinking else None
     async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         async with client.stream("POST", url, json=body, headers=headers) as resp:
             resp.raise_for_status()
-            async for line in resp.aiter_lines():
+            line_iter = resp.aiter_lines().__aiter__()
+            while True:
+                if await _cancel_requested(cancel_check):
+                    raise asyncio.CancelledError()
+                try:
+                    line = await asyncio.wait_for(
+                        line_iter.__anext__(),
+                        timeout=INACTIVITY_TIMEOUT,
+                    )
+                except asyncio.TimeoutError as e:
+                    raise RuntimeError(
+                        f"LLM inactivity timeout ({INACTIVITY_TIMEOUT:.0f}s) on "
+                        f"{slot.provider}/{slot.model}"
+                    ) from e
+                except StopAsyncIteration:
+                    break
                 if not line.startswith("data: "):
                     continue
                 payload = line[6:].strip()
@@ -170,9 +363,21 @@ async def stream_chat_one_slot(
                     continue
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 token = delta.get("content")
-                if token:
-                    tokens_yielded += 1
-                    yield token
+                if not token:
+                    continue
+                if stripper is not None:
+                    token = stripper.feed(token)
+                    if not token:
+                        continue
+                tokens_yielded += 1
+                yield token
+    # Flush any tail content the stripper held onto. If the model never closed
+    # a `<think>` block, the held content is dropped (best-effort suppression).
+    if stripper is not None:
+        tail = stripper.feed("", last=True)
+        if tail:
+            tokens_yielded += 1
+            yield tail
     if tokens_yielded == 0:
         raise RuntimeError(
             f"Zero tokens from {slot.provider}/{slot.model} "
@@ -184,6 +389,8 @@ async def stream_chat(
     messages: list[dict[str, Any]],
     slot: SlotName = "inference",
     frontend_id: str | None = None,
+    *,
+    cancel_check: CancelCheck = None,
 ) -> AsyncIterator[str]:
     """Top-level streamer the polling loop calls. Resolves the per-frontend
     LLM config, walks the fallback chain, and yields tokens from the first
@@ -191,6 +398,9 @@ async def stream_chat(
 
     Failures bump the circuit breaker; subsequent calls skip open breakers
     until the cooldown elapses.
+
+    Sprint 13: forwards `cancel_check` to the slot streamer; honours the
+    config-level `disable_thinking` flag.
     """
     cfg = resolve_llm_config(frontend_id)
     chain = build_fallback_chain(cfg, slot)
@@ -208,7 +418,12 @@ async def stream_chat(
             continue
         try:
             produced = False
-            async for token in stream_chat_one_slot(slot_cfg, messages):
+            async for token in stream_chat_one_slot(
+                slot_cfg,
+                messages,
+                disable_thinking=cfg.disable_thinking,
+                cancel_check=cancel_check,
+            ):
                 produced = True
                 yield token
             if produced:

@@ -237,7 +237,7 @@ Context template variables:
 
 **Supported formats:** .pdf, .docx, .txt, .md
 
-**Indexing:** LlamaIndex with sentence-transformers embeddings (all-MiniLM-L6-v2). Chunk size 512, overlap 50, top-k 5 (all configurable).
+**Indexing:** LlamaIndex with sentence-transformers embeddings (BAAI/bge-m3, 1024-dim, multilingüe). Chunk size 1024, overlap 100, top-k configurable. Hybrid BM25 + vector retrieval con cross-encoder reranker (bge-reranker-v2-m3).
 
 **Session RAG:** Temporary index created per session for user-uploaded documents. Destroyed with session.
 
@@ -542,7 +542,7 @@ Identical to HRDD Helper: password setup on first access, bcrypt hash, JWT token
     "rag_index_path": "./data/rag_index",
     "rag_chunk_size": 512,
     "rag_similarity_top_k": 5,
-    "rag_embedding_model": "all-MiniLM-L6-v2",
+    "rag_embedding_model": "BAAI/bge-m3",
     "rag_watcher_enabled": true,
     "rag_watcher_debounce_seconds": 5,
     "streaming_enabled": true,

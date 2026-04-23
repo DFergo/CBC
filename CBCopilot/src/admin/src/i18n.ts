@@ -169,6 +169,7 @@ export type AdminTranslationKeys =
   | 'llm_context_first_threshold' | 'llm_context_step_size'
   | 'llm_summary_routing' | 'llm_summary_routing_description'
   | 'llm_summary_document' | 'llm_summary_final'
+  | 'llm_disable_thinking' | 'llm_disable_thinking_description'
   | 'llm_save_config' | 'llm_check_health' | 'llm_refresh_providers'
   // SMTP section
   | 'smtp_description'
@@ -488,6 +489,8 @@ const EN: AdminTranslations = {
   llm_summary_routing_description: 'Pick which slot handles each summarisation task. The compressor can be used here too — any slot works.',
   llm_summary_document: 'Document summary on injection',
   llm_summary_final: 'Final conversation summary',
+  llm_disable_thinking: 'Disable reasoning / think mode',
+  llm_disable_thinking_description: 'Suppresses <think> reasoning tokens before they reach the user. Recommended ON: cuts first-token latency on qwen3 / deepseek-r1 family models, harmless no-op for models without a thinking mode (gemma, llama, mistral). Applies to whichever runtime each slot points to (Ollama, LM Studio, or API).',
   llm_save_config: 'Save LLM config',
   llm_check_health: 'Check health',
   llm_refresh_providers: 'Refresh providers',
@@ -880,6 +883,8 @@ const ES: AdminTranslations = {
   llm_summary_routing_description: 'Seleccione qué ranura gestiona cada tarea de resumen. También puede usarse el Compressor — cualquier ranura es válida.',
   llm_summary_document: 'Resumen de documento al inyectarlo',
   llm_summary_final: 'Resumen final de la conversación',
+  llm_disable_thinking: 'Desactivar reasoning / think',
+  llm_disable_thinking_description: 'Suprime los tokens de razonamiento <think> antes de que lleguen al usuario. Recomendado activado: reduce la latencia hasta el primer token en modelos qwen3 / deepseek-r1, y es inofensivo en modelos sin modo thinking (gemma, llama, mistral). Se aplica al runtime que cada slot apunte (Ollama, LM Studio o API).',
   llm_save_config: 'Guardar configuración LLM',
   llm_check_health: 'Verificar estado',
   llm_refresh_providers: 'Actualizar proveedores',

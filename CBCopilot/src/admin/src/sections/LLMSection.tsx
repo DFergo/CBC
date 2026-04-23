@@ -142,6 +142,26 @@ export default function LLMSection() {
         ))}
       </div>
 
+      {/* Sprint 13 — Disable reasoning / think toggle. Behavioural flag that
+          applies to all three slots regardless of provider. Defaults ON. */}
+      <div className="mt-6 border border-gray-200 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-1">
+          <h4 className="text-sm font-semibold text-gray-700">{t('llm_disable_thinking')}</h4>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={cfg.disable_thinking}
+              onChange={e => setCfg(c => c ? { ...c, disable_thinking: e.target.checked } : c)}
+              className="rounded border-gray-300"
+            />
+            {t('llm_context_enabled')}
+          </label>
+        </div>
+        <p className="text-xs text-gray-500">
+          {t('llm_disable_thinking_description')}
+        </p>
+      </div>
+
       {/* Context compression */}
       <div className="mt-6 border border-gray-200 rounded-lg p-4">
         <div className="flex items-center justify-between mb-1">

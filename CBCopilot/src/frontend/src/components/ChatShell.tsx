@@ -23,6 +23,10 @@ const SUMMARY_MARKER = 'summary'
 const DEFAULT_WARN_AT = 2
 const DEFAULT_END_AT = 5
 const STATUS_POLL_MS = 5000
+// Sprint 13 — how often ChatShell polls the sidecar's queue position while a
+// message is enqueued and no tokens have arrived yet. 2s matches the backend
+// poll cadence so the user doesn't see a stale number.
+const QUEUE_POLL_MS = 2000
 
 interface AttachmentChip {
   id: string
@@ -106,6 +110,12 @@ export default function ChatShell({
   // with a trailing timestamp so the panel's effect re-fires even if the user
   // clicks the same citation twice.
   const [highlightedCitation, setHighlightedCitation] = useState<string | null>(null)
+  // Sprint 13 — queue position the user is sitting at while waiting for the
+  // backend to pick up their message. null = not waiting on the queue
+  // (nothing sent, or first token already arrived). 0 = next up. >0 = N
+  // chats ahead of mine on this same frontend.
+  const [queuePosition, setQueuePosition] = useState<number | null>(null)
+  const [stopRequested, setStopRequested] = useState(false)
 
   const openCitation = useCallback((filename: string) => {
     setPanelOpen(true)
@@ -143,6 +153,9 @@ export default function ChatShell({
       streamingTextRef.current += e.data
       setStreamingText(streamingTextRef.current)
       setIsStreaming(true)
+      // First token means the backend has picked up the turn — drop any
+      // queue indicator that was being shown to the user.
+      setQueuePosition(null)
     })
 
     // Sprint 11: the backend emits a `sources` event right before `done`
@@ -181,9 +194,34 @@ export default function ChatShell({
       streamingTextRef.current = ''
       setStreamingText('')
       setIsStreaming(false)
+      setQueuePosition(null)
+      setStopRequested(false)
       if (wasSummary) {
         setSessionEnded(true)
       }
+      isSummaryStreamRef.current = false
+      setIsSummaryStream(false)
+    })
+
+    // Sprint 13 — backend confirms the turn was cancelled (either because
+    // the user pressed Stop and the cancel flag was honoured, or because the
+    // stream was aborted server-side). Render the partial answer with a
+    // "(cancelled)" tail so the user sees what they got before stopping.
+    es.addEventListener('cancelled', () => {
+      es.close()
+      const partial = streamingTextRef.current
+      const cancelledTag = ` ${t('chat_cancelled_suffix', lang)}`
+      if (partial) {
+        setMessages(prev => [...prev, {
+          role: isSummaryStreamRef.current ? 'summary' : 'assistant',
+          content: partial + cancelledTag,
+        }])
+      }
+      streamingTextRef.current = ''
+      setStreamingText('')
+      setIsStreaming(false)
+      setQueuePosition(null)
+      setStopRequested(false)
       isSummaryStreamRef.current = false
       setIsSummaryStream(false)
     })
@@ -193,6 +231,8 @@ export default function ChatShell({
       streamingTextRef.current = ''
       setStreamingText('')
       setIsStreaming(false)
+      setQueuePosition(null)
+      setStopRequested(false)
       setError(e.data || t('chat_error', lang))
       isSummaryStreamRef.current = false
       setIsSummaryStream(false)
@@ -205,6 +245,8 @@ export default function ChatShell({
         streamingTextRef.current = ''
         setStreamingText('')
         setIsStreaming(false)
+        setQueuePosition(null)
+        setStopRequested(false)
         setError(t('chat_error', lang))
       }
     }
@@ -233,6 +275,43 @@ export default function ChatShell({
       .catch(() => { /* keep defaults */ })
     return () => { cancelled = true }
   }, [])
+
+  // --- Queue position poll (Sprint 13) ---
+  //
+  // Only active while the user is waiting on the queue: isStreaming=true AND
+  // no tokens have arrived yet. Sidecar returns position=-1 when our message
+  // isn't (or no longer is) in the queue, which means either the backend has
+  // started streaming (token event will land soon) or our send() POST hasn't
+  // reached the queue yet. We treat -1 as "drop the indicator" — the token
+  // listener will set its own queue=null on the first token arrival.
+  useEffect(() => {
+    if (!isStreaming || streamingText) {
+      // Not waiting on the queue (idle, or already receiving tokens).
+      return
+    }
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const res = await fetch(`/internal/queue/position/${encodeURIComponent(sessionToken)}`)
+        if (!res.ok) return
+        const data = await res.json() as { position: number; total: number }
+        if (cancelled) return
+        if (typeof data.position === 'number' && data.position >= 0) {
+          setQueuePosition(data.position)
+        } else {
+          setQueuePosition(null)
+        }
+      } catch {
+        // Sidecar blip — keep showing the last known position.
+      }
+    }
+    poll()
+    const id = window.setInterval(poll, QUEUE_POLL_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [isStreaming, streamingText, sessionToken])
 
   // --- Session status poll (guardrails + ended flag) ---
 
@@ -338,6 +417,49 @@ export default function ChatShell({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
+    }
+  }
+
+  // --- Stop (Sprint 13) ---
+  //
+  // Two-channel cancel: optimistic UI close + server signal so the backend
+  // aborts mid-stream within ~1-2 s. The server will eventually push a
+  // `cancelled` SSE event; if it arrives before our optimistic close already
+  // fired, the listener handles cleanup. If the network already disconnected
+  // (frontend offline / sidecar restart), the optimistic path still resets
+  // the UI so the user isn't stuck.
+  const stopStream = async () => {
+    if (!isStreaming || stopRequested) return
+    setStopRequested(true)
+    // Optimistic UI: render whatever partial assistant text we already have
+    // with a "(cancelled)" tail and unlock the input. The matching `cancelled`
+    // event from the backend, when it arrives, will be a no-op because the
+    // EventSource is already closed.
+    const partial = streamingTextRef.current
+    if (partial) {
+      const tag = ` ${t('chat_cancelled_suffix', lang)}`
+      setMessages(prev => [...prev, {
+        role: isSummaryStreamRef.current ? 'summary' : 'assistant',
+        content: partial + tag,
+      }])
+    }
+    streamingTextRef.current = ''
+    setStreamingText('')
+    setIsStreaming(false)
+    setQueuePosition(null)
+    isSummaryStreamRef.current = false
+    setIsSummaryStream(false)
+    eventSourceRef.current?.close()
+    eventSourceRef.current = null
+    try {
+      await fetch(`/internal/chat/cancel/${encodeURIComponent(sessionToken)}`, {
+        method: 'POST',
+      })
+    } catch {
+      // Network blip — UI is already unlocked locally; the backend's stream
+      // (if still alive) will fall through inactivity timeout in 60 s.
+    } finally {
+      setStopRequested(false)
     }
   }
 
@@ -470,15 +592,17 @@ export default function ChatShell({
         )}
         {isStreaming && !streamingText && (
           // HRDD-style activity bubble: makes it visually obvious the system
-          // hasn't hung. Pulsing dot + label that switches between "preparing"
-          // (haven't seen a token yet) and "thinking" (i18n default), so the
-          // user can tell the difference between "still warming up" and
-          // "actively generating but slow first token".
+          // hasn't hung. Pulsing dot + label that switches between "thinking"
+          // and the Sprint 13 queue-position indicator when applicable.
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-lg px-4 py-3 bg-white border border-gray-200 text-gray-600">
               <div className="flex items-center gap-2 text-sm">
                 <span className="inline-block w-2 h-2 bg-uni-blue rounded-full animate-pulse" />
-                {t('chat_thinking', lang)}
+                {queuePosition !== null && queuePosition > 0
+                  ? t('chat_queued', lang).replace('{n}', String(queuePosition))
+                  : queuePosition === 0
+                    ? t('chat_queued_alone', lang)
+                    : t('chat_thinking', lang)}
               </div>
             </div>
           </div>
@@ -560,12 +684,28 @@ export default function ChatShell({
                 </button>
               )}
             </div>
-            <button type="button" onClick={send}
-              disabled={inputDisabled || (!input.trim() && !attachments.some(a => a.status === 'ready'))}
-              className="text-sm bg-uni-blue text-white rounded-lg px-4 py-1.5 hover:opacity-90 disabled:opacity-50"
-            >
-              {t('chat_send', lang)}
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Sprint 13 — Stop button. Visible during streaming as soon as
+                  the user sends a message; lets them abort cleanly instead of
+                  killing the chat. Hidden when not streaming so the layout
+                  stays calm during normal use. */}
+              {isStreaming && !sessionEnded && (
+                <button type="button" onClick={stopStream}
+                  disabled={stopRequested}
+                  className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-50 inline-flex items-center gap-1.5"
+                  aria-label={t('chat_stop', lang)}
+                >
+                  <span className="inline-block w-2.5 h-2.5 bg-gray-700 rounded-sm" />
+                  {t('chat_stop', lang)}
+                </button>
+              )}
+              <button type="button" onClick={send}
+                disabled={inputDisabled || (!input.trim() && !attachments.some(a => a.status === 'ready'))}
+                className="text-sm bg-uni-blue text-white rounded-lg px-4 py-1.5 hover:opacity-90 disabled:opacity-50"
+              >
+                {t('chat_send', lang)}
+              </button>
+            </div>
           </div>
         </div>
       )}

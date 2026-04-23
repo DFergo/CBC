@@ -275,6 +275,12 @@ export interface LLMConfig {
   summariser: SlotConfig
   compression: CompressionSettings
   routing: RoutingToggles
+  // Sprint 13 — when true, the backend nudges the runtime to suppress
+  // reasoning/<think> tokens (think:false on Ollama, /no_think on LM Studio,
+  // system-prompt hint everywhere, post-stream tag stripping). Defaults to
+  // true for new configs; existing JSON files without the field migrate to
+  // true on first load. Harmless no-op for non-thinking models.
+  disable_thinking: boolean
 }
 
 export interface SlotHealth {
