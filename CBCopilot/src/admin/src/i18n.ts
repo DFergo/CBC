@@ -169,7 +169,7 @@ export type AdminTranslationKeys =
   | 'llm_context_first_threshold' | 'llm_context_step_size'
   | 'llm_summary_routing' | 'llm_summary_routing_description'
   | 'llm_summary_document' | 'llm_summary_final'
-  | 'llm_disable_thinking' | 'llm_disable_thinking_description'
+  | 'llm_thinking_mode' | 'llm_thinking_mode_description'
   | 'llm_max_concurrent_turns' | 'llm_max_concurrent_turns_description'
   | 'llm_save_config' | 'llm_check_health' | 'llm_refresh_providers'
   // SMTP section
@@ -490,8 +490,8 @@ const EN: AdminTranslations = {
   llm_summary_routing_description: 'Pick which slot handles each summarisation task. The compressor can be used here too — any slot works.',
   llm_summary_document: 'Document summary on injection',
   llm_summary_final: 'Final conversation summary',
-  llm_disable_thinking: 'Disable reasoning / think mode',
-  llm_disable_thinking_description: 'Suppresses <think> reasoning tokens before they reach the user. Recommended ON: cuts first-token latency on qwen3 / deepseek-r1 family models, harmless no-op for models without a thinking mode (gemma, llama, mistral). Applies to whichever runtime each slot points to (Ollama, LM Studio, or API).',
+  llm_thinking_mode: 'Thinking / Reasoning',
+  llm_thinking_mode_description: 'OFF (recommended) = model answers directly; reasoning tokens are suppressed and, if any slip through, stripped before they reach the user. Cuts first-token latency dramatically on qwen3 / deepseek-r1 family models. ON = model emits its <think> reasoning prelude into the chat. Harmless either way for models without a thinking mode (gemma, llama, mistral).',
   llm_max_concurrent_turns: 'Max concurrent turns (backend-wide)',
   llm_max_concurrent_turns_description: 'Maximum number of chat turns the backend will process in parallel, total across all frontends. Must match the per-model Parallel setting of the inference runtime: OLLAMA_NUM_PARALLEL (set in the Ollama server env) or LM Studio\'s Parallel value. If this cap is HIGHER than the runtime\'s, excess turns queue INSIDE the runtime with no queue indicator in CBC. If this cap is LOWER, the runtime\'s slots go under-used. 1 = serial processing (one conversation at a time); 4 = typical; 6 = heavy deployment.',
   llm_save_config: 'Save LLM config',
@@ -886,8 +886,8 @@ const ES: AdminTranslations = {
   llm_summary_routing_description: 'Seleccione qué ranura gestiona cada tarea de resumen. También puede usarse el Compressor — cualquier ranura es válida.',
   llm_summary_document: 'Resumen de documento al inyectarlo',
   llm_summary_final: 'Resumen final de la conversación',
-  llm_disable_thinking: 'Desactivar reasoning / think',
-  llm_disable_thinking_description: 'Suprime los tokens de razonamiento <think> antes de que lleguen al usuario. Recomendado activado: reduce la latencia hasta el primer token en modelos qwen3 / deepseek-r1, y es inofensivo en modelos sin modo thinking (gemma, llama, mistral). Se aplica al runtime que cada slot apunte (Ollama, LM Studio o API).',
+  llm_thinking_mode: 'Thinking / Reasoning',
+  llm_thinking_mode_description: 'OFF (recomendado) = el modelo responde directo; los tokens de razonamiento se suprimen en el request y, si alguno escapa, se filtra antes de mostrarlo. Reduce bastante la latencia hasta el primer token en modelos qwen3 / deepseek-r1. ON = el modelo emite su prelude <think> de razonamiento dentro del chat. Inofensivo en modelos sin modo thinking (gemma, llama, mistral) — el toggle no tiene efecto visible en ellos.',
   llm_max_concurrent_turns: 'Máximo de turnos simultáneos (todo el backend)',
   llm_max_concurrent_turns_description: 'Número máximo de turnos de chat que el backend procesa en paralelo, sumando todos los frontends. Debe coincidir con el Parallel por modelo del runtime de inferencia: OLLAMA_NUM_PARALLEL (env del servidor Ollama) o el Parallel de LM Studio. Si este límite es MAYOR que el del runtime, los turnos extra se encolan DENTRO del runtime sin indicador visible en CBC. Si es MENOR, los slots del runtime se infrautilizan. 1 = serial (una conversación a la vez); 4 = típico; 6 = despliegue con carga alta.',
   llm_save_config: 'Guardar configuración LLM',

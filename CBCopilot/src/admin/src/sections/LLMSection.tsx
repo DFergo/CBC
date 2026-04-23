@@ -142,23 +142,26 @@ export default function LLMSection() {
         ))}
       </div>
 
-      {/* Sprint 13 — Disable reasoning / think toggle. Behavioural flag that
-          applies to all three slots regardless of provider. Defaults ON. */}
+      {/* Sprint 13 / Sprint 14 fix — Thinking / Reasoning toggle. Semantics
+          expressed as ON/OFF on the switch to match the adjacent dropdown
+          and avoid the double-negative confusion of "disable thinking". OFF
+          is the default and keeps reasoning out of the chat; ON lets the
+          model emit its <think> prelude. Applies across all slots regardless
+          of provider. Backend field stays `disable_thinking` (inverted here). */}
       <div className="mt-6 border border-gray-200 rounded-lg p-4">
         <div className="flex items-center justify-between mb-1">
-          <h4 className="text-sm font-semibold text-gray-700">{t('llm_disable_thinking')}</h4>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={cfg.disable_thinking}
-              onChange={e => setCfg(c => c ? { ...c, disable_thinking: e.target.checked } : c)}
-              className="rounded border-gray-300"
-            />
-            {t('llm_context_enabled')}
-          </label>
+          <h4 className="text-sm font-semibold text-gray-700">{t('llm_thinking_mode')}</h4>
+          <select
+            value={cfg.disable_thinking ? 'off' : 'on'}
+            onChange={e => setCfg(c => c ? { ...c, disable_thinking: e.target.value === 'off' } : c)}
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+          >
+            <option value="off">OFF</option>
+            <option value="on">ON</option>
+          </select>
         </div>
         <p className="text-xs text-gray-500">
-          {t('llm_disable_thinking_description')}
+          {t('llm_thinking_mode_description')}
         </p>
       </div>
 
