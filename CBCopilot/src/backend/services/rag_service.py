@@ -184,6 +184,13 @@ def _setup_settings() -> None:
 def _get_chroma_collection() -> Any:
     """Lazy-init the persistent Chroma client + the single shared collection
     that holds every scope's chunks. Returned object is a ``chromadb`` Collection.
+
+    `allow_reset=True` in Settings lets `wipe_chroma_and_reindex_all()` call
+    `client.reset()` to fully clear in-memory state AND on-disk data in one
+    atomic step — without this, reset() silently no-ops (chromadb's default
+    safeguard) and a subsequent rmtree leaves the client's cached collection
+    schema in a broken state (e.g. a 384-dim collection trying to accept
+    1024-dim embeddings from a swapped embedder).
     """
     global _chroma_client, _chroma_collection
     if _chroma_collection is not None:
@@ -191,8 +198,12 @@ def _get_chroma_collection() -> Any:
     with _chroma_lock:
         if _chroma_collection is None:
             import chromadb
+            from chromadb.config import Settings as ChromaSettings
             CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-            _chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+            _chroma_client = chromadb.PersistentClient(
+                path=str(CHROMA_DIR),
+                settings=ChromaSettings(allow_reset=True),
+            )
             _chroma_collection = _chroma_client.get_or_create_collection(
                 name=CHROMA_COLLECTION_NAME,
                 metadata={"hnsw:space": "cosine"},
@@ -626,19 +637,24 @@ def wipe_chroma_and_reindex_all() -> dict[str, Any]:
     - Chunk size change produces a different set of nodes; keeping legacy
       chunks alongside new ones would confuse retrieval and double-count.
 
+    Sprint 15 phase 3.1 rewrite — the original shutil.rmtree approach left
+    chromadb's in-memory client with a stale cached collection schema,
+    producing "Collection expecting dim 384, got 1024" errors after every
+    wipe. Fix: require `client.reset()` to succeed (which needs the client
+    initialised with `allow_reset=True`) — it atomically clears in-memory
+    state AND on-disk data. Only if reset fails do we fall back to rmtree.
+
     Steps:
-    1. Invalidate every in-memory cache (LlamaIndex wrappers, BM25 retrievers,
-       embed_model, reranker) so the next `_get_embed_model()` re-reads
-       `config.rag_embedding_model` and `_setup_settings()` picks up the
-       new `config.rag_chunk_size`.
-    2. Close the Chroma client and `rm -rf` its data dir. Re-open on next
-       `_get_chroma_collection()` call — a fresh, empty collection that
-       accepts whichever embedding dim we produce.
-    3. Call `reindex_all_scopes()` to re-ingest every document with the
-       new settings.
+    1. Drop every in-memory cache so the next call picks up new config.
+    2. Call `client.reset()` — atomic wipe of in-memory + on-disk state.
+       Belt-and-braces rmtree after, in case reset missed a directory.
+    3. Call `reindex_all_scopes()` and raise if any scope fails, so the
+       admin UI surfaces the problem instead of showing a false-positive
+       "done" state over a broken index.
 
     Returns: `{"scopes_reindexed": N, "stats": [...], "embedding_model": ...,
-               "chunk_size": ...}`
+               "chunk_size": ...}` when every scope ingested successfully.
+    Raises on any ingestion failure — partial states are never acceptable.
     """
     global _chroma_client, _chroma_collection, _embed_model, _reranker
     import shutil
@@ -658,27 +674,41 @@ def wipe_chroma_and_reindex_all() -> dict[str, Any]:
     with _reranker_lock:
         _reranker = None
 
-    # 2. Close + wipe Chroma on disk.
+    # 2. Nuke Chroma. `client.reset()` is the supported path (allow_reset=True
+    #    in the client Settings, see _get_chroma_collection). Fall back to
+    #    manual rmtree only if reset fails.
     with _chroma_lock:
-        try:
-            if _chroma_client is not None:
-                # chromadb has no public .close(); dropping references +
-                # rm-rf'ing the dir is the supported path in PersistentClient
-                _chroma_client.reset()  # clears collections the client knows about
-        except Exception as e:
-            logger.warning(f"Chroma client reset failed (non-fatal): {e}")
+        reset_ok = False
+        if _chroma_client is not None:
+            try:
+                _chroma_client.reset()
+                reset_ok = True
+                logger.info("Chroma client.reset() succeeded — in-memory + on-disk cleared")
+            except Exception as e:
+                logger.warning(f"Chroma client.reset() failed, falling back to rmtree: {e}")
         _chroma_client = None
         _chroma_collection = None
-        if CHROMA_DIR.exists():
+        if not reset_ok and CHROMA_DIR.exists():
             try:
                 shutil.rmtree(CHROMA_DIR, ignore_errors=False)
+                logger.info(f"Fallback rmtree of {CHROMA_DIR} succeeded")
             except OSError as e:
                 logger.error(f"Could not remove chroma dir {CHROMA_DIR}: {e}")
                 raise
 
-    # 3. Rebuild every scope. `_get_chroma_collection()` will create a fresh
+    # 3. Rebuild every scope. `_get_chroma_collection()` creates a fresh
     #    collection on demand when `reindex()` calls `_scope_index_wrapper()`.
+    #    Critically: every scope's ingest must succeed — a mixed state where
+    #    some scopes embedded fine and others errored is worse than failing
+    #    loudly and forcing the admin to retry.
     stats = reindex_all_scopes()
+    errs = [s for s in stats if s.get("error")]
+    if errs:
+        err_summary = "; ".join(f"{s['scope_key']}: {s['error']}" for s in errs[:5])
+        raise RuntimeError(
+            f"{len(errs)}/{len(stats)} scopes failed to reindex after wipe. "
+            f"First failures: {err_summary}"
+        )
 
     return {
         "scopes_reindexed": len(stats),
