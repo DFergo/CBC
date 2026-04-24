@@ -347,13 +347,37 @@ when applicable. Answer ONLY with the succinct context, no preamble.\
 """
 
 
+# Persistent single-worker thread pool used to offload the per-chunk async
+# LLM call into a separate thread that can safely start its own event loop
+# via asyncio.run(). Needed because the original `asyncio.new_event_loop()`
+# + `run_until_complete()` approach failed with "Cannot run the event loop
+# while another loop is running" when the caller is itself inside an async
+# context (the FastAPI admin endpoint that toggles contextual retrieval).
+# A single worker keeps chunk processing sequential — concurrent calls to
+# the summariser LLM would compete for the same slot at the runtime anyway.
+_ctx_executor: "concurrent.futures.ThreadPoolExecutor | None" = None
+
+
+def _get_ctx_executor() -> "concurrent.futures.ThreadPoolExecutor":
+    global _ctx_executor
+    import concurrent.futures
+    if _ctx_executor is None:
+        _ctx_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="ctxret",
+        )
+    return _ctx_executor
+
+
 def _generate_chunk_context(document_text: str, chunk_text: str) -> str:
-    """One synchronous call to the summariser slot to produce a context line.
+    """Synchronously get a context line for one chunk from the summariser slot.
     Errors are swallowed — we return "" so the chunk still indexes without
     enrichment rather than blocking the whole reindex on a transient LLM hiccup.
 
-    Uses a private event loop so this works whether the caller is on the
-    FastAPI main loop (admin reindex) or a background thread (file watcher).
+    Runs the async `llm_provider.chat()` call inside a dedicated worker thread
+    with its own event loop (via `asyncio.run()`). Works whether the caller is
+    on the FastAPI main loop (admin reindex) or a pure sync background (file
+    watcher), which the previous `asyncio.new_event_loop()` path did not.
     """
     import asyncio
 
@@ -362,30 +386,34 @@ def _generate_chunk_context(document_text: str, chunk_text: str) -> str:
     doc_excerpt = (document_text or "")[: backend_config.rag_contextual_max_doc_chars]
     prompt = _CONTEXT_PROMPT.format(document=doc_excerpt, chunk=chunk_text)
     messages = [{"role": "user", "content": prompt}]
+
+    def _call() -> str:
+        # asyncio.run() creates a fresh event loop in THIS thread. Since the
+        # executor runs us in a separate thread from the FastAPI main loop,
+        # there is no running-loop conflict.
+        return asyncio.run(
+            llm_provider.chat(messages, slot="summariser", frontend_id=None)
+        )
+
     try:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(
-                llm_provider.chat(messages, slot="summariser", frontend_id=None)
-            )
-        finally:
-            loop.close()
+        return _get_ctx_executor().submit(_call).result()
     except Exception as e:
         logger.warning(f"Contextual enrichment failed for one chunk: {e}")
         return ""
 
 
-def _contextualise_nodes(nodes: list[Any], documents: list[Any]) -> None:
+def _contextualise_nodes(nodes: list[Any], documents: list[Any]) -> int:
     """Mutate `nodes` in place — prepend an LLM-generated context line to each
-    node's text. Per-document text is fetched from `documents` by file_name
-    so chunks know what's around them.
+    node's text. Returns the count of chunks that actually got enriched so
+    the caller can detect total-failure scenarios (e.g. the asyncio bug that
+    hit every chunk in Sprint 15 phase 4).
 
     Cost: one LLM call per chunk. With ~25 chunks per doc and a local summariser
     at 10-30 s per call, expect 5-15 minutes per document. Surface progress in
     the log so admins see it isn't stuck.
     """
     if not nodes:
-        return
+        return 0
     # Index documents by file_name for quick lookup
     doc_by_file: dict[str, str] = {}
     for d in documents:
@@ -408,6 +436,7 @@ def _contextualise_nodes(nodes: list[Any], documents: list[Any]) -> None:
             enriched += 1
         if (i + 1) % 5 == 0 or (i + 1) == total:
             logger.info(f"Contextual enrichment: {i + 1}/{total} chunks ({enriched} enriched)")
+    return enriched
 
 
 def _scope_index_wrapper(scope_key: str) -> Any:
@@ -474,7 +503,17 @@ def _build_index(scope_key: str) -> Any | None:
                 f"Contextual enrichment ON — generating context for "
                 f"{len(nodes)} chunks in scope {scope_key} (this will take a while)"
             )
-            _contextualise_nodes(nodes, documents)
+            enriched = _contextualise_nodes(nodes, documents)
+            # Safety net: if CR is on but literally every chunk's LLM call
+            # failed, the reindex would silently produce a plain (non-CR)
+            # index while the admin thinks they turned enrichment on. Raise
+            # here so the endpoint surfaces the problem and can roll back.
+            if nodes and enriched == 0:
+                raise RuntimeError(
+                    f"Contextual enrichment produced 0 enriched chunks out of "
+                    f"{len(nodes)} for scope {scope_key}. Check summariser slot "
+                    f"health + backend logs for per-chunk errors."
+                )
 
         # Drop existing chunks for this scope so we don't accumulate ghosts
         # on re-ingest. Then insert fresh nodes via LlamaIndex's wrapper —
