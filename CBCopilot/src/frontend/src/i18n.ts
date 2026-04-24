@@ -86,6 +86,7 @@ export type TranslationKeys =
   | 'citations_panel_open' | 'citations_download' | 'citations_downloading'
   | 'citations_download_failed'
   | 'citations_tier_global' | 'citations_tier_frontend' | 'citations_tier_company'
+  | 'citations_table_badge' | 'citations_table_rows'
 
 export type Translations = Partial<Record<TranslationKeys, string>>
 
@@ -204,6 +205,8 @@ const EN: Translations = {
   citations_tier_global: 'Global',
   citations_tier_frontend: 'Frontend',
   citations_tier_company: 'Company',
+  citations_table_badge: 'Table',
+  citations_table_rows: '{n} rows',
 }
 
 // --- Spanish ---
@@ -311,6 +314,8 @@ const ES: Translations = {
   citations_tier_global: 'Global',
   citations_tier_frontend: 'Frontend',
   citations_tier_company: 'Empresa',
+  citations_table_badge: 'Tabla',
+  citations_table_rows: '{n} filas',
 }
 
 // --- French ---

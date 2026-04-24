@@ -62,6 +62,15 @@ export interface CitationSource {
   // Phase B — per-source locator hints ("p. 14", "Art. 12") that were
   // surfaced to the LLM. Undefined when citations are off for the frontend.
   labels?: string[]
+  // Sprint 16 — when set to "table" this entry represents an extracted
+  // structured table, not a source document. The panel renders it with a
+  // different style and the action is "preview CSV" instead of "download
+  // document".
+  kind?: 'table' | string
+  table_id?: string
+  table_name?: string
+  source_location?: string
+  row_count?: number
 }
 
 export interface Company {

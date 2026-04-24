@@ -15,6 +15,7 @@ from src.api.v1.admin.auth import router as auth_router
 from src.api.v1.admin.companies import router as companies_router
 from src.api.v1.admin.prompts import router as prompts_router
 from src.api.v1.admin.rag import router as rag_router
+from src.api.v1.admin.tables import router as tables_router
 from src.api.v1.admin.knowledge import router as knowledge_router
 from src.api.v1.admin.llm import router as llm_router
 from src.api.v1.admin.smtp import router as smtp_router
@@ -102,6 +103,7 @@ app.include_router(frontends_router)
 app.include_router(companies_router)
 app.include_router(prompts_router)
 app.include_router(rag_router)
+app.include_router(tables_router)
 app.include_router(knowledge_router)
 app.include_router(llm_router)
 app.include_router(smtp_router)

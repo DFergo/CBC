@@ -28,3 +28,8 @@ llama-index-vector-stores-chroma>=0.4
 sentence-transformers>=2.2
 docx2txt>=0.8
 watchdog>=4.0
+# Sprint 16 — Structured Table Pipeline. pdfplumber extracts tables from vector
+# PDFs (returns empty for scanned / image-only PDFs, which we accept as
+# low-fidelity). Pure Python except pdfminer.six, no native extensions → no
+# Dockerfile pre-download step needed; pip install is enough.
+pdfplumber>=0.11

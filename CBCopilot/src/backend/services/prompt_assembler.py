@@ -319,6 +319,51 @@ def _render_chunks(
     return "\n".join(lines)
 
 
+def _tier_for_scope(scope_key: str) -> str:
+    """Mirror of rag_service._tier_for for the assembler's source list —
+    cheaper than importing a private helper."""
+    if not scope_key or scope_key == "global":
+        return "global"
+    return "company" if "/" in scope_key else "frontend"
+
+
+# --- Sprint 16 — Structured tables block ---------------------------------
+
+# Per-table cap on CSV length in the injected prompt. 6 000 chars ≈ 1 500
+# tokens — generous for CBA salary tables (30 rows × 5 cols fits in ~3 000
+# chars) while bounding the worst case. CSVs that overflow get a terminal
+# note the LLM understands as "go check the source doc".
+_MAX_CHARS_PER_TABLE = 6000
+
+
+def _render_tables(table_hits: list[dict[str, Any]]) -> str:
+    """Render retrieved table cards + their CSV content into a prompt section.
+    Empty list → empty string (no section, no heading)."""
+    if not table_hits:
+        return ""
+    lines = ["## Relevant tables"]
+    for t in table_hits:
+        name = t.get("name") or "Table"
+        doc = t.get("doc_name") or ""
+        loc = t.get("source_location") or ""
+        csv = t.get("csv_text") or ""
+        if len(csv) > _MAX_CHARS_PER_TABLE:
+            csv = csv[: _MAX_CHARS_PER_TABLE].rstrip()
+            csv += "\n[... table truncated — see source document ...]"
+        header = f"\n### Table: {name}"
+        if doc:
+            header += f"  (source: {doc}"
+            if loc:
+                header += f", {loc}"
+            header += ")"
+        lines.append(header)
+        # CSV fenced so models treat it as data, not markdown to interpret.
+        lines.append("```csv")
+        lines.append(csv.strip())
+        lines.append("```")
+    return "\n".join(lines)
+
+
 def _chunk_citation_labels(chunks: list[rag_service.Chunk], max_chunks: int) -> dict[str, list[str]]:
     """Group citation labels by source filename, preserving order, deduped.
     Shipped to the frontend in the `sources` SSE event so the panel can show
@@ -380,6 +425,22 @@ def assemble(
     )
     rag_text = _render_chunks(chunks, max_chunks=max_rag_chunks, cite_inline=cite_inline)
 
+    # Sprint 16 — parallel lookup in `cbc_tables` for structured tables
+    # relevant to the query. top_k=2 by default; a salary query typically
+    # wants only the salary-base table plus maybe the overtime multiplier.
+    # Top_k doubled for Compare All because each company contributes.
+    table_hits: list[dict[str, Any]] = []
+    if q:
+        tables_top_k = 4 if is_compare_all else 2
+        try:
+            scope_keys_for_tables = [p["scope_key"] or "global" for p in rag_paths]
+            table_hits = rag_service.query_tables(
+                scope_keys_for_tables, q, top_k=tables_top_k
+            )
+        except Exception as e:
+            logger.warning(f"query_tables call failed: {e}")
+    tables_text = _render_tables(table_hits)
+
     layers = {
         "core": core_text,
         "guardrails": guardrails_text,
@@ -388,8 +449,14 @@ def assemble(
         "glossary": glossary_text,
         "organizations": orgs_text,
         "rag": rag_text,
+        "tables": tables_text,
     }
-    ordered = [v for v in (core_text, guardrails_text, role_text, context_text, glossary_text, orgs_text, rag_text) if v]
+    ordered = [
+        v for v in (
+            core_text, guardrails_text, role_text, context_text,
+            glossary_text, orgs_text, rag_text, tables_text,
+        ) if v
+    ]
     text = "\n\n".join(ordered).strip()
     # Dedup sources preserving first-seen order. Chunks beyond `max_rag_chunks`
     # are not part of the prompt so they don't belong in the citation list.
@@ -413,6 +480,20 @@ def assemble(
             if cite_inline and labels_by_source.get(c.source):
                 entry["labels"] = labels_by_source[c.source]
             sources.append(entry)
+    # Sprint 16 — table citations. Each retrieved table becomes an entry
+    # distinguishable from prose sources by the `kind: "table"` key and
+    # carrying `table_id` so the frontend sidepanel can previe w the CSV.
+    for t in table_hits:
+        sources.append({
+            "kind": "table",
+            "scope_key": t.get("scope_key") or "",
+            "filename": t.get("doc_name") or "",
+            "tier": _tier_for_scope(t.get("scope_key") or ""),
+            "table_id": t.get("table_id") or "",
+            "table_name": t.get("name") or "",
+            "source_location": t.get("source_location") or "",
+            "row_count": t.get("row_count") or 0,
+        })
     # Sprint 15 observability: per-section size breakdown. Daniel's Sprint 14
     # follow-up surfaced a bloated "rag" section (125 k of a 133 k total) that
     # was masked by the single summary line in the caller. With this log line

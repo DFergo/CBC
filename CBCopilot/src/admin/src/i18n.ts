@@ -66,7 +66,13 @@ export type AdminTranslationKeys =
   // General tab — section titles
   | 'section_branding' | 'section_prompts' | 'section_rag' | 'section_rag_pipeline'
   | 'section_glossary' | 'section_organizations' | 'section_llm' | 'section_smtp'
-  | 'section_guardrails'
+  | 'section_guardrails' | 'section_tables'
+  // Tables section (Sprint 16)
+  | 'tables_heading' | 'tables_description'
+  | 'tables_reextract' | 'tables_reextracting' | 'tables_reextract_done'
+  | 'tables_empty' | 'tables_summary'
+  | 'tables_doc_count' | 'tables_doc_zero_warning'
+  | 'tables_rows' | 'tables_download'
   // Branding
   | 'branding_defaults_heading' | 'branding_defaults_description'
   | 'branding_enable_defaults' | 'branding_custom_badge' | 'branding_baseline_badge'
@@ -301,6 +307,7 @@ const EN: AdminTranslations = {
   section_prompts: 'Prompts',
   section_rag: 'RAG documents',
   section_rag_pipeline: 'RAG pipeline',
+  section_tables: 'Tables',
   section_glossary: 'Glossary',
   section_organizations: 'Organizations',
   section_llm: 'LLM configuration',
@@ -415,6 +422,18 @@ const EN: AdminTranslations = {
   rag_pipeline_wipe_done: 'Wiped. Reindexed {count} scopes.',
   rag_pipeline_pending_apply_title: 'Settings saved but NOT applied to the index',
   rag_pipeline_pending_apply_body: 'The new embedder / chunk size are in backend config, but live queries are still using the PREVIOUS settings. Click Wipe & Reindex All below to rebuild every scope against the new values. Until you do, retrieval quality will match the old configuration.',
+  // Tables (Sprint 16)
+  tables_heading: 'Extracted tables',
+  tables_description: 'Tables auto-extracted from documents at ingest. Matching tables are injected verbatim into the chat context when users ask table-shaped questions (salaries, shift rates, etc.).',
+  tables_reextract: 'Re-extract tables',
+  tables_reextracting: 'Re-extracting…',
+  tables_reextract_done: 'Done — {n} tables in this scope',
+  tables_empty: 'No tables extracted for this scope yet. Upload a document with pipe-tables (markdown) or a vector PDF, then click Re-extract.',
+  tables_summary: '{tables} tables across {docs} documents',
+  tables_doc_count: '{n} tables',
+  tables_doc_zero_warning: '0 tables extracted — document may be scanned (image-only PDF) or contain no tables.',
+  tables_rows: '{n} rows',
+  tables_download: 'Download CSV',
   // Sessions
   sessions_title: 'Sessions',
   sessions_filter_all: 'All',
@@ -714,6 +733,7 @@ const ES: AdminTranslations = {
   section_prompts: 'Prompts',
   section_rag: 'Documentos RAG',
   section_rag_pipeline: 'Pipeline RAG',
+  section_tables: 'Tablas',
   section_glossary: 'Glosario',
   section_organizations: 'Organizaciones',
   section_llm: 'Configuración LLM',
@@ -828,6 +848,18 @@ const ES: AdminTranslations = {
   rag_pipeline_wipe_done: 'Borrado. {count} scopes re-indexados.',
   rag_pipeline_pending_apply_title: 'Configuración guardada pero NO aplicada al índice',
   rag_pipeline_pending_apply_body: 'El nuevo embedder / chunk size están en la configuración del backend, pero las consultas en vivo siguen usando la configuración ANTERIOR. Pulsa Wipe & Reindex All abajo para reconstruir todos los scopes con los nuevos valores. Hasta entonces, la calidad de retrieval será la de la configuración antigua.',
+  // Tables (Sprint 16)
+  tables_heading: 'Tablas extraídas',
+  tables_description: 'Tablas extraídas automáticamente al ingerir los documentos. Cuando el usuario hace preguntas sobre tablas (salarios, turnos…), las tablas relevantes se inyectan verbatim en el prompt.',
+  tables_reextract: 'Re-extraer tablas',
+  tables_reextracting: 'Re-extrayendo…',
+  tables_reextract_done: 'Hecho — {n} tablas en este scope',
+  tables_empty: 'No hay tablas extraídas todavía en este scope. Sube un documento con tablas markdown (|---|---|) o un PDF vectorial y pulsa Re-extraer.',
+  tables_summary: '{tables} tablas en {docs} documentos',
+  tables_doc_count: '{n} tablas',
+  tables_doc_zero_warning: '0 tablas extraídas — puede que el documento sea escaneado (PDF sólo imagen) o no contenga tablas.',
+  tables_rows: '{n} filas',
+  tables_download: 'Descargar CSV',
   // Sessions
   sessions_title: 'Sesiones',
   sessions_filter_all: 'Todas',

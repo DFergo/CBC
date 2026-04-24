@@ -209,6 +209,50 @@ export async function saveDocMetadata(filename: string, patch: DocMetadata, fron
   })
 }
 
+// --- Sprint 16: Tables ---
+
+export interface TableCard {
+  id: string
+  name: string
+  description: string
+  source_location: string
+  columns: string[]
+  row_count: number
+  preview_rows: string[][]
+}
+
+export interface TableDocGroup {
+  doc_name: string
+  tables: TableCard[]
+}
+
+export interface TablesForScope {
+  scope_key: string
+  docs: TableDocGroup[]
+  doc_count: number
+  total_tables: number
+}
+
+export async function listTables(frontendId?: string, companySlug?: string): Promise<TablesForScope> {
+  return request(`/admin/api/v1/tables${ragQuery(frontendId, companySlug)}`)
+}
+
+export async function reextractTables(frontendId?: string, companySlug?: string): Promise<{ status: string; scope_key: string; total_tables: number }> {
+  return request(`/admin/api/v1/tables/reextract${ragQuery(frontendId, companySlug)}`, { method: 'POST' })
+}
+
+export function tableCsvUrl(scope: { frontendId?: string; companySlug?: string }, docName: string, tableId: string): string {
+  const encDoc = encodeURIComponent(docName)
+  const encId = encodeURIComponent(tableId)
+  if (scope.frontendId && scope.companySlug) {
+    return `/admin/api/v1/tables/${encodeURIComponent(scope.frontendId)}/${encodeURIComponent(scope.companySlug)}/${encDoc}/${encId}.csv`
+  }
+  if (scope.frontendId) {
+    return `/admin/api/v1/tables-frontend/${encodeURIComponent(scope.frontendId)}/${encDoc}/${encId}.csv`
+  }
+  return `/admin/api/v1/tables-global/${encDoc}/${encId}.csv`
+}
+
 // --- Knowledge ---
 
 export interface GlossaryTerm {

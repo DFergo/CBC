@@ -158,3 +158,34 @@ At the same time, this Mac Studio serves two apps (CBC + HRDD) running on the sa
 - HRDD Helper has the same serial-polling pattern and will benefit from an identical port (Sprint 14's closing deliverable is a handoff prompt for a Claude-in-HRDD session).
 
 **Revisit if:** usage patterns shift to many simultaneous document-heavy Compare All queries (memory may become the cap before NUM_PARALLEL does), or if Ollama's concurrency model changes upstream (e.g., per-request num_ctx instead of model-load-time).
+
+---
+
+## ADR-009: Structured Table Pipeline as Complement to Vector RAG (Sprint 16)
+
+**Decision:** For tabular data (salary schedules, overtime rates, shift matrices), bypass the vector-RAG path entirely. Extract every table from the source document at ingest, persist each one as a standalone CSV on disk, embed a small metadata card (name + description + source_location + columns) into a separate Chroma collection `cbc_tables`, and at query time inject the matched table's raw CSV verbatim into the system prompt under a `## Relevant tables` section. Prose chunks continue to flow through the existing `cbc_chunks` collection unchanged.
+
+**Context:** Sprint 15's chunker fix reduced prompt bloat from ~133 k to ~25 k chars and TTFT from ~30 s to ~5 s. But Daniel's QA on the Amcor Lezo CBA still surfaced a predictable failure: queries like "dame la tabla salarial" returned prose paraphrases with approximate numbers, sometimes hallucinated (`Amfor_Flexibles` instead of `Amcor_Flexibles`). The root cause is structural, not a bug: BGE-M3 embeds a 30-row × 6-column salary grid as one opaque vector that carries number-structure noise, losing to prose chunks that *talk about* salaries without containing them. Contextual Retrieval (Sprint 9) helps prose but doesn't rescue tables either. At 200+ CBAs this becomes existential — the product's most concrete use case (cross-company salary comparisons) degrades as the corpus grows.
+
+A reference implementation from a sibling project (Loveland's CBA bot) showed the approach: treat tables as structured data, store them as CSV, retrieve via metadata cards, inject raw content. Clean separation: prose RAG handles "what does the CBA say about flexibility?", table pipeline handles "what is the Group 3 base wage?".
+
+**Alternatives considered:**
+- **LLM-summarise each table into a descriptive paragraph, embed that as an extra prose chunk.** Pays one LLM call per table at ingest. Works but (a) numbers get paraphrased again, defeating the point, (b) "the table has entries ranging from €17 to €22" is worse than the raw 30 rows when the user wants to compute an average.
+- **Keep the table inline as text in a prose chunk, bump chunk size to avoid truncation.** Tested at Sprint 9 — with chunk_size=2048 the table survives but embedding quality on the same chunk degrades (BGE-M3's signal spreads thin across the whole table). Also prevents cross-company injection because two companies' salary tables land in one oversized chunk.
+- **Delegate to a specialised retrieval model (TAPAS etc).** Overkill for Sprint 16's goal. TAPAS-style table-QA is for natural-language questions over one table; our shape is multiple tables across multiple CBAs with straightforward name / column queries. A standard embedder on card metadata is enough.
+- **Wait for multimodal / table-aware embeddings.** Not shipping near term. Must ship against current embedders.
+
+**Trade-offs accepted:**
+- **Scanned PDFs (image-only) extract zero tables.** pdfplumber can't OCR; no Tesseract in Sprint 16. Those documents still ingest as prose RAG so the chat keeps working, just without table benefits. Admin sees "0 tables extracted — document may be scanned" in the TablesSection and knows to convert externally.
+- **Extraction is heuristic for markdown.** Pipe-tables with irregular row widths get padded / trimmed to the header; tables inside fenced code blocks are skipped. Works on every CBA currently in the corpus; regressions surface visibly in the admin UI.
+- **No LLM enrichment of cards by default.** Card text uses the deepest heading + nearby prose. Saves one LLM call per table at ingest; a future `table_card_enrichment` toggle can plug into the compressor slot if needed.
+- **Per-table size cap of 6 000 chars in the injected prompt.** Fits a 30-row × 5-col CBA salary table comfortably (~3 000 chars). Larger tables clip with a `[... truncated — see source document ...]` note.
+
+**Consequences:**
+- Table-shaped queries land the actual CSV in the prompt. The LLM can do arithmetic on real numbers, cross-reference columns, and cite row counts. Compare All mode side-by-sides two companies' salary tables natively.
+- CR's hardest use case is covered without CR being on. `rag_contextual_enabled` stays `False` by default post-Sprint-16 (complement to this ADR — still available for prose-heavy corpora via admin toggle, just not the default).
+- Storage footprint grows by `Σ CSV sizes`. A 200-CBA corpus with ~5 tables per CBA averaging 3 KB = ~3 MB — negligible.
+- Ingest time per document grows by the table-extraction cost (pure Python for .md, pdfplumber for .pdf). No LLM call by default, so well under a second per doc for realistic CBAs.
+- Re-indexing a scope cascades into table re-extraction automatically (same `_build_index` path), so the file watcher covers it with no new plumbing.
+
+**Revisit if:** admins report non-trivial false negatives ("the table is there but the bot didn't use it") — likely means the card text needs LLM enrichment (flip a future toggle), or the embedding of short card text isn't discriminative enough (try bigger cards with sample rows). Also if scanned PDFs become a common input shape, evaluate a lightweight OCR fallback (separate sprint — needs Tesseract + a performance model).

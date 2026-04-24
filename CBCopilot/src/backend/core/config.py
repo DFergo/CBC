@@ -31,9 +31,16 @@ class BackendConfig(BaseModel):
     # Sprint 9 (Anthropic Contextual Retrieval). When True, every chunk gets a
     # short LLM-generated context sentence prepended at index time so embeddings
     # carry document-level grounding ("This chunk is from Annex I salary tables
-    # of the Amcor Lezo CBA"). Off by default — adds one summariser-LLM call
-    # per chunk, which means hours of indexing for big corpora and a slower
-    # reindex cycle when curating documents. Toggle on once content is stable.
+    # of the Amcor Lezo CBA").
+    #
+    # Off by default AND recommended off post-Sprint-16. Rationale: CR's most
+    # painful use case (numeric / tabular retrieval) is now covered by the
+    # Structured Table Pipeline (tables extracted as CSVs + injected verbatim).
+    # CR's remaining value is for prose chunks whose markdown header context
+    # is ambiguous — a narrow case. It costs one summariser-LLM call per chunk,
+    # which means hours of indexing for 100+ CBAs and a slow curation cycle.
+    # Toggle available from admin UI for users who want to experiment on
+    # prose-only corpora; code kept intact.
     rag_contextual_enabled: bool = False
     rag_contextual_max_doc_chars: int = 12000  # truncate the doc passed to the contextualiser
     rag_watcher_enabled: bool = True

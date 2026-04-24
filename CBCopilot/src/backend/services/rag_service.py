@@ -66,14 +66,39 @@ _reranker_lock = threading.Lock()
 # Single Chroma persistent client + collection. All scopes live here.
 _chroma_client: Any = None
 _chroma_collection: Any = None
+# Sprint 16 — second collection on the same client for structured table cards.
+# Lives alongside `cbc_chunks` so `client.reset()` on wipe-and-reindex-all
+# clears both in one atomic step without extra plumbing.
+_tables_collection: Any = None
 _chroma_lock = threading.Lock()
 CHROMA_DIR = DATA_DIR / "chroma"
 CHROMA_COLLECTION_NAME = "cbc_chunks"
+TABLES_COLLECTION_NAME = "cbc_tables"
 
 # Per-scope cached LlamaIndex wrappers. Wrapping is cheap, but keeping the
 # index objects around avoids reconstructing the StorageContext per query.
 _indexes: dict[str, Any] = {}
 _indexes_lock = threading.Lock()
+
+# Per-scope locks that serialise _build_index calls for the same scope_key.
+# Sprint 16 Fase 0.b — without this, two threads could enter _build_index
+# concurrently (e.g. admin Wipe & Reindex in a worker thread + a chat query
+# calling get_index() at the same moment). Both would run _delete_scope on
+# an empty collection and then both insert their 44 nodes → 88 chunks in
+# Chroma. BM25 rebuilt with 88 nodes. Serialising per-scope keeps the
+# delete/insert atomic for each builder. The second thread rebuilds over
+# the first's output (wasteful but correct — final chunk count is right).
+_build_locks: dict[str, threading.Lock] = {}
+_build_locks_mutex = threading.Lock()
+
+
+def _get_build_lock(scope_key: str) -> threading.Lock:
+    with _build_locks_mutex:
+        lock = _build_locks.get(scope_key)
+        if lock is None:
+            lock = threading.Lock()
+            _build_locks[scope_key] = lock
+        return lock
 
 
 @dataclass
@@ -222,6 +247,34 @@ def _scope_metadata_filter(scope_key: str) -> Any:
         MetadataFilters,
     )
     return MetadataFilters(filters=[ExactMatchFilter(key="scope_key", value=scope_key)])
+
+
+def _get_tables_collection() -> Any:
+    """Sprint 16 — parallel collection to `cbc_chunks` for structured table
+    cards. Each row is one extracted table; its document is the card text
+    (`name + description + source_location + columns`) and its metadata holds
+    the scope_key + doc_name + table_id so we can load the raw CSV from disk
+    at query time.
+
+    Uses the same `_chroma_client` as prose chunks so `client.reset()` in
+    `wipe_chroma_and_reindex_all` clears both collections atomically."""
+    global _chroma_client, _tables_collection
+    if _tables_collection is not None:
+        return _tables_collection
+    with _chroma_lock:
+        if _tables_collection is None:
+            # Force the prose collection path to run first — it initialises
+            # `_chroma_client` on the same settings. We just piggyback.
+            _get_chroma_collection()
+            _tables_collection = _chroma_client.get_or_create_collection(
+                name=TABLES_COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+            logger.info(
+                f"Chroma collection {TABLES_COLLECTION_NAME!r} ready at {CHROMA_DIR} "
+                f"({_tables_collection.count()} table cards total)"
+            )
+    return _tables_collection
 
 
 # --- Indexing ---
@@ -495,68 +548,259 @@ def _scope_chunk_count(scope_key: str) -> int:
 def _build_index(scope_key: str) -> Any | None:
     """Ingest every doc in this scope into the shared Chroma collection.
     Replaces any existing chunks for the scope first. Returns the LlamaIndex
-    wrapper (or None if there are no docs)."""
+    wrapper (or None if there are no docs).
+
+    Serialised per-scope via `_get_build_lock(scope_key)` — see the lock
+    declaration above for the concurrent-duplicate bug this prevents."""
     from llama_index.core import SimpleDirectoryReader
 
-    _setup_settings()
-    docs_dir = _docs_dir_for(scope_key)
-    files = _list_indexable_files(docs_dir)
-    if not files:
-        # Make sure stale chunks for this scope are gone.
-        _delete_scope(scope_key)
-        return None
-    try:
-        reader = SimpleDirectoryReader(input_files=[str(f) for f in files])
-        documents = reader.load_data()
-        nodes = _parse_nodes(documents)
-        for n in nodes:
-            n.metadata["scope_key"] = scope_key
-            n.metadata["tier"] = _tier_for(scope_key)
-        if backend_config.rag_contextual_enabled:
-            logger.info(
-                f"Contextual enrichment ON — generating context for "
-                f"{len(nodes)} chunks in scope {scope_key} (this will take a while)"
-            )
-            enriched = _contextualise_nodes(nodes, documents)
-            # Safety net: if CR is on but literally every chunk's LLM call
-            # failed, the reindex would silently produce a plain (non-CR)
-            # index while the admin thinks they turned enrichment on. Raise
-            # here so the endpoint surfaces the problem and can roll back.
-            if nodes and enriched == 0:
-                raise RuntimeError(
-                    f"Contextual enrichment produced 0 enriched chunks out of "
-                    f"{len(nodes)} for scope {scope_key}. Check summariser slot "
-                    f"health + backend logs for per-chunk errors."
+    with _get_build_lock(scope_key):
+        _setup_settings()
+        docs_dir = _docs_dir_for(scope_key)
+        files = _list_indexable_files(docs_dir)
+        if not files:
+            # Make sure stale chunks for this scope are gone.
+            _delete_scope(scope_key)
+            return None
+        try:
+            reader = SimpleDirectoryReader(input_files=[str(f) for f in files])
+            documents = reader.load_data()
+            nodes = _parse_nodes(documents)
+            for n in nodes:
+                n.metadata["scope_key"] = scope_key
+                n.metadata["tier"] = _tier_for(scope_key)
+            if backend_config.rag_contextual_enabled:
+                logger.info(
+                    f"Contextual enrichment ON — generating context for "
+                    f"{len(nodes)} chunks in scope {scope_key} (this will take a while)"
                 )
+                enriched = _contextualise_nodes(nodes, documents)
+                # Safety net: if CR is on but literally every chunk's LLM call
+                # failed, the reindex would silently produce a plain (non-CR)
+                # index while the admin thinks they turned enrichment on. Raise
+                # here so the endpoint surfaces the problem and can roll back.
+                if nodes and enriched == 0:
+                    raise RuntimeError(
+                        f"Contextual enrichment produced 0 enriched chunks out of "
+                        f"{len(nodes)} for scope {scope_key}. Check summariser slot "
+                        f"health + backend logs for per-chunk errors."
+                    )
 
-        # Drop existing chunks for this scope so we don't accumulate ghosts
-        # on re-ingest. Then insert fresh nodes via LlamaIndex's wrapper —
-        # ChromaVectorStore.add() handles the embeddings + metadata write.
-        _delete_scope(scope_key)
-        wrapper = _scope_index_wrapper(scope_key)
-        wrapper.insert_nodes(nodes)
+            # Drop existing chunks for this scope so we don't accumulate ghosts
+            # on re-ingest. Then insert fresh nodes via LlamaIndex's wrapper —
+            # ChromaVectorStore.add() handles the embeddings + metadata write.
+            _delete_scope(scope_key)
+            wrapper = _scope_index_wrapper(scope_key)
+            wrapper.insert_nodes(nodes)
 
-        logger.info(
-            f"Built Chroma chunks for scope {scope_key}: {len(files)} files → "
-            f"{len(nodes)} nodes "
-            f"({sum(1 for d in documents if (d.metadata or {}).get('file_name','').lower().endswith('.md'))} markdown)"
-        )
-        return wrapper
-    except Exception as e:
-        logger.error(f"Failed to build index for scope {scope_key}: {e}")
-        return None
+            logger.info(
+                f"Built Chroma chunks for scope {scope_key}: {len(files)} files → "
+                f"{len(nodes)} nodes "
+                f"({sum(1 for d in documents if (d.metadata or {}).get('file_name','').lower().endswith('.md'))} markdown)"
+            )
+
+            # Sprint 16 — structured table extraction. Every file is also fed
+            # to the table extractor; any detected tables are persisted as CSV
+            # + manifest on disk and embedded as card entries in the separate
+            # `cbc_tables` Chroma collection (via _embed_tables_for_scope).
+            # Independent of prose chunking — a doc can contribute to both
+            # collections or just to prose.
+            try:
+                _extract_and_embed_tables(scope_key, files)
+            except Exception as e:
+                # Don't fail the whole reindex if table extraction breaks —
+                # prose retrieval is the primary RAG path. Log and continue.
+                logger.warning(f"table extraction for scope {scope_key} failed: {e}")
+
+            return wrapper
+        except Exception as e:
+            logger.error(f"Failed to build index for scope {scope_key}: {e}")
+            return None
 
 
 def _delete_scope(scope_key: str) -> None:
-    """Remove every chunk tagged with this scope_key from the Chroma collection."""
+    """Remove every chunk tagged with this scope_key from both Chroma
+    collections (prose + tables). On-disk CSVs are left in place — they get
+    overwritten by the next `_extract_and_embed_tables` for this scope, or
+    explicitly purged by `wipe_chroma_and_reindex_all`."""
     try:
         collection = _get_chroma_collection()
         collection.delete(where={"scope_key": scope_key})
     except Exception as e:
         logger.warning(f"Could not delete chunks for scope {scope_key}: {e}")
+    try:
+        tcol = _get_tables_collection()
+        tcol.delete(where={"scope_key": scope_key})
+    except Exception as e:
+        logger.warning(f"Could not delete table cards for scope {scope_key}: {e}")
     # Drop the cached BM25 retriever for this scope so the next query rebuilds
     # fresh. Sprint 15 H — prevents stale retrievers after a reindex.
     _invalidate_bm25_cache(scope_key)
+
+
+def _purge_all_tables_on_disk() -> None:
+    """Remove every `tables/` dir under /app/data/ and /app/data/campaigns.
+    Called from `wipe_chroma_and_reindex_all` to match the Chroma reset —
+    the next reindex re-extracts tables from source documents, so anything
+    lingering from before is either redundant or stale."""
+    from src.services import table_extractor
+    scopes_seen: set[str] = set()
+    # global
+    scopes_seen.add("global")
+    # frontend + company tiers
+    for sk in _discover_all_scope_keys():
+        scopes_seen.add(sk)
+    for sk in scopes_seen:
+        table_extractor.delete_scope_tables(sk)
+
+
+def _extract_and_embed_tables(scope_key: str, files: list[Path]) -> int:
+    """Sprint 16 — extract structured tables from each file and embed a
+    metadata card per table into `cbc_tables`. CSVs are persisted on disk so
+    we don't round-trip through Chroma for the verbatim table content
+    (Chroma's metadata has a size limit, and multi-KB CSVs don't belong in
+    a vector store anyway).
+
+    Re-running for the same scope is idempotent: the prior `_delete_scope`
+    already purged this scope's table cards from Chroma, and
+    `table_extractor.save_tables_for_doc` wipes the per-doc dir before
+    rewriting. This function also cleans up orphan dirs (tables/{stem}
+    whose source doc no longer exists in the scope) so file-watcher
+    deletions don't leave stale CSVs behind.
+
+    Returns the total number of embedded cards for observability."""
+    from src.services import table_extractor
+
+    embed_model = _get_embed_model()
+    tcol = _get_tables_collection()
+
+    # Orphan cleanup: list existing table dirs for this scope and remove any
+    # whose doc_stem doesn't match a current file. The watcher path doesn't
+    # know which specific doc was deleted — it just re-runs reindex for the
+    # scope — so doing the reconciliation here keeps the on-disk state in
+    # sync regardless of the change type.
+    scope_tables_root = table_extractor.tables_root_for(scope_key)
+    if scope_tables_root.exists():
+        current_stems = {Path(f.name).stem for f in files}
+        # Normalise current stems through the same sanitiser that
+        # save_tables_for_doc uses, so orphan detection matches on-disk names.
+        current_stems_sanitised = {table_extractor._sanitise(s) for s in current_stems}
+        for sub in scope_tables_root.iterdir():
+            if not sub.is_dir():
+                continue
+            if sub.name not in current_stems_sanitised:
+                import shutil
+                try:
+                    shutil.rmtree(sub)
+                    logger.info(f"tables: removed orphan dir {sub}")
+                except OSError as e:
+                    logger.warning(f"tables: could not remove orphan {sub}: {e}")
+
+    total_cards = 0
+    for f in files:
+        tables = table_extractor.extract_tables_for_file(f)
+        if not tables:
+            continue
+        table_extractor.save_tables_for_doc(scope_key, f.name, tables)
+
+        card_texts = [t.as_card_text() for t in tables]
+        # Batch-embed to amortise the forward-pass cost.
+        try:
+            vectors = embed_model.get_text_embedding_batch(card_texts)
+        except Exception:
+            # Fallback one-by-one if the embedder doesn't support batch.
+            vectors = [embed_model.get_text_embedding(ct) for ct in card_texts]
+
+        ids = [f"{scope_key}::{f.name}::{t.id}" for t in tables]
+        metadatas = [
+            {
+                "scope_key": scope_key,
+                "tier": _tier_for(scope_key),
+                "doc_name": f.name,
+                "table_id": t.id,
+                "table_name": t.name,
+                "source_location": t.source_location,
+                "row_count": t.row_count,
+            }
+            for t in tables
+        ]
+        tcol.upsert(
+            ids=ids,
+            documents=card_texts,
+            embeddings=vectors,
+            metadatas=metadatas,
+        )
+        total_cards += len(tables)
+
+    if total_cards:
+        logger.info(f"tables: scope={scope_key} embedded {total_cards} cards across {len(files)} files")
+    return total_cards
+
+
+def query_tables(scope_keys: list[str], query_text: str, top_k: int = 2) -> list[dict[str, Any]]:
+    """Retrieve the top-K table cards matching `query_text` across the given
+    scopes, then load each hit's raw CSV from disk. Returned dicts carry
+    everything the prompt assembler needs to render a `## Relevant tables`
+    section: name, description, source_location, csv_text, doc_name,
+    table_id, scope_key.
+
+    Returns `[]` on any error so a broken table path never breaks the main
+    chat flow."""
+    from src.services import table_extractor
+
+    if not scope_keys or not query_text:
+        return []
+
+    try:
+        tcol = _get_tables_collection()
+        if tcol.count() == 0:
+            return []
+        embed_model = _get_embed_model()
+        qvec = embed_model.get_text_embedding(query_text)
+        # Chroma's `where` accepts `{"scope_key": {"$in": [...]}}` for multi
+        # scope filtering. Single scope also works as {"scope_key": value}
+        # but $in is uniform.
+        where = {"scope_key": {"$in": list(scope_keys)}}
+        result = tcol.query(
+            query_embeddings=[qvec],
+            n_results=top_k,
+            where=where,
+        )
+    except Exception as e:
+        logger.warning(f"query_tables failed: {e}")
+        return []
+
+    # Chroma returns list-of-lists because we can query multiple vectors at
+    # once; we only ever pass one, so index [0].
+    ids = (result.get("ids") or [[]])[0]
+    mds = (result.get("metadatas") or [[]])[0]
+    docs = (result.get("documents") or [[]])[0]
+    dists = (result.get("distances") or [[]])[0] if result.get("distances") else [None] * len(ids)
+
+    out: list[dict[str, Any]] = []
+    for hit_id, md, card_text, dist in zip(ids, mds, docs, dists):
+        md = md or {}
+        scope_key = md.get("scope_key", "")
+        doc_name = md.get("doc_name", "")
+        table_id = md.get("table_id", "")
+        csv_text = table_extractor.load_csv(scope_key, doc_name, table_id) or ""
+        out.append({
+            "scope_key": scope_key,
+            "doc_name": doc_name,
+            "table_id": table_id,
+            "name": md.get("table_name", ""),
+            "source_location": md.get("source_location", ""),
+            "row_count": md.get("row_count", 0),
+            "card_text": card_text or "",
+            "csv_text": csv_text,
+            "distance": dist,
+        })
+    if out:
+        logger.info(
+            f"tables.query scopes={scope_keys} q={query_text[:60]!r}... "
+            f"top_k={top_k} returned={len(out)}"
+        )
+    return out
 
 
 def get_index(scope_key: str) -> Any | None:
@@ -709,7 +953,7 @@ def wipe_chroma_and_reindex_all() -> dict[str, Any]:
                "chunk_size": ...}` when every scope ingested successfully.
     Raises on any ingestion failure — partial states are never acceptable.
     """
-    global _chroma_client, _chroma_collection, _embed_model, _reranker
+    global _chroma_client, _chroma_collection, _tables_collection, _embed_model, _reranker
     import shutil
 
     logger.warning(
@@ -741,6 +985,7 @@ def wipe_chroma_and_reindex_all() -> dict[str, Any]:
                 logger.warning(f"Chroma client.reset() failed, falling back to rmtree: {e}")
         _chroma_client = None
         _chroma_collection = None
+        _tables_collection = None  # Sprint 16 — drop the cached handle too
         if not reset_ok and CHROMA_DIR.exists():
             try:
                 shutil.rmtree(CHROMA_DIR, ignore_errors=False)
@@ -748,6 +993,12 @@ def wipe_chroma_and_reindex_all() -> dict[str, Any]:
             except OSError as e:
                 logger.error(f"Could not remove chroma dir {CHROMA_DIR}: {e}")
                 raise
+
+    # 2b. Sprint 16 — also purge the on-disk CSV + manifest tree so stale
+    # tables from a previous extractor version / doc set don't linger. The
+    # next `_extract_and_embed_tables` call during reindex rebuilds them
+    # from source.
+    _purge_all_tables_on_disk()
 
     # 3. Rebuild every scope. `_get_chroma_collection()` creates a fresh
     #    collection on demand when `reindex()` calls `_scope_index_wrapper()`.

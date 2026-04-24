@@ -106,13 +106,17 @@ export default function CitationsPanel({
     return () => window.clearTimeout(timer)
   }, [highlightedFilename, open, sources])
 
-  // Dedup by (scope_key, filename). Preserve insertion order — newest citations
-  // land at the bottom so the user sees them pile up as the conversation runs.
+  // Dedup by (scope_key, filename, kind, table_id). Preserve insertion order
+  // — newest citations land at the bottom so the user sees them pile up as
+  // the conversation runs. Sprint 16: table entries are deduped by table_id
+  // so two different tables from the same doc show up as separate rows.
   const unique = (() => {
     const seen = new Set<string>()
     const out: CitationSource[] = []
     for (const s of sources) {
-      const k = `${s.scope_key}::${s.filename}`
+      const k = s.kind === 'table'
+        ? `table::${s.scope_key}::${s.filename}::${s.table_id}`
+        : `${s.scope_key}::${s.filename}`
       if (!seen.has(k)) { seen.add(k); out.push(s) }
     }
     return out
@@ -167,6 +171,47 @@ export default function CitationsPanel({
           ) : (
             <ul className="flex-1 overflow-y-auto space-y-2 pr-1">
               {unique.map(s => {
+                // Sprint 16 — table entries are display-only: the CSV was
+                // already injected into the system prompt, so there's no
+                // separate "download" action for users. Tables show up with
+                // their own badge + the source location + row count, so the
+                // user sees where the numbers came from without leaving the
+                // chat.
+                if (s.kind === 'table') {
+                  const tkey = `table::${s.scope_key}::${s.filename}::${s.table_id}`
+                  const isPulsing = pulseKey === tkey
+                  return (
+                    <li
+                      key={tkey}
+                      ref={el => { itemRefs.current[tkey] = el }}
+                      className={`
+                        border rounded-lg p-2.5 transition-colors duration-500
+                        ${isPulsing ? 'border-uni-blue bg-blue-50' : 'border-amber-200 bg-amber-50/40'}
+                      `}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 font-medium uppercase tracking-wide">
+                          {t('citations_table_badge', lang)}
+                        </span>
+                        <span className="text-xs font-medium text-gray-800 truncate">
+                          {s.table_name || s.filename}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-gray-600 mb-1 break-all">
+                        {s.filename}
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-gray-500">
+                        <span>{s.source_location}</span>
+                        {typeof s.row_count === 'number' && s.row_count > 0 && (
+                          <span>
+                            {t('citations_table_rows', lang).replace('{n}', String(s.row_count))}
+                          </span>
+                        )}
+                      </div>
+                    </li>
+                  )
+                }
+
                 const key = `${s.scope_key}::${s.filename}`
                 const state = downloads[key] || 'idle'
                 const isPulsing = pulseKey === key

@@ -3,6 +3,7 @@ import { listCompanies, createCompany, updateCompany, deleteCompany } from '../a
 import type { Company } from '../api'
 import PromptsSection from '../sections/PromptsSection'
 import RAGSection from '../sections/RAGSection'
+import TablesSection from '../sections/TablesSection'
 import { useT } from '../i18n'
 
 export default function CompanyManagementPanel({ frontendId }: { frontendId: string }) {
@@ -137,6 +138,7 @@ export default function CompanyManagementPanel({ frontendId }: { frontendId: str
                     company={c}
                     onCompanyChanged={reload}
                   />
+                  <TablesSection frontendId={frontendId} companySlug={c.slug} />
                 </div>
               )}
             </div>

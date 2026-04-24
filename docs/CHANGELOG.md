@@ -1,5 +1,94 @@
 # CBC — Changelog
 
+## Sprint 16 — Structured Table Pipeline + Fase 0.b duplicado fix (2026-04-24)
+
+### Why
+
+Daniel's post-Fase-0 test revealed two problems:
+
+1. **88 chunks in `cbc_chunks` where there should be 44.** The Amcor Lezo CBA produced 44 chunks at chunking, yet Chroma stored 88. Direct inspection confirmed every chunk was duplicated — same text, same file metadata, different UUIDs. Cause: `_build_index` had no per-scope serialisation, so two threads (wipe-and-reindex + a concurrent `get_index()` or watcher callback) could both clear the scope (no-op on an empty collection) and both insert 44 nodes → 88 chunks. BM25 also saw 88 nodes, so retrieval ranked duplicates as higher-weight matches. Every subsequent Wipe & Reindex doubled the count (risk of 176, 352…).
+2. **Salary tables in CBAs remain invisible to vector RAG.** Even with Sprint 15's clean chunker + BGE-M3, a 30-row × 6-column salary grid embeds as one opaque vector that loses to prose chunks talking about salaries without containing them. "Dame la tabla salarial de Lezo" got prose paraphrases with hallucinated numbers and even a mangled filename (`Amfor_Flexibles`). With 200+ CBAs on the roadmap, this scales poorly.
+
+### Fase 0.b — Deduplication fix
+
+- `CBCopilot/src/backend/services/rag_service.py`: new per-scope `_build_locks: dict[str, threading.Lock]` + `_get_build_lock(scope_key)` helper. `_build_index(scope_key)` now wraps its entire body in `with _get_build_lock(scope_key):`. The second thread to arrive waits, enters, `_delete_scope` removes what the first just inserted, re-ingests cleanly. Wasted CPU on the second build but correct final chunk count.
+- The race condition didn't require `_discover_all_scope_keys` to duplicate (verified in live container — it returns the correct `['global', 'g-p1/amcor']`) nor the watcher to misbehave. It was pure concurrent `_build_index` callers, of which there are several: the admin wipe endpoint via `asyncio.to_thread`, `get_index()` from the chat query path, and possibly the debounced watcher.
+
+### Fase 0.b — Contextual Retrieval stays off by default
+
+- `CBCopilot/src/backend/core/config.py`: updated the `rag_contextual_enabled` comment to reflect that CR's main value (tabular retrieval) is now covered by the Structured Table Pipeline. Default stays `False`. Code / toggle / endpoint left intact for users who want to experiment with prose-heavy corpora.
+
+### Sprint 16 — Structured Table Pipeline
+
+**New backend service:** `CBCopilot/src/backend/services/table_extractor.py`
+
+- Dataclass `TableSpec` with stable sha1-16 `id`, `doc_name`, `name`, `description`, `source_location`, `csv_text`, `columns`, `row_count`, plus `as_card_text()` (for embedding) and `as_manifest_dict()` (for JSON persistence).
+- `extract_markdown_tables(md_text, doc_name)` — regex-based pipe-table detection. Walks header chains up the document to build a `"ANEXO I › Tabla A — Salario base"` location. Captures nearby prose as description. Handles cells with commas, irregular row widths, and multiple tables per document.
+- `extract_pdf_tables(pdf_path, doc_name)` — pdfplumber `page.extract_tables()`. Returns `[]` for image-only PDFs (accepted low-fidelity; admin sees an "0 tables extracted — document may be scanned" warning).
+- Persistence at `{scope_root}/tables/{doc_stem}/{table_id}.csv` + `manifest.json`. Sanitised stems prevent filesystem escape.
+- `save_tables_for_doc`, `load_manifest`, `load_csv`, `list_scope_tables`, `delete_scope_tables`, `delete_doc_tables`.
+
+**Dependency:** `pdfplumber>=0.11` added to `CBCopilot/src/backend/requirements.txt`. Pure Python (pdfminer.six under the hood), no Dockerfile pre-download step needed.
+
+**Chroma integration:** `CBCopilot/src/backend/services/rag_service.py`
+
+- New `cbc_tables` collection on the same `PersistentClient` — `client.reset()` wipes both in one atomic step.
+- `_get_tables_collection()` lazy-init.
+- `_extract_and_embed_tables(scope_key, files)` called from `_build_index` after prose chunks insert. Extracts tables, persists CSVs, batch-embeds cards via `BGE-M3.get_text_embedding_batch`, upserts to Chroma. Also cleans up orphan on-disk dirs (docs removed since the last extraction).
+- `query_tables(scope_keys, query_text, top_k=2)` for runtime retrieval. Returns dicts with `scope_key`, `doc_name`, `table_id`, `name`, `source_location`, `row_count`, `csv_text`, `distance`.
+- `_delete_scope(scope_key)` extended to also drop table cards from `cbc_tables`.
+- `_purge_all_tables_on_disk()` called from `wipe_chroma_and_reindex_all` — clears `{scope}/tables/` across every scope so the next reindex starts clean.
+
+**Prompt integration:** `CBCopilot/src/backend/services/prompt_assembler.py`
+
+- After `_resolve_rag`, call `rag_service.query_tables(scope_keys, q, top_k=2)` (`top_k=4` in Compare All).
+- New `_render_tables(table_hits)` emits a `## Relevant tables` section with each table's name + source + location, then the CSV fenced as ```csv```. Per-table cap of 6 000 chars with a `[... truncated ...]` note.
+- `AssembledPrompt.layers["tables"]` added — visible in the existing per-section size-breakdown log.
+- `sources` SSE event extended: table hits carry `kind: "table"`, `table_id`, `table_name`, `source_location`, `row_count`.
+
+**Admin API:** `CBCopilot/src/backend/api/v1/admin/tables.py`
+
+- `GET /admin/api/v1/tables?frontend_id=…&company_slug=…` — per-scope list grouped by document, each table with 5-row preview inline.
+- `POST /admin/api/v1/tables/reextract` — full scope reindex (prose + tables), offloaded via `asyncio.to_thread` (Fase 0 pattern).
+- `GET /admin/api/v1/tables/{fid}/{slug}/{doc}/{table_id}.csv`, plus `-global` and `-frontend` variants — plain-text CSV download for admin preview.
+- Router registered in `main.py`.
+
+**Admin UI:** `CBCopilot/src/admin/src/sections/TablesSection.tsx`
+
+- Per-scope list grouped by source doc. Each table row shows name, source_location, row count, optional description, a 5-row CSV preview rendered as an HTML table, and a "Download CSV" link.
+- "0 tables extracted" warning for docs that produced nothing (likely scanned PDFs).
+- Scope-level "Re-extract tables" button with saving/done status.
+- Mounted in `GeneralTab` (global), `FrontendsTab` (frontend tier), and `CompanyManagementPanel` (company tier) — exactly parallel to `RAGSection`.
+- `api.ts` gains `listTables`, `reextractTables`, `tableCsvUrl` helpers + `TableCard` / `TableDocGroup` / `TablesForScope` types.
+- 11 new i18n keys in EN + ES (`section_tables`, `tables_heading`, `tables_description`, `tables_reextract`, `tables_reextracting`, `tables_reextract_done`, `tables_empty`, `tables_summary`, `tables_doc_count`, `tables_doc_zero_warning`, `tables_rows`, `tables_download`). Other languages fall back to EN via `useT`'s existing fallback chain.
+
+**Frontend citations:** `CBCopilot/src/frontend/src/components/CitationsPanel.tsx`
+
+- `CitationSource` type extended with `kind`, `table_id`, `table_name`, `source_location`, `row_count`.
+- When `kind === "table"`, the panel renders an amber "Table" badge + the location + row count. No download action — the CSV was already injected into the prompt.
+- Dedup key updated to distinguish two tables from the same doc by `table_id`.
+- 2 new i18n keys in EN + ES: `citations_table_badge`, `citations_table_rows`.
+
+**Docs:**
+
+- `docs/SPEC.md` — new §4.12 Structured Table Pipeline.
+- `docs/architecture/decisions.md` — new ADR-009 covering rationale, alternatives considered, and trade-offs.
+- `docs/STATUS.md` — Sprint 16 closed.
+- `docs/CHANGELOG.md` — this entry.
+
+### Acceptance checklist (Daniel post-repull)
+
+1. Docker repull backend + frontend + admin images via Portainer.
+2. In admin: confirm `rag_contextual_enabled` is `false` (runtime_overrides may still have it from a prior toggle — if so, toggle it OFF from the RAG Pipeline section).
+3. Click **Wipe & Reindex All** (settings unchanged) — verifies Fase 0.b fix. Expected: one "Built Chroma chunks for scope g-p1/amcor: 1 files → 44 nodes" log line, BM25 "rebuilt retriever for scope g-p1/amcor (44 nodes)". `docker exec ... python -c "import chromadb; ...; print(col.count())"` returns 44.
+4. Open admin → General → **Tables**. Should list extracted tables from the Amcor Lezo CBA with 5-row previews. Same at frontend tier and company tier.
+5. Download one CSV via the "Download CSV" link — should return plain-text with the full table.
+6. Open a chat, ask "dame la tabla salarial de Lezo". Expected: response includes the actual numbers from the CSV (no paraphrasing), and the sidepanel shows an amber "Table" badge entry alongside the document entries.
+7. While a chat turn is mid-stream, open admin → Frontends tab. Should load instantly (Fase 0 concurrency).
+8. Trigger "Re-extract tables" in the TablesSection. Should return within seconds and leave the total table count unchanged.
+
+---
+
 ## Sprint 16 Fase 0 — Admin reindex no longer blocks the event loop (2026-04-24)
 
 ### Problem

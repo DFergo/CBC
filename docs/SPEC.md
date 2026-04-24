@@ -482,6 +482,88 @@ Adapted from HRDD Helper. Directory of authorized end-user emails with profile m
 
 ---
 
+### §4.12 Structured Table Pipeline (Sprint 16)
+
+Complements §4.2's vector RAG. Tables — salary schedules, overtime rates,
+shift matrices — are first-class data: extracted from source documents at
+ingest, persisted as standalone CSVs, and injected verbatim into the chat
+prompt when the user asks a table-shaped question. The LLM can then read
+real numbers instead of paraphrasing blurry vector-embedded grids.
+
+**Service:** `backend/services/table_extractor.py`
+- `extract_markdown_tables(md_text, doc_name) → list[TableSpec]` — regex
+  detection of pipe-tables (`|---|---|`), groups contiguous rows, derives
+  a heading chain as `source_location` (`"ANEXO I › Tabla A — Salario base"`).
+- `extract_pdf_tables(pdf_path, doc_name) → list[TableSpec]` — pdfplumber
+  `page.extract_tables()`. Returns `[]` for image-only PDFs (accepted as
+  low-fidelity — no OCR fallback in Sprint 16).
+- `save_tables_for_doc(scope_key, doc_name, tables)` — writes one
+  `{table_id}.csv` per table + `manifest.json` at
+  `{scope_root}/tables/{doc_stem}/`.
+- `list_scope_tables`, `load_manifest`, `load_csv`, `delete_scope_tables`,
+  `delete_doc_tables` — admin / watcher plumbing.
+
+**TableSpec fields:** `id` (sha1-16 of CSV content, stable across
+re-extractions), `doc_name`, `name` (deepest heading), `description`
+(nearby prose or location), `source_location`, `csv_text`, `columns`,
+`row_count`.
+
+**Chroma collection:** second collection on the shared client, named
+`cbc_tables`. Each row is one card: the document is `name + description +
+source_location + columns + row_count`; the embedding is produced by the
+same BGE-M3 embedder as prose chunks. Metadata carries `scope_key`,
+`doc_name`, `table_id` so at query time we can load the raw CSV from disk.
+
+**Storage layout:**
+```
+/app/data/tables/{doc_stem}/{table_id}.csv           (global)
+/app/data/tables/{doc_stem}/manifest.json            (global)
+/app/data/campaigns/{fid}/tables/{doc_stem}/...      (frontend)
+/app/data/campaigns/{fid}/companies/{slug}/tables/{doc_stem}/...  (company)
+```
+
+**Retrieval:** `rag_service.query_tables(scope_keys, query, top_k=2)` runs
+in parallel with `query_scopes`. top_k is doubled in Compare All so each
+company contributes. Results feed `prompt_assembler`, which appends a
+`## Relevant tables` section with each matched table's name, source,
+location + the CSV content fenced as ```csv``` (capped at 6 000 chars per
+table, with a `[... truncated ...]` marker if longer).
+
+**Citations:** table hits are emitted in the `sources` SSE event with
+`kind: "table"`, `table_id`, `table_name`, `source_location`, `row_count`.
+The frontend `CitationsPanel` renders table entries with an amber "Table"
+badge and displays the location + row count (no separate download — the
+CSV was already in the prompt).
+
+**Admin API:** `backend/api/v1/admin/tables.py`
+- `GET /admin/api/v1/tables` (scope-aware) → per-doc list with 5-row
+  preview per table.
+- `POST /admin/api/v1/tables/reextract` → triggers a full scope reindex
+  (prose + tables). Offloaded via `asyncio.to_thread`.
+- `GET /admin/api/v1/tables/{fid}/{slug}/{doc}/{id}.csv` and the
+  `-frontend` / `-global` variants → plain-text CSV download for admin
+  preview.
+
+**Admin UI:** `src/admin/src/sections/TablesSection.tsx` — per-scope list
+grouped by source document, inline 5-row preview per table, "Download
+CSV" link per row, "Re-extract tables" scope-level button with saving /
+saved status. Rendered at every tier: General tab (global), Frontends tab
+(frontend), and CompanyManagementPanel (company).
+
+**File watcher integration:** no separate path — `rag_service._build_index`
+calls `_extract_and_embed_tables` as part of every scope rebuild. The
+watcher's debounced `rag_service.reindex(scope_key)` therefore picks up
+table changes automatically. Orphan CSV dirs (docs removed since the last
+extraction) are cleaned up inside the same function.
+
+**Default behaviour shift:** `rag_contextual_enabled` stays `False` by
+default post-Sprint-16. CR's primary value was tabular retrieval; with
+tables handled by §4.12, CR only contributes for prose-heavy corpora
+without good markdown structure. Admin can still flip it on from
+RAGPipelineSection.
+
+---
+
 ## §5 Admin Panel
 
 ### §5.1 Layout

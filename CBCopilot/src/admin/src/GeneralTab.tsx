@@ -2,6 +2,7 @@ import BrandingSection from './sections/BrandingSection'
 import PromptsSection from './sections/PromptsSection'
 import RAGSection from './sections/RAGSection'
 import RAGPipelineSection from './sections/RAGPipelineSection'
+import TablesSection from './sections/TablesSection'
 import GlossarySection from './sections/GlossarySection'
 import OrgsSection from './sections/OrgsSection'
 import LLMSection from './sections/LLMSection'
@@ -15,6 +16,7 @@ export default function GeneralTab() {
       <PromptsSection />
       <RAGSection />
       <RAGPipelineSection />
+      <TablesSection />
       <GlossarySection />
       <OrgsSection />
       <LLMSection />
