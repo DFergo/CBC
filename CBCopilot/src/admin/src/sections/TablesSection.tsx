@@ -19,7 +19,7 @@ interface Props {
 }
 
 export default function TablesSection({ frontendId, companySlug }: Props) {
-  const t = useT()
+  const { t } = useT()
   const [data, setData] = useState<TablesForScope | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
