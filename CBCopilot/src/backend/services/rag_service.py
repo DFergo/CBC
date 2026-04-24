@@ -234,14 +234,29 @@ def _list_indexable_files(docs_dir: Path) -> list[Path]:
 def _parse_nodes(documents: list[Any]) -> list[Any]:
     """Route docs through the right chunker by file extension.
 
-    Markdown: MarkdownNodeParser splits by header, so a section like
-    "## ANEXO I — Tablas salariales" stays WITH its table rows in the same
-    node. Critical for CBA annexes where the heading is the only semantic
-    ground for otherwise numeric content.
+    Markdown: MarkdownNodeParser splits by markdown heading, which preserves
+    the section label as metadata on every node (e.g. "ANEXO I — Tablas
+    salariales" stays tied to its table rows). BUT MarkdownNodeParser does
+    NOT enforce a token cap — a heading with a 30 k-token body comes out as
+    ONE node. For big CBAs structured under a few top-level headings, that
+    produced one giant node per document, which:
+      - silently truncated BGE-M3 embeddings (model cap is 8192 tokens) —
+        retrieval only "saw" the first ~30 % of the document.
+      - injected the entire document into every turn's system prompt (the
+        `## Retrieved CBA / policy excerpts` section ballooned to 125 k chars).
+      - killed Ollama's prefix cache utility (every turn re-prefilled a huge
+        prompt; re-question TTFT stuck at 30-90 s instead of ~10 s).
 
-    Everything else: SentenceSplitter with the configured chunk size/overlap.
+    Sprint 15 fix: pipe markdown nodes through a second-pass SentenceSplitter
+    that enforces the configured chunk_size cap. Header metadata is preserved
+    on every sub-node by re-wrapping the text in a fresh Document with the
+    parent node's metadata before re-splitting.
+
+    Everything else (.pdf / .txt / .docx): SentenceSplitter directly with the
+    configured chunk size/overlap — unchanged, this path was always correct.
     """
     from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
+    from llama_index.core.schema import Document
 
     md_docs: list[Any] = []
     other_docs: list[Any] = []
@@ -252,16 +267,49 @@ def _parse_nodes(documents: list[Any]) -> list[Any]:
         else:
             other_docs.append(d)
 
+    sentence_parser = SentenceSplitter(
+        chunk_size=backend_config.rag_chunk_size,
+        chunk_overlap=CHUNK_OVERLAP,
+    )
+
     nodes: list[Any] = []
     if md_docs:
         md_parser = MarkdownNodeParser()
-        nodes.extend(md_parser.get_nodes_from_documents(md_docs))
+        md_header_nodes = md_parser.get_nodes_from_documents(md_docs)
+        # Second pass: any md node that exceeds chunk_size gets split further.
+        # Rewrapping as Document preserves the header-derived metadata onto
+        # every sub-chunk (Sprint 11 Phase B inline citations depend on it).
+        for hn in md_header_nodes:
+            wrapper = Document(text=hn.text, metadata=hn.metadata or {})
+            nodes.extend(sentence_parser.get_nodes_from_documents([wrapper]))
     if other_docs:
-        sentence_parser = SentenceSplitter(
-            chunk_size=backend_config.rag_chunk_size,
-            chunk_overlap=CHUNK_OVERLAP,
-        )
         nodes.extend(sentence_parser.get_nodes_from_documents(other_docs))
+
+    # Observability: per-document summary so future regressions are visible
+    # without pulling session JSONs. Enumerates one log line per input doc.
+    if documents:
+        by_doc: dict[str, list[int]] = {}
+        for n in nodes:
+            key = (n.metadata or {}).get("file_name") or (n.metadata or {}).get("file_path") or "?"
+            by_doc.setdefault(key, []).append(len(n.text or ""))
+        for name, sizes in by_doc.items():
+            if not sizes:
+                continue
+            logger.info(
+                f"chunker: {name} → {len(sizes)} nodes "
+                f"(max={max(sizes)} chars, min={min(sizes)} chars, "
+                f"mean={sum(sizes) // len(sizes)} chars)"
+            )
+            # Defensive warning: a node exceeding BGE-M3's 8192-token input
+            # cap gets silently truncated in the embedding, degrading recall
+            # for the remainder of its text. Rough char→token ratio 3 for ES.
+            suspect = max(sizes)
+            if suspect > 30000:
+                logger.warning(
+                    f"chunker: {name} has a {suspect}-char node — probably "
+                    f">8192 tokens → BGE-M3 embedding will be TRUNCATED. "
+                    f"Expected ≤4500 chars per chunk at chunk_size=1024."
+                )
     return nodes
 
 
@@ -686,7 +734,7 @@ def query(scope_key: str, query_text: str, top_k: int | None = None) -> list[Chu
         nodes = _hybrid_retrieve(scope_key, idx, query_text, fetch_k)
         final_top_n = top_k or backend_config.rag_reranker_top_n
         nodes = _rerank(nodes, query_text, final_top_n)
-        return [
+        chunks = [
             Chunk(
                 text=n.node.text,
                 score=getattr(n, "score", 0.0) or 0.0,
@@ -697,6 +745,24 @@ def query(scope_key: str, query_text: str, top_k: int | None = None) -> list[Chu
             )
             for n in nodes
         ]
+        # Sprint 15 observability: record what the retrieval surfaced so RAG
+        # quality regressions are visible in OrbStack without needing to dump
+        # session JSONs. One-liner per scope.
+        if chunks:
+            sizes = [len(c.text) for c in chunks]
+            logger.info(
+                f"rag.query scope={scope_key} "
+                f"q={query_text[:50]!r}... "
+                f"fetch_k={fetch_k} rerank_top={final_top_n} "
+                f"returned={len(chunks)} "
+                f"max_chunk={max(sizes)} chars, mean={sum(sizes) // len(sizes)} chars"
+            )
+        else:
+            logger.info(
+                f"rag.query scope={scope_key} "
+                f"q={query_text[:50]!r}... returned=0"
+            )
+        return chunks
     except Exception as e:
         logger.error(f"Query failed on scope {scope_key}: {e}")
         return []
@@ -715,6 +781,12 @@ def query_scopes(
     for sk in scope_keys:
         out.extend(query(sk, query_text, top_k_per_scope))
     out.sort(key=lambda c: c.score, reverse=True)
+    if out:
+        total_chars = sum(len(c.text) for c in out)
+        logger.info(
+            f"rag.query_scopes n_scopes={len(scope_keys)} "
+            f"total_chunks={len(out)} total_chars={total_chars}"
+        )
     return out
 
 

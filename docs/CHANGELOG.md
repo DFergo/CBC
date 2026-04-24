@@ -1,5 +1,146 @@
 # CBC — Changelog
 
+## Sprint 15 — RAG chunker fix + observability (2026-04-24)
+
+### Why this sprint
+
+Daniel's post-Sprint-14 QA showed persistent 60-90 s TTFT even on a single-user single-CBA test, not fixed by any of the Sprint 14 work. Live diagnosis via `docker exec` on the OrbStack backend revealed:
+
+- `prompt assembled: 133232 chars, 1 RAG chunks` for every turn
+- System prompt stored on disk was 94% one section (`## Retrieved CBA / policy excerpts`: 125 204 chars)
+- The CBA file itself is 127 196 chars
+- Chroma's `cbc_chunks` collection had **one single embedding of 125 095 chars** for the entire CBA
+- BGE-M3's `max_seq_length` is 8 192 tokens → that single chunk's embedding had been silently truncated to the first ~30% of the document
+- At 200 CBAs this would scale linearly badly: each document reduced to a lossy first-30% embedding, no semantic granularity
+
+### Root cause
+
+`CBCopilot/src/backend/services/rag_service.py:257` — `md_parser = MarkdownNodeParser()` with no chunk-size cap. `MarkdownNodeParser` splits only on markdown headers and **does not honour `Settings.chunk_size=1024`**. A CBA structured with few top-level headings (or with ANEXO I as a huge section) emits as one giant node per document. HRDD Helper doesn't have this bug because its `rag_service` routes everything through `VectorStoreIndex.from_documents(..., chunk_size=...)` which always caps. CBC's Sprint 9 RAG overhaul introduced per-extension routing to preserve markdown header context — the intent was right, the implementation was asymmetric (caps for .pdf/.txt, no cap for .md).
+
+### Fix — `rag_service._parse_nodes`
+
+Pipe MarkdownNodeParser output through a second-pass `SentenceSplitter(chunk_size=1024, chunk_overlap=200)`. Header metadata is preserved on every sub-chunk by re-wrapping each header-node's text in a fresh `Document` carrying the parent's metadata, then re-splitting. Sprint 11 Phase B inline citations (that reference `header_path` metadata) continue to work unchanged.
+
+Added a defensive WARNING log when any produced node exceeds 30 000 chars (~8 192 tokens) — should never fire post-fix, but catches regressions if someone rewires the chunker.
+
+### Observability additions (Daniel explicitly asked)
+
+Six new INFO log lines across the RAG pipeline so future regressions are diagnosable from OrbStack logs without dumping session JSONs:
+
+- `rag_service._parse_nodes` — per-document: `chunker: {name} → N nodes (max={X} chars, min={Y} chars, mean={Z} chars)`. Warning variant fires if any node > 30 000 chars.
+- `rag_service.query` — per-scope: `rag.query scope={key} q={first 50 chars}... fetch_k={F} rerank_top={R} returned={N} max_chunk={X} chars, mean={Y} chars`
+- `rag_service.query_scopes` — aggregate: `rag.query_scopes n_scopes={N} total_chunks={M} total_chars={X}`
+- `prompt_assembler.assemble` — per-section breakdown: `prompt_assembler: total={X} chars, N chunks used, sections: core=A guardrails=B role=C context=D glossary=E organizations=F rag=G`
+
+### Empirical validation (run in OrbStack container against real CBA)
+
+Exercised `_parse_nodes` with the real `CBA—Amcor_Flexibles—Lezo—Spain.md` (125 097 chars):
+
+```
+Live Settings.chunk_size=1024, chunk_overlap=200
+
+[BEFORE FIX] MarkdownNodeParser alone → 1 nodes
+  node #1: 125095 chars
+
+[AFTER FIX] md + sentence-splitter → 45 nodes
+  max=4070 chars, min=1183 chars, mean=3336 chars
+  nodes >4500 chars (BGE-M3 risk): 0
+  nodes >30000 chars (definite truncation): 0
+  nodes with header metadata preserved: 45 / 45
+```
+
+No chunks exceed BGE-M3's cap; all 45 chunks carry both `file_name` and `header_path` metadata. Sprint 11 Phase B inline citations continue to work.
+
+### Files touched
+
+- `CBCopilot/src/backend/services/rag_service.py` — chunker fix in `_parse_nodes` + per-document log + BGE-M3 truncation warning + query/query_scopes observability logs.
+- `CBCopilot/src/backend/services/prompt_assembler.py` — per-section size breakdown log in `assemble()`.
+
+No changes to admin UI, config schema, Dockerfiles, dependencies. Session JSONs on disk don't need migration — the next turn's `assemble()` overwrites `session.system_prompt` with the new smaller prompt automatically.
+
+### Expected effect after deploy + reindex
+
+- First-question TTFT: 60-90 s → 20-30 s (prefill work drops 5-7×)
+- Re-question TTFT: prefix cache works fully → ~3-10 s (matches Daniel's pre-Sprint-13 memory)
+- Retrieval quality: ~120 granular embeddings per CBA vs 1 truncated embedding → dramatically better for questions referencing later sections
+- 200-CBA scale: top-k=5 always returns 5 granular chunks regardless of corpus size
+
+### Operational note — REINDEX REQUIRED
+
+Existing Chroma indices on disk were built with the old chunker (1 giant chunk each). The fix changes future ingestions only. To benefit, admin must click "Reindex" per scope in the admin panel (existing Sprint 5 button). Without reindex, live queries keep returning the old 1-giant-chunk per document.
+
+### Remaining audit items (plan documented in STATUS.md, not implemented)
+
+A — Startup scan for oversized legacy chunks (diagnostic WARNING).
+B — Admin "reindex needed" banner when legacy chunks detected.
+C — `GET /admin/api/v1/rag/diagnostics` endpoint for per-scope chunk-size distribution.
+D — `session_rag.get_chunks_for_files` force-injection size cap (user uploads).
+E — Config guard if `rag_chunk_size` configured >8 192 tokens (BGE-M3 truncation risk).
+F — Prompt stability across turns (pre-existing architectural; post-fix impact much lower).
+G — Ollama preload of CBC's inference model (eliminates cold-load).
+
+Each is ~1-hour work. All deferred — none block Sprint 15's user-visible win.
+
+---
+
+## Sprint 14 post-deploy follow-ups (2026-04-24, same day)
+
+Four fixes landed in the hours after Sprint 14's main commit (`6e175e0`) went to Portainer. Daniel's live QA surfaced them in order; the log captures all four so the sprint closes cleanly.
+
+### `a09607e` — Admin UI polarity fix
+
+Sprint 13's checkbox label combined "Disable reasoning" (title) with "Enabled" (checkbox reusing the compression i18n key) — a double-negative that left admins unsure whether the model was actually thinking. Replaced with a `<select>` of OFF / ON under the neutral title "Thinking / Reasoning". OFF (default) keeps thinking off. The backend field `disable_thinking` stays as-is; the UI binding inverts (`checked={!cfg.disable_thinking}`) so the visible semantics read naturally. Renamed i18n keys: `llm_disable_thinking` → `llm_thinking_mode`, description updated. EN + ES.
+
+Files: `admin/src/sections/LLMSection.tsx`, `admin/src/i18n.ts`.
+
+### `5e75a78` — Diagnostic log + qwen3 scope for `/no_think`
+
+Two related changes in `llm_provider.py`:
+
+- **Scoped the `/no_think` suffix to qwen3 models only**, via a small `_is_qwen3_model(slot.model)` helper. Sprint 13 had been appending the suffix to the last user message for any thinking model; for gemma3-think, deepseek-r1 etc. this was literal user text polluting the prompt. (Superseded by `edc3a99` later — see below.)
+- **Added a single INFO log line per outgoing LLM request**: provider, model, `num_ctx`, `disable_thinking`, whether `body["think"]=False` landed, whether the qwen3 suffix applied, whether the system-prompt hint was injected, message count. Visible in OrbStack container logs without any extra config — Daniel can read without pasting, and from this session I can `docker logs cbc-backend-cbc-backend-1` directly.
+
+### `f6743b7` — Fire-and-forget tick dispatch (Sprint 14 regression fix)
+
+Sprint 14's original implementation of `_process_frontend` did `await asyncio.gather(*msg_tasks)` inside the function, which meant the polling loop blocked until EVERY in-flight stream completed. A single 30 s turn froze every frontend's drain for 30 s. User-visible symptoms Daniel reported after live deploy:
+
+- Device B sending mid-stream of Device A's turn: B queued invisibly until A finished.
+- Backend completing the turn successfully (response visible in admin session log) but the user's chat showing "Algo salió mal" — `_push_chunk` for terminal events (`done`) could timeout silently under SSE contention, leaving the browser's EventSource to strike out on `onerror` after 3 consecutive errors.
+- Perceived slowness overall: parallelism was paying the NP=4 memory cost without the concurrency benefit.
+
+Fix:
+
+- `_process_frontend` now uses `asyncio.create_task` + a module-level `_inflight_turns: set[asyncio.Task]` (strong refs via done-callback discard). Tick returns as soon as tasks are dispatched; the semaphore inside `_process_message_safe` still caps effective concurrency at `max_concurrent_turns`.
+- `_push_chunk` retries terminal events (`done`/`error`/`cancelled`) once with 500 ms backoff. Non-terminal tokens continue to fail silently. Drop-log level raised from INFO to WARNING for terminal failures.
+- Added diagnostic logs: `turn start (N msgs, inflight_turns=X)`, `first token after X.Xs`, `turn end (OK|ERROR|CANCELLED) elapsed=X.Xs ttft=Y.Ys chars=N tokens≈M`.
+
+### `edc3a99` — Dropped `/no_think` user suffix entirely (prefix-cache killer)
+
+Diagnosed live from the OrbStack logs surfaced by `f6743b7`'s new diagnostic lines. Re-question TTFT was 44-82 s instead of the ~10 s Daniel remembered pre-Sprint-13.
+
+**Root cause:** Sprint 13's `_apply_no_think` appended ` /no_think` to the LAST user message only. Since session_store keeps user messages raw (no suffix persisted), each turn re-applies the suffix to whichever message is now the last user. On Ollama's KV cache:
+
+- Turn 1: sends `[SYS][USER1+suffix]` → Ollama caches that prefix.
+- Turn 2: sends `[SYS][USER1][ASS1][USER2+suffix]`. `USER1` at position 1 no longer has the suffix (it moved to `USER2`). Ollama's prefix match breaks right after `SYS` and re-prefills `USER1+ASS1+USER2` from scratch — 30-70 s of wasted prefill on every re-question at qwen3.6:35b / num_ctx=256000 on M3 Ultra.
+
+**Fix:** removed `_NO_THINK_USER_SUFFIX`, `_is_qwen3_model`, and the `inject_qwen3_suffix` parameter entirely. `_apply_no_think` now only injects the system-prompt hint (idempotent across turns → prefix-cache safe). For Ollama, `body["think"] = False` is the authoritative switch and works for ANY thinking model Ollama serves (qwen3, deepseek-r1, gemma3-think, future families) — no per-model detection needed. For LM Studio, Daniel configures no-thinking in the LM Studio GUI directly; CBC sends nothing extra on that path.
+
+Diagnostic log fields simplified accordingly (removed `qwen3_detected` and `qwen3_suffix_applied`).
+
+Session_store schema unchanged — user messages have always been stored raw, so no migration.
+
+Files across all four: `admin/src/sections/LLMSection.tsx`, `admin/src/i18n.ts`, `admin/src/api.ts`, `backend/services/llm_provider.py`, `backend/services/polling.py`, `backend/main.py`.
+
+Expected effect after the follow-up re-pull:
+
+- Re-question TTFT back to single digits (~10 s), matching pre-Sprint-13 performance.
+- First-question TTFT unchanged (dominated by cold-load + full-prompt prefill — separate optimisation via preload.conf if/when Daniel wants).
+- Universal coverage: any Ollama thinking model is suppressed by OFF; no per-model allowlist.
+- Parallel chat turns actually parallel (no tick-level blocking).
+- Backend completing + user seeing generic error should be rare or gone (terminal events retry on failure).
+
+---
+
 ## Sprint 14 — Parallel polling + concurrency control (2026-04-24)
 
 Direct follow-up to Sprint 13. Real parallelism in the backend polling loop, capped by an admin-configurable ceiling, with the Sprint 13 cancel watcher restructured to work under parallel turns. See `docs/architecture/decisions.md` ADR-008 for full rationale.

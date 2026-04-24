@@ -413,6 +413,15 @@ def assemble(
             if cite_inline and labels_by_source.get(c.source):
                 entry["labels"] = labels_by_source[c.source]
             sources.append(entry)
+    # Sprint 15 observability: per-section size breakdown. Daniel's Sprint 14
+    # follow-up surfaced a bloated "rag" section (125 k of a 133 k total) that
+    # was masked by the single summary line in the caller. With this log line
+    # any future section-level bloat is catchable from OrbStack logs directly.
+    _section_sizes = " ".join(f"{k}={len(v)}" for k, v in layers.items())
+    logger.info(
+        f"prompt_assembler: total={len(text)} chars, {len(used_chunks)} chunks used, "
+        f"sections: {_section_sizes}"
+    )
     return AssembledPrompt(
         text=text,
         layers=layers,

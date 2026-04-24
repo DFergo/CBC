@@ -1,7 +1,141 @@
 # CBC — Project Status
 
-**Current Sprint:** 14 — Parallel polling + concurrency control — **CLOSED 2026-04-24**
+**Current Sprint:** 15 — **CODE LANDED 2026-04-24** — RAG chunker fix + observability. Daniel approved the plan; fix implemented in `rag_service._parse_nodes`. Live-test verified 1 node → 45 nodes on the real Amcor CBA.md. Awaits Daniel's Portainer re-pull + manual reindex via admin panel.
 **Last Updated:** 2026-04-24
+
+## Sprint 15 — RAG chunker fix + observability
+
+### Why this sprint exists
+
+Daniel's QA after Sprint 14 deploy showed persistent +60-90 s TTFT even on a single-user single-CBA test. Backend log said `prompt assembled: 133232 chars, 1 RAG chunks`. I pulled the live `session.json` from OrbStack: 94 % of those 133 232 chars (125 204 to be exact) is a single section `## Retrieved CBA / policy excerpts`. The CBA.md file on disk is 127 196 chars. **The "retrieved" section is basically the entire CBA, not excerpts.**
+
+Confirmed empirically via `docker exec` + SQLite queries on Chroma:
+- `cbc_chunks` Chroma collection contains **one single embedding of 125 095 chars** for the CBA (not 120+ chunks as the 1024-token chunking would imply).
+- `BGE-M3` has `max_seq_length=8192` tokens; our stored chunk is ~30 000 tokens → the embedding has been **silently truncated to the first 8 k tokens** at ingest time. Semantically, retrieval only "sees" the first ~30 % of the document. At 200 CBAs this will be catastrophic — each document reduced to a lossy first-30 % embedding.
+- The "1 RAG chunks" log is accurate: retrieval returns top-k from a collection that only has 1 chunk to give.
+
+### Root cause (confirmed)
+
+`CBCopilot/src/backend/services/rag_service.py:257`
+```python
+md_parser = MarkdownNodeParser()
+```
+
+`MarkdownNodeParser` splits only on markdown headers and **does not respect `Settings.chunk_size`** (global 1024-token setting is ignored by header-based parsers). A CBA structured with few top-level headers (or with ANEXO I as a huge section under one `#` heading) emits as one giant node. `.pdf` and `.txt` files take the sibling path at line 260-263 (`SentenceSplitter` with `chunk_size=backend_config.rag_chunk_size`), which caps correctly — which is why Daniel's instinct to try PDF would work as a workaround.
+
+HRDD Helper (sibling repo) doesn't have this bug because `HRDDHelper/src/backend/services/rag_service.py` routes everything through `VectorStoreIndex.from_documents(..., chunk_size=...)` (single path, always capped). CBC's Sprint 9 RAG overhaul introduced the per-extension routing to preserve markdown header context — the intent was good, the implementation was asymmetric.
+
+### Scope of fix
+
+**1 — Chunker fix** (`rag_service.py`, ~5 lines)
+
+After `MarkdownNodeParser` produces header-structured nodes, pipe them through a `SentenceSplitter(chunk_size=1024, chunk_overlap=200)` so any header-node exceeding 1 024 tokens is further split. Header metadata is preserved on every sub-node (important for Sprint 11 Phase B inline citations that reference article / page numbers). Pattern:
+
+```python
+md_nodes = md_parser.get_nodes_from_documents(markdown_docs)
+from llama_index.core.schema import Document
+final_md_nodes = []
+for node in md_nodes:
+    sub_docs = [Document(text=node.text, metadata=node.metadata)]
+    sub_nodes = sentence_parser.get_nodes_from_documents(sub_docs)
+    final_md_nodes.extend(sub_nodes)
+```
+
+Result: a 125 k-char CBA splits into ~120 chunks of ≤1 024 tokens each, properly embedded by BGE-M3 without truncation.
+
+**2 — Observability (logs across the pipeline)** — Daniel explicitly asked for these so future regressions are catchable without guessing:
+
+- `rag_service._parse_nodes`: per-document log `doc={name} ext={.md|.pdf|...} nodes_produced=N max_chunk_chars=X min=Y mean=Z`
+- `rag_service._build_index`: per-scope log `scope={key} docs=N total_nodes=M inserted=K time=Xs`
+- `rag_service.query_scopes`: per-query log `query={first 60 chars} scopes=N top_k=K returned=M max_chunk_chars=X reranked_to=R`
+- `rag_service` embedder: warn if any node exceeds BGE-M3's 8 192 tokens (defensive — should never happen post-fix)
+- `prompt_assembler._render_chunks`: log `chunks_injected=N total_chars=X largest_chunk_chars=Y`
+- `prompt_assembler.assemble`: enhance the existing log with a section-size breakdown (ID, Scope, Behavioural, Guardrails, Role, Context, Organizations, Retrieved, Citation — the same nine sections I sectionised live today). Makes future bloats visible in one log line.
+
+**3 — Reindex trigger**
+
+Existing indices on disk won't benefit from the fix until reindexed. Three options in order of preference:
+- (a) Auto-reindex on backend startup if any scope's chroma collection has nodes whose `text` length exceeds `chunk_size × chars_per_token × 1.5`. Safety net, cost = one reindex at deploy.
+- (b) Admin manual reindex via the existing button (Sprint 5 shipped it). Explicit.
+- (c) Leave stale, wait for next admin-triggered reindex. Worst.
+
+Recommend (a) + document (b) as alternative.
+
+**4 — Self-tests I can run before + after fix** (no device needed from Daniel):
+
+- `test_chunker_now.py` (scratchpad): load the CBA.md with current `_parse_nodes()`, report node count + sizes. Expected: 1 node, 125 k chars. Confirms current bug reproduces.
+- `test_chunker_fixed.py`: same load with proposed fix applied, report node count + size distribution. Expected: ~120 nodes, all ≤4 500 chars, max ≤5 000 chars.
+- `test_embed_truncation.py`: tokenise the 125 k-char chunk with BGE-M3's tokenizer, confirm token count > 8 192 (expected yes). Confirms embedding IS being truncated on the current data.
+- `test_prompt_sim.py`: build a mock retrieval of 5 × 1024-token chunks, pass through `prompt_assembler._render_chunks`, measure resulting section size. Expected: ~20 k chars in retrieved section instead of 125 k.
+- All four scripts written in this session's workdir, run via `docker exec cbc-backend-cbc-backend-1 python3 /tmp/...` so they use the actual container's LlamaIndex / BGE-M3 / Chroma.
+
+**5 — Live verification (after Daniel deploys the fix):**
+- Compare `prompt assembled: N chars` before/after on same query: expect drop from ~133 k to ~25-40 k chars.
+- Compare TTFT on first question for same CBA + query: expect drop from ~90 s to ~20-30 s (5-7× less prefill work).
+- Verify `1 RAG chunks` → `5 RAG chunks` or similar (top_k actually hitting multiple granular chunks).
+- Verify no regression on Sprint 11 Phase B inline citations (header metadata must survive the secondary split).
+
+### Files to modify (on approval)
+
+- `CBCopilot/src/backend/services/rag_service.py` — chunker pipeline fix + observability logs (the largest single change, maybe 30 lines added including logs)
+- `CBCopilot/src/backend/services/prompt_assembler.py` — observability logs only, no behavioural change
+- `CBCopilot/src/backend/main.py` — auto-reindex-on-startup helper hook (small)
+- `docs/CHANGELOG.md` + `docs/STATUS.md` — close Sprint 15
+- No admin UI changes, no config schema changes, no migrations
+
+### Constraints (re-stated)
+
+- No code changes until Daniel approves the plan.
+- No local `docker compose build` — Daniel re-pulls via Portainer.
+- Session JSON files on disk don't need migration; they'll naturally regenerate the smaller system prompt on next turn once the index is rebuilt.
+
+### Expected outcomes after deploy
+
+- First-question TTFT: 60-90 s → 20-30 s (chunk + ctx drops, cold-load still counts)
+- Re-question TTFT: prefix cache works fully → 3-10 s (matches Daniel's pre-Sprint-13 memory)
+- Retrieval quality: ~120 granular embeddings per CBA vs 1 truncated → dramatic improvement for questions that reference later portions of the document
+- Scales to 200 CBAs cleanly: top-k=5 always returns 5 granular chunks regardless of corpus size
+
+### Implementation status (2026-04-24 evening)
+
+- ✅ Chunker fix landed in `rag_service._parse_nodes` (SentenceSplitter second-pass over MarkdownNodeParser output).
+- ✅ Observability logs landed in `rag_service.query`, `rag_service.query_scopes`, `rag_service._parse_nodes` (per-document chunk distribution), `prompt_assembler.assemble` (per-section size breakdown).
+- ✅ Empirical validation via live-container test: real Amcor CBA.md (125 095 chars) now produces **45 chunks** (max 4 070 chars, mean 3 336 chars, all under BGE-M3's 8 192-token cap); metadata preservation confirmed (45/45 chunks carry `file_name` + `header_path`). Before fix: 1 chunk of 125 095 chars.
+- ⏳ Pending Daniel: Portainer re-pull → admin panel "Reindex" for the Amcor scope → first-question test to measure TTFT improvement.
+
+### Remaining items from the audit (separate plan — NOT in this Sprint 15 code)
+
+Surfaced while investigating but out of scope for the chunker fix. Grouped so Daniel can pick when to tackle each:
+
+**A — Auto-detect stale legacy indices (small, diagnostic only)**
+On backend startup, scan each Chroma scope's chunks for any > 30 000 chars. If found, emit a WARNING log: "Scope X has pre-Sprint-15 oversized chunks, reindex recommended." Non-intrusive, no auto-action. Adds visibility without risking data. ~15 lines.
+
+**B — Admin-panel "reindex needed" banner**
+When the admin opens General → RAG, surface a red banner per scope that has any oversized chunk, with a one-click Reindex button next to it. ~30 lines frontend + small backend endpoint. Lives alongside the existing Sprint 5 reindex UX.
+
+**C — GET /admin/api/v1/rag/diagnostics endpoint**
+New admin read-only endpoint that returns per-scope chunk count, mean/max chunk chars, embedding-truncation risk flag. Drives diagnostic views or external monitoring. ~20 lines.
+
+**D — Session RAG force-injection size cap**
+`session_rag.get_chunks_for_files` currently injects EVERY chunk of the user-attached files (intended: "the model can't miss the file"). With the now-correct chunker, a 500-page PDF upload produces ~500 chunks and all 500 get force-injected. The prompt could exceed sane limits. Consider a `max_forced_chars` cap (say 20 000 chars) with a note to the model if truncated. Not urgent; user uploads are rare but scale-sensitive.
+
+**E — BGE-M3 truncation config guard**
+If an admin ever bumps `rag_chunk_size` above 8 192 tokens (configurable in `deployment_backend.json`), BGE-M3 will silently truncate embeddings. Add a startup validation that warns if `rag_chunk_size × 4` (chars-per-token heuristic) > 32 768 chars. ~5 lines.
+
+**F — Prompt cache stability across turns (architectural)**
+Every turn re-runs `prompt_assembler.assemble()` with the new query_text, which re-runs RAG retrieval. If related questions retrieve different chunks, the system prompt differs between turns → Ollama's prefix cache gets partial miss. Not introduced by recent work — pre-existing. With Sprint 15's fix, chunk sizes are smaller, so the delta impact is reduced. Any mitigation (cache retrieval per session, shorten system prompt, isolate RAG section) is a meaningful refactor. Investigate only if post-Sprint-15 re-question TTFT remains >15 s.
+
+**G — Preload CBC's inference model in Ollama**
+Independent of RAG: cold-load of qwen3.6:35b at NP=4 costs ~30-45 s. Preloading via `~/.ollama/preload.conf` eliminates this at the cost of ~45 GB always-resident RAM. Daniel's call when RAM budget is firmed up.
+
+None of A-G block Sprint 15 closure. Each is a ~1-hour job if/when Daniel wants to schedule.
+
+### Open questions for Daniel (non-blocking)
+
+1. Keep `.md` as preferred ingest format? With the fix in place, MD now chunks correctly — no need to switch to PDF unless there's another reason. MD keeps tables + headers readable, grep-able, version-controllable.
+2. Which of A-G (if any) should land in a Sprint 16?
+
+---
 
 ## Sprint 14 — Parallel polling + concurrency control — CLOSED 2026-04-24
 
@@ -33,11 +167,27 @@ Direct follow-up to Sprint 13. User-visible outcome: up to `max_concurrent_turns
    4. Click Stop on one of the parallel streams → only that turn cancels, the other 3 keep streaming.
    5. Session-close summariser triggered while inference is streaming → both run in parallel (different slots).
 
+### Post-deploy follow-up fixes (same-day, 2026-04-24)
+
+Sprint 14's initial commit (`6e175e0`) deployed via Portainer re-pull and Daniel started real QA immediately. Four problems surfaced; four commits followed that afternoon/evening. All four are in the Sprint 14 scope (parallel polling + disable-thinking interactions) and close the sprint definitively.
+
+1. **`a09607e` — Admin UI polarity fix for the thinking toggle.** Sprint 13's `"Disable reasoning" + "Enabled"` label was a double-negative — users couldn't tell which direction the model was actually thinking. Replaced with a `<select>` OFF / ON labelled "Thinking / Reasoning". OFF (default) = no thinking. Backend field `disable_thinking` unchanged; the inversion lives only in the TSX binding. EN + ES translations wired.
+
+2. **`5e75a78` — Diagnostic log per outgoing LLM request + `/no_think` scoped to qwen3.** Added an INFO-level one-liner in `_build_body` reporting provider, model, `num_ctx`, `disable_thinking`, `body_think_false`, `sys_hint_injected`, `n_messages` — visible in OrbStack container logs. Also scoped the `/no_think` user-message suffix to qwen3 models (it had been applied universally in Sprint 13 and was polluting prompts for non-qwen thinking models with literal user text).
+
+3. **`f6743b7` — Fire-and-forget dispatch: fixed Sprint 14 regression where parallelism was silently serial.** Sprint 14's initial implementation did `await asyncio.gather(*msg_tasks)` inside `_process_frontend`, which blocked the polling loop for the FULL duration of the slowest in-flight stream. Users on the same (or other) frontends sending mid-stream saw "en cola" indicators for the full 20-60 s of the blocking turn, because no drain happened until gather returned. Replaced with `asyncio.create_task` + done-callback; tasks tracked in `_inflight_turns: set[Task]` for strong refs. Terminal events (`done`/`error`/`cancelled`) in `_push_chunk` now retry once with 500 ms backoff — losing a terminal event is what was leaving the UI stuck on `isStreaming=true` with a generic "algo salió mal" error while session_store had the full response. Added turn-start / first-token-latency / turn-end timing logs.
+
+4. **`edc3a99` — Dropped the `/no_think` user-message suffix entirely; rely on Ollama `"think": false` body field for all thinking models.** The most impactful fix. Diagnosed live from OrbStack logs: re-question TTFT was 44-82 s instead of the ~10 s Daniel had pre-Sprint-13. Root cause was the suffix's placement-on-last-user-message-only mutation: turn N sent `USER1` with the suffix (it was the last user at that moment); turn N+1 sent `USER1` without the suffix (the suffix had moved to `USER2`). Ollama's prefix cache matched the system prompt only and then re-prefilled everything from USER1 onward on every re-question, costing 30-70 s per turn on qwen3.6:35b at num_ctx=256000. Removed `_is_qwen3_model` helper and the `_NO_THINK_USER_SUFFIX` constant entirely. `_apply_no_think` now only injects the system-prompt hint (idempotent → prefix-cache safe). For Ollama, `body["think"] = False` is the universal and authoritative switch (works for qwen3, deepseek-r1, gemma3-think, any future thinking model Ollama serves). For LM Studio, Daniel configures no-thinking in the LM Studio GUI directly — CBC sends nothing extra for that path.
+
+Architectural invariants captured in ADR-008 still hold. The two user-visible promises of Sprint 14 — "up to N parallel turns" and "disable thinking actually disables thinking" — are now working correctly at the end of 2026-04-24.
+
 ### Known follow-ups (explicitly deferred)
 
 - Per-frontend `max_concurrent_turns` override — global only for now, matches the pattern of `disable_thinking` / compression / routing. Add to `LLMOverride` if a deployment ever needs frontend-specific caps.
 - Queue-inside-runtime indicator — when CBC cap > runtime cap, extras queue inside Ollama/LM Studio and CBC can't see them. Either keep aligned (admin discipline) or surface runtime queue depth via an admin proxy endpoint. Not urgent.
-- HRDD port — handoff prompt written (`HRDD_Sprint14_port_prompt.md`); Daniel runs it in a Claude-in-HRDD session when ready.
+- HRDD port — handoff prompt written (`HRDD_Sprint14_port_prompt.md`, kept up to date with the suffix-removal fix). Daniel runs it in a Claude-in-HRDD session when ready.
+- First-question TTFT optimisation — cold-load + full-prompt prefill dominates (30-60 s for a 35B MoE model at 256k ctx with a CBA in context). Pre-loading CBC's inference model in Ollama (via `~/.ollama/preload.conf`) would eliminate cold-load. Daniel's judgement call — costs ~45 GB RAM always resident.
+- System-prompt stability across turns — the prompt_assembler re-runs per turn and may produce different output when the query's RAG retrieval changes. Not introduced by Sprint 13/14 but limits the prefix-cache win below what it could be. Deeper refactor, not urgent.
 
 ---
 

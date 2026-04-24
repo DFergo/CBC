@@ -4,6 +4,12 @@
 > HRDDHelper repository. Self-contained; the agent doesn't need prior context.
 > The shape mirrors what landed in CBC (Collective Bargaining Copilot, the
 > spin-off from HRDD) as Sprint 14 on 2026-04-24.
+>
+> **Updated 2026-04-24 (evening) with the four same-day follow-up fixes that
+> closed the sprint properly. If you're porting from a snapshot older than
+> commit `edc3a99` in CBC, use this version — it captures the correct
+> no-thinking approach (don't use the `/no_think` user suffix; it breaks
+> Ollama prefix caching).**
 
 ---
 
@@ -50,15 +56,23 @@ async def _tick(client):
     )
 ```
 
-Extract the per-frontend body into `_process_frontend(client, fe)` — health, push sync, drain, gather messages, recovery handlers, uploads. Inside, wrap the message processing in `asyncio.gather`:
+Extract the per-frontend body into `_process_frontend(client, fe)` — health, push sync, drain, dispatch messages, recovery handlers, uploads. Inside, **fire-and-forget** the message tasks (the CBC port learned this the hard way — `await asyncio.gather` here blocked the polling loop for the FULL duration of the slowest stream, which defeats the whole parallelism point):
 
 ```python
-msg_tasks = [
-    _process_message_safe(client, fe, msg, fid)
-    for msg in drained.get("messages") or []
-]
-if msg_tasks:
-    await asyncio.gather(*msg_tasks)
+# Dispatch, don't await — polling loop should come back to drain this
+# sidecar every POLL_INTERVAL_SECONDS regardless of in-flight turns.
+for msg in drained.get("messages") or []:
+    task = asyncio.create_task(_process_message_safe(client, fe, msg, fid))
+    _inflight_turns.add(task)
+    task.add_done_callback(_inflight_turns.discard)
+```
+
+Add at module level:
+
+```python
+# Strong refs to in-flight turn tasks — without these, Python can GC a
+# fire-and-forget task mid-flight and the stream dies silently.
+_inflight_turns: set[asyncio.Task] = set()
 ```
 
 Add a `_process_message_safe` wrapper that acquires the global turn semaphore AND catches exceptions (so a crash in one task doesn't abort siblings):
@@ -217,8 +231,27 @@ After coding:
 ## Sanity check if anything looks off
 
 - If you can't find HRDD's `LLMConfig` pydantic model: grep for `class LLMConfig` or `max_tokens:` or `temperature:` — one of those will hit.
-- If HRDD's polling loop structure looks very different from CBC's: adapt the spirit rather than the syntax. The key invariants are (a) `asyncio.gather` at the frontends level, (b) `asyncio.gather` at the messages-within-a-frontend level, (c) a single semaphore gating LLM-bound work, (d) semaphore resized from config per tick so admin changes land live.
+- If HRDD's polling loop structure looks very different from CBC's: adapt the spirit rather than the syntax. The key invariants are **updated after the 2026-04-24 follow-ups**:
+  (a) At the frontends level, dispatch (not await-gather) so the polling loop doesn't block on in-flight LLM streams. Use `asyncio.create_task` + a module-level `set[asyncio.Task]` with a done-callback discard to keep strong refs.
+  (b) At the messages-within-a-frontend level, same fire-and-forget pattern.
+  (c) A single module-level `_turn_semaphore` gating LLM-bound work, sized from the config per tick (resize when cap changes).
+  (d) Terminal SSE events (`done`/`error`/`cancelled`) in the push-chunk helper should retry once with ~500 ms backoff. Dropping a terminal event is what leaves users stuck on `isStreaming=true` with a generic error while the backend has a full response in session_store.
+  (e) Add turn-start / first-token-latency / turn-end timing logs. Cheap to emit, decisive for diagnosing slowness later.
 - If HRDD doesn't have a separate `sidecar` main.py with `/internal/cancellations`: skip the cancel watcher entirely and note it as a follow-up.
+
+### Critical: if HRDD has copied Sprint 13's `/no_think` user-message suffix from CBC, REMOVE it in this port
+
+Sprint 13 introduced (in CBC) a `_apply_no_think` helper that appended ` /no_think` to the last user message for thinking models. This breaks Ollama's prefix cache every re-question because the suffix moves with each new "last user" — turn N sees `USER1+suffix`, turn N+1 sees `USER1` without it. Measured impact in CBC: re-question TTFT 44-82 s instead of ~10 s.
+
+Correct approach for Ollama (what CBC does after commit `edc3a99`):
+
+- Send `body["think"] = False` in the outgoing request body. Ollama honours this for ALL thinking models it serves (qwen3, deepseek-r1, gemma3-think, any future family). No per-model allowlist needed.
+- Keep a small idempotent system-prompt hint in the messages (added only if not already present) — `"Respond directly without any reasoning prelude. Do not output <think>, </think>, or any chain-of-thought tokens."` — as a cross-provider fallback / belt-and-braces.
+- Keep the streamed-response `_ThinkStripper` state machine to filter any `<think>...</think>` blocks the model might emit inline despite the switches above.
+- Do NOT append ` /no_think` (or any per-turn mutation) to user messages.
+- For LM Studio, CBC does not send anything extra; the admin configures no-thinking in the LM Studio GUI directly. HRDD should follow the same policy.
+
+If you find `_NO_THINK_USER_SUFFIX`, `_is_qwen3_model`, or an `inject_qwen3_suffix` parameter in HRDD's `llm_provider.py` — delete them as part of this port. The existence of any of these is the bug.
 
 ## Live-test after deploy (Daniel's QA, not yours)
 
