@@ -253,6 +253,35 @@ export function tableCsvUrl(scope: { frontendId?: string; companySlug?: string }
   return `/admin/api/v1/tables-global/${encDoc}/${encId}.csv`
 }
 
+// Sprint 16 followup — <a href> to an admin route fails with
+// {"detail":"Not authenticated"} because the browser doesn't carry the
+// Bearer token. Fetch the CSV via JS, wrap in a Blob, trigger a synthetic
+// download. Same pattern as downloadSessionUpload.
+export async function downloadTableCsv(
+  scope: { frontendId?: string; companySlug?: string },
+  docName: string,
+  tableId: string,
+  suggestedFilename?: string,
+): Promise<void> {
+  const authToken = localStorage.getItem('cbc_admin_token')
+  const res = await fetch(tableCsvUrl(scope, docName, tableId), {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: 'Download failed' }))
+    throw new Error(body.detail || `HTTP ${res.status}`)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = suggestedFilename || `${tableId}.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 // --- Knowledge ---
 
 export interface GlossaryTerm {

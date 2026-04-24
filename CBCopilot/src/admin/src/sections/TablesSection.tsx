@@ -9,7 +9,7 @@
 // than a handful of CBAs.
 
 import { useEffect, useState } from 'react'
-import { listTables, reextractTables, tableCsvUrl } from '../api'
+import { listTables, reextractTables, downloadTableCsv } from '../api'
 import type { TablesForScope } from '../api'
 import { useT } from '../i18n'
 
@@ -119,14 +119,17 @@ export default function TablesSection({ frontendId, companySlug }: Props) {
                       <span className="text-gray-500 shrink-0">
                         {t('tables_rows').replace('{n}', String(tbl.row_count))}
                       </span>
-                      <a
-                        href={tableCsvUrl({ frontendId, companySlug }, doc.doc_name, tbl.id)}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        onClick={() => downloadTableCsv(
+                          { frontendId, companySlug },
+                          doc.doc_name,
+                          tbl.id,
+                          `${doc.doc_name.replace(/\.[^.]+$/, '')}_${tbl.id}.csv`,
+                        ).catch(err => setError(err instanceof Error ? err.message : String(err)))}
                         className="ml-auto shrink-0 text-uni-blue hover:underline"
                       >
                         CSV
-                      </a>
+                      </button>
                     </li>
                   ))}
                 </ul>

@@ -876,13 +876,19 @@ def _sync_derived_country_tags(scope_key: str) -> None:
     """Company-tier scopes only: refresh `Company.country_tags` from the docs'
     metadata.json. No-op for global / frontend scopes (those don't have a
     Company record).
+
+    Sprint 16 followup: also feed the filenames to `derive_country_tags` so
+    docs without explicit country metadata still contribute a tag via the
+    filename auto-detector (e.g. "CBA—Amcor—Lezo—Spain.md" → ES).
     """
     if "/" not in scope_key:
         return
     fid, slug = scope_key.split("/", 1)
     try:
         from src.services import company_registry, document_metadata
-        tags = document_metadata.derive_country_tags(scope_key)
+        docs_dir = _docs_dir_for(scope_key)
+        filenames = [p.name for p in _list_indexable_files(docs_dir)] if docs_dir.exists() else []
+        tags = document_metadata.derive_country_tags(scope_key, filenames=filenames)
         company_registry.update_company(fid, slug, {"country_tags": tags})
         logger.info(f"Derived country_tags for {scope_key}: {tags}")
     except Exception as e:
