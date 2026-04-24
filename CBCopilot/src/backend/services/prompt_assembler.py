@@ -480,20 +480,23 @@ def assemble(
             if cite_inline and labels_by_source.get(c.source):
                 entry["labels"] = labels_by_source[c.source]
             sources.append(entry)
-    # Sprint 16 — table citations. Each retrieved table becomes an entry
-    # distinguishable from prose sources by the `kind: "table"` key and
-    # carrying `table_id` so the frontend sidepanel can previe w the CSV.
+    # Sprint 16 — table hits feed the prompt only, not the user-facing
+    # sidepanel. Tables are internal CBC retrieval plumbing; the user sees
+    # the source documents and downloads those whole. If the prose RAG
+    # surfaced the same doc the table came from, that entry is already in
+    # `sources`; if the table's doc contributed no prose chunks this turn,
+    # its doc row gets added below so the user can still get to it.
     for t in table_hits:
-        sources.append({
-            "kind": "table",
-            "scope_key": t.get("scope_key") or "",
-            "filename": t.get("doc_name") or "",
-            "tier": _tier_for_scope(t.get("scope_key") or ""),
-            "table_id": t.get("table_id") or "",
-            "table_name": t.get("name") or "",
-            "source_location": t.get("source_location") or "",
-            "row_count": t.get("row_count") or 0,
-        })
+        tdoc = t.get("doc_name") or ""
+        tscope = t.get("scope_key") or ""
+        key = (tscope, tdoc)
+        if tdoc and key not in seen:
+            seen.add(key)
+            sources.append({
+                "scope_key": tscope,
+                "filename": tdoc,
+                "tier": _tier_for_scope(tscope),
+            })
     # Sprint 15 observability: per-section size breakdown. Daniel's Sprint 14
     # follow-up surfaced a bloated "rag" section (125 k of a 133 k total) that
     # was masked by the single summary line in the caller. With this log line
