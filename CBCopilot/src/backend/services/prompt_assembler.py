@@ -161,7 +161,7 @@ def _render_context(template: str, survey: dict[str, Any], language: str) -> str
 def _render_glossary(language: str) -> str:
     """Render the glossary as a compact reference block in the session's language."""
     try:
-        terms = knowledge_store.list_glossary_terms()
+        terms = knowledge_store.list_glossary()
     except Exception as e:
         logger.warning(f"Could not load glossary: {e}")
         return ""

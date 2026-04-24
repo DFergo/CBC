@@ -360,6 +360,53 @@ Post-v1 enhancements captured in `docs/IDEAS.md` (ChromaDB migration, etc.) are 
 
 ---
 
+## Sprint 15 follow-ups — backlog (queued 2026-04-24)
+
+Items surfaced during the RAG chunker audit. Each ~1 hour. Pick individually; none blocks anything else. Tracked here rather than in `docs/IDEAS.md` because they're specific code changes with clear scope, not open-ended ideas.
+
+### A — Startup scan for oversized legacy chunks (diagnostic WARNING)
+On backend startup, walk each Chroma scope and emit `WARNING: Scope X has pre-Sprint-15 oversized chunks, reindex recommended` if any chunk exceeds 30 000 chars. Non-intrusive, no auto-action. ~15 lines in `rag_service.py`, hooked from `main.py` lifespan.
+
+### B — Admin-panel "reindex needed" banner
+When admin opens General → RAG, surface a red banner per scope that has any oversized chunk, with a one-click Reindex button next to it. ~30 lines frontend + ~10 backend (reuses A's detection). Lives alongside the existing Sprint 5 reindex UX.
+
+### C — `GET /admin/api/v1/rag/diagnostics` endpoint
+New admin read-only endpoint returning per-scope chunk count, mean/max chunk chars, embedding-truncation risk flag. Drives diagnostic views or external monitoring. ~20 lines.
+
+### D — Session RAG force-injection size cap
+`session_rag.get_chunks_for_files` currently injects EVERY chunk of user-attached files (intended: "the model can't miss the file"). With correct chunking a 500-page PDF upload produces ~500 chunks all force-injected. Add a `max_forced_chars` cap (≈20 000) with a "truncated" note to the model. ~15 lines.
+
+### E — BGE-M3 truncation config guard
+If admin bumps `rag_chunk_size` above 8 192 tokens in `deployment_backend.json`, BGE-M3 silently truncates embeddings. Add a startup validation: WARN if `rag_chunk_size × 4` (chars-per-token heuristic) > 32 768. ~5 lines in `core/config.py`.
+
+### F — Prompt stability across turns (architectural)
+Every turn re-runs `prompt_assembler.assemble()` which re-runs RAG retrieval. If related questions retrieve different chunks, the system prompt differs turn-to-turn and Ollama's prefix cache gets partial miss. Pre-existing, not introduced by Sprint 11-15. Post-Sprint-15 the impact is much smaller (chunks are small). Investigate only if re-question TTFT remains >15 s in production.
+
+### G — Preload CBC's inference model in Ollama
+Cold-load of qwen3.6:35b at NP=4 costs ~30-45 s per first request. Preloading via `~/.ollama/preload.conf` on the Mac Studio eliminates it at ~45 GB always-resident RAM. Ops-only change (modify the plist Daniel set up in Sprint 14 A). No code changes.
+
+### H — BM25 retriever cache per scope
+Currently `_hybrid_retrieve` rebuilt the BM25 index from scratch on every query. Empirically validated to be only ~20 ms per rebuild on the 111-chunk Amcor scope — much smaller win than the 6-7 s the log-progress-bar first suggested (those turned out to be sentence-transformer encodings, not BM25). Still worth caching for code cleanliness and to scale cleanly with 200 CBAs. Fix: cache the BM25 retriever keyed by scope_key, invalidate on reindex. **Landed as part of Sprint 15's Phase 2 commit alongside the glossary name fix.**
+
+### I — Embedding model drift: deployment_backend.json overrides BGE-M3 default with legacy MiniLM-L6-v2
+**Discovered 2026-04-24 during Sprint 15 empirical investigation.** `deployment_backend.json` carries `"rag_embedding_model": "all-MiniLM-L6-v2"`, which overrides the `core/config.py` default of `"BAAI/bge-m3"`. Sprint 9's CHANGELOG documents "swap the embedder `all-MiniLM-L6-v2` → `BAAI/bge-m3`" but only updated the default in code, not the deployment JSON. **Daniel's live deployment therefore still uses MiniLM-L6-v2 (384-dim) for embeddings despite believing Sprint 9's BGE-M3 overhaul was active.** Confirmed via `docker exec` — the loaded embedder is `HuggingFaceEmbedding` with `dim=384`.
+
+Impact:
+- Retrieval quality is worse than Sprint 9 intended (MiniLM is a small 2020-era multilingual model; BGE-M3 is substantially better on Spanish, multilingual, and long-context retrieval).
+- The reranker (`bge-reranker-v2-m3`) IS correctly configured and loaded, so Daniel has a "Sprint 9 half-deployed" state.
+
+Fix cost: one config line change. BUT dimension change (384 → 1024) requires **wiping the Chroma collection entirely** and re-ingesting every scope — the existing 111 chunks were embedded at 384-dim and can't coexist with 1024-dim in the same Chroma collection. The existing admin "Reindex" button alone won't do it (it deletes+re-adds for one scope, but the collection's dimension is still pinned to 384 from the first insert of another scope's chunks).
+
+Proposed approach when Daniel picks this up:
+1. Update `deployment_backend.json` → `"rag_embedding_model": "BAAI/bge-m3"`.
+2. Add a small "wipe Chroma" admin action (or manual: `docker exec cbc-backend-cbc-backend-1 rm -rf /app/data/chroma`) before reindex.
+3. Re-ingest every scope via the existing per-scope Reindex button.
+4. Validate in logs: `chunker: ...` lines for each doc, `Loaded embedding model BAAI/bge-m3`, and `rag.query` returning multi-chunk results.
+
+~5 lines code (config line) + ~20 lines if we add the wipe-chroma admin action. Plus Daniel's operational reindex time.
+
+---
+
 ## Progress Tracking Rules
 
 1. **Never mark a task `[x]` unless the acceptance criterion actually passes**

@@ -490,6 +490,9 @@ def _delete_scope(scope_key: str) -> None:
         collection.delete(where={"scope_key": scope_key})
     except Exception as e:
         logger.warning(f"Could not delete chunks for scope {scope_key}: {e}")
+    # Drop the cached BM25 retriever for this scope so the next query rebuilds
+    # fresh. Sprint 15 H — prevents stale retrievers after a reindex.
+    _invalidate_bm25_cache(scope_key)
 
 
 def get_index(scope_key: str) -> Any | None:
@@ -662,13 +665,46 @@ def _scope_nodes_from_chroma(scope_key: str) -> list[Any]:
     return nodes
 
 
+# Sprint 15 follow-up (item H) — BM25 retriever cache keyed by scope.
+#
+# Before this cache, _hybrid_retrieve rebuilt the BM25 index from scratch on
+# EVERY query: fetched all scope nodes from Chroma, tokenised them, built the
+# IDF tables. With 45 chunks on the Amcor CBA that was ~6-7 s per query —
+# observable in logs as `bm25s:Building index from IDs objects ... 7.15s/it`.
+# A meaningful fraction of the Sprint 15 post-fix TTFT.
+#
+# The cache holds (retriever, chunk_count_when_built) per scope. On each
+# query we re-check the current Chroma count for the scope; mismatch means
+# chunks were added/removed (reindex, delete) and we rebuild. `_delete_scope`
+# and `_build_index` also explicitly invalidate as a belt-and-braces (avoids
+# a window where a user's query sees stale retriever results before the
+# count-check fires on the next query).
+#
+# Thread-safety: simple dict reads/writes are GIL-atomic for str keys. Worst
+# case under concurrent access: two queries rebuild simultaneously, second
+# overwrites first — benign, no corruption.
+_bm25_cache: dict[str, tuple[Any, int]] = {}
+
+
+def _invalidate_bm25_cache(scope_key: str | None = None) -> None:
+    """Drop cached BM25 retrievers so the next query rebuilds. Pass a
+    scope_key to target one; omit to clear all (useful for startup / tests)."""
+    if scope_key is None:
+        _bm25_cache.clear()
+    else:
+        _bm25_cache.pop(scope_key, None)
+
+
 def _hybrid_retrieve(scope_key: str, idx: Any, query_text: str, fetch_k: int) -> list[Any]:
     """Fuse dense (BGE-M3, scope-filtered) + lexical (BM25 over scope nodes)
     and return ranked NodeWithScore objects. Reciprocal rank fusion combines
     them. Falls back to pure vector retrieval if BM25 isn't available.
 
     Both retrievers are pinned to the same scope: the vector side via a
-    Chroma metadata filter, the BM25 side via the docs we hand to it.
+    Chroma metadata filter, the BM25 side via the docs we hand to it. The
+    BM25Retriever is cached in `_bm25_cache` per scope and invalidated on
+    chunk-count change (auto) or on `_delete_scope` / `_build_index` calls
+    (explicit).
     """
     vector_retriever = idx.as_retriever(
         similarity_top_k=fetch_k,
@@ -678,13 +714,34 @@ def _hybrid_retrieve(scope_key: str, idx: Any, query_text: str, fetch_k: int) ->
         from llama_index.core.retrievers import QueryFusionRetriever
         from llama_index.retrievers.bm25 import BM25Retriever
 
-        scope_nodes = _scope_nodes_from_chroma(scope_key)
-        if not scope_nodes:
+        current_count = _scope_chunk_count(scope_key)
+        if current_count == 0:
             return vector_retriever.retrieve(query_text)
-        bm25_retriever = BM25Retriever.from_defaults(
-            nodes=scope_nodes,
-            similarity_top_k=fetch_k,
-        )
+
+        cached = _bm25_cache.get(scope_key)
+        if cached is not None and cached[1] == current_count:
+            bm25_retriever = cached[0]
+            # Update top_k in case the caller requested a different fetch_k
+            # than the one the retriever was built with — bm25s honours the
+            # attribute at retrieval time.
+            try:
+                bm25_retriever.similarity_top_k = fetch_k
+            except Exception:
+                pass
+        else:
+            scope_nodes = _scope_nodes_from_chroma(scope_key)
+            if not scope_nodes:
+                return vector_retriever.retrieve(query_text)
+            bm25_retriever = BM25Retriever.from_defaults(
+                nodes=scope_nodes,
+                similarity_top_k=fetch_k,
+            )
+            _bm25_cache[scope_key] = (bm25_retriever, current_count)
+            logger.info(
+                f"bm25: rebuilt retriever for scope {scope_key} "
+                f"({current_count} nodes)"
+            )
+
         fused = QueryFusionRetriever(
             [vector_retriever, bm25_retriever],
             similarity_top_k=fetch_k,
