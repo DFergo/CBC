@@ -31,6 +31,17 @@ export default function RAGPipelineSection() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  // HRDD-style inline feedback near the Save button. `saving` controls the
+  // button label ("Saving…"); `saveSuccess` is a green pill that appears for
+  // 3 s after a successful save. Separate from the header `status` so it's
+  // visible right where the admin clicked.
+  const [saving, setSaving] = useState(false)
+  const [saveSuccess, setSaveSuccess] = useState('')
+  // "Settings staged but NOT yet applied". Persists across the save action
+  // itself — only cleared by a successful Wipe & Reindex. Tells the admin
+  // that their chunk_size / embedder change is written to backend config but
+  // the corpus is still indexed at the previous values.
+  const [pendingReindex, setPendingReindex] = useState(false)
   const { t } = useT()
 
   const reload = async () => {
@@ -80,20 +91,26 @@ export default function RAGPipelineSection() {
 
   const saveSettings = async () => {
     setError('')
+    setSaveSuccess('')
+    setSaving(true)
     setBusy(true)
-    setStatus(t('rag_pipeline_saving'))
     try {
-      await updateRAGSettings({
+      const res = await updateRAGSettings({
         chunk_size: draftChunk !== settings?.chunk_size ? draftChunk : undefined,
         embedding_model: draftEmbed !== settings?.embedding_model ? draftEmbed : undefined,
       })
       await reload()
-      setStatus(t('rag_pipeline_settings_saved'))
-      setTimeout(() => setStatus(''), 5000)
+      // Backend says any of these changed → admin must wipe+reindex to apply.
+      // Keep that banner visible until the wipe finishes successfully.
+      if (res.requires_wipe_and_reindex) {
+        setPendingReindex(true)
+      }
+      setSaveSuccess(t('generic_saved'))
+      setTimeout(() => setSaveSuccess(''), 3000)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-      setStatus('')
     } finally {
+      setSaving(false)
       setBusy(false)
     }
   }
@@ -112,6 +129,9 @@ export default function RAGPipelineSection() {
       } else {
         setStatus(t('rag_pipeline_wipe_done', { count: r.scopes_reindexed }))
         setTimeout(() => setStatus(''), 8000)
+        // Wipe succeeded → the "pending apply" banner from a prior Save
+        // is no longer relevant. Clear it.
+        setPendingReindex(false)
       }
       await reload()
     } catch (e) {
@@ -205,22 +225,48 @@ export default function RAGPipelineSection() {
                 </div>
               </div>
 
-              {/* Save settings */}
-              <div className="flex items-center gap-2">
+              {/* Save settings — HRDD-style inline feedback right next to
+                  the button (saving state + green saved pill). */}
+              <div className="flex items-center gap-3">
                 <button
                   type="button"
                   onClick={saveSettings}
                   disabled={busy || !dirty}
                   className="text-sm bg-uni-blue text-white rounded-lg px-3 py-2 hover:opacity-90 disabled:opacity-40"
                 >
-                  {t('rag_pipeline_save_settings')}
+                  {saving ? t('generic_saving') : t('rag_pipeline_save_settings')}
                 </button>
-                {dirty && (
+                {saveSuccess && (
+                  <span className="text-xs text-green-700 font-medium">✓ {saveSuccess}</span>
+                )}
+                {dirty && !saving && (
                   <span className="text-[11px] text-amber-800">
                     {t('rag_pipeline_save_requires_wipe')}
                   </span>
                 )}
               </div>
+
+              {/* Sprint 15 phase 3 fix — persistent "pending apply" banner.
+                  After the admin saves a chunk_size / embedder change, the
+                  value is in backend config but the index is still at the
+                  OLD settings. Keep this prominent until Wipe & Reindex
+                  succeeds, so the admin can't think the change is live when
+                  it isn't. */}
+              {pendingReindex && (
+                <div className="border-2 border-amber-400 bg-amber-50 rounded-lg p-4">
+                  <div className="flex gap-3">
+                    <span className="text-2xl">⚠️</span>
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-amber-900 mb-1">
+                        {t('rag_pipeline_pending_apply_title')}
+                      </div>
+                      <p className="text-[12px] text-amber-900">
+                        {t('rag_pipeline_pending_apply_body')}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Wipe & Reindex All — destructive, red */}
               <div className="border border-red-300 bg-red-50/40 rounded-lg p-4">
@@ -236,7 +282,7 @@ export default function RAGPipelineSection() {
                   disabled={busy}
                   className="text-sm bg-uni-red text-white rounded-lg px-3 py-2 hover:opacity-90 disabled:opacity-40"
                 >
-                  {t('rag_pipeline_wipe_button')}
+                  {busy && status.includes('Wip') ? t('rag_pipeline_wiping') : t('rag_pipeline_wipe_button')}
                 </button>
               </div>
 

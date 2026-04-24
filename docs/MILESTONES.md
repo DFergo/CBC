@@ -388,6 +388,11 @@ Cold-load of qwen3.6:35b at NP=4 costs ~30-45 s per first request. Preloading vi
 ### H — BM25 retriever cache per scope
 Currently `_hybrid_retrieve` rebuilt the BM25 index from scratch on every query. Empirically validated to be only ~20 ms per rebuild on the 111-chunk Amcor scope — much smaller win than the 6-7 s the log-progress-bar first suggested (those turned out to be sentence-transformer encodings, not BM25). Still worth caching for code cleanliness and to scale cleanly with 200 CBAs. Fix: cache the BM25 retriever keyed by scope_key, invalidate on reindex. **Landed as part of Sprint 15's Phase 2 commit alongside the glossary name fix.**
 
+### J — Unify save-feedback pattern across admin sections
+Daniel flagged (2026-04-24): across CBC's admin panel, Save buttons don't give consistent feedback. LLMSection / GuardrailsSection / BrandingSection / SMTPSection / RAGSection etc. variously put `saveStatus` as tiny gray text in the header, or no feedback at all. HRDD's pattern (`HRDDHelper/src/admin/src/LLMTab.tsx`) is better: inline next to the button, button label switches to `Saving…`, green `✓ Saved` pill appears for ~3 s post-success.
+
+Sprint 15 phase 3 ported this pattern into **`RAGPipelineSection.tsx` only** because that was the section being built. Backlog J: extend the same pattern to every other CBC admin section. ~5 lines per section (`saving` state, `saveSuccess` state, button label ternary, green pill JSX). Low-risk; pure UX polish. ~30 mins total work across all sections.
+
 ### I — Embedding model drift + admin-editable RAG settings — CLOSED in Sprint 15 phase 3 (2026-04-24)
 
 **Resolved.** Commit path:

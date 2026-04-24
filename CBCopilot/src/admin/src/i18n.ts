@@ -126,6 +126,7 @@ export type AdminTranslationKeys =
   | 'rag_pipeline_wipe_title' | 'rag_pipeline_wipe_description'
   | 'rag_pipeline_wipe_button' | 'rag_pipeline_wipe_confirm'
   | 'rag_pipeline_wiping' | 'rag_pipeline_wipe_done'
+  | 'rag_pipeline_pending_apply_title' | 'rag_pipeline_pending_apply_body'
   // Sessions tab
   | 'sessions_title' | 'sessions_filter_all' | 'sessions_filter_active'
   | 'sessions_filter_completed' | 'sessions_filter_flagged'
@@ -411,6 +412,8 @@ const EN: AdminTranslations = {
   rag_pipeline_wipe_confirm: 'This will DELETE the entire Chroma collection and re-ingest every document in every scope with the current embedder + chunk size. Queries will fail or return empty during the run. Continue?',
   rag_pipeline_wiping: 'Wiping Chroma + reindexing every scope… (can take minutes)',
   rag_pipeline_wipe_done: 'Wiped. Reindexed {count} scopes.',
+  rag_pipeline_pending_apply_title: 'Settings saved but NOT applied to the index',
+  rag_pipeline_pending_apply_body: 'The new embedder / chunk size are in backend config, but live queries are still using the PREVIOUS settings. Click Wipe & Reindex All below to rebuild every scope against the new values. Until you do, retrieval quality will match the old configuration.',
   // Sessions
   sessions_title: 'Sessions',
   sessions_filter_all: 'All',
@@ -820,6 +823,8 @@ const ES: AdminTranslations = {
   rag_pipeline_wipe_confirm: 'Esto BORRARÁ la colección Chroma entera y re-ingestará todos los documentos de todos los scopes con el embedder + chunk size actuales. Las consultas fallarán o devolverán vacío mientras corre. ¿Continuar?',
   rag_pipeline_wiping: 'Borrando Chroma + re-indexando todos los scopes… (puede tardar minutos)',
   rag_pipeline_wipe_done: 'Borrado. {count} scopes re-indexados.',
+  rag_pipeline_pending_apply_title: 'Configuración guardada pero NO aplicada al índice',
+  rag_pipeline_pending_apply_body: 'El nuevo embedder / chunk size están en la configuración del backend, pero las consultas en vivo siguen usando la configuración ANTERIOR. Pulsa Wipe & Reindex All abajo para reconstruir todos los scopes con los nuevos valores. Hasta entonces, la calidad de retrieval será la de la configuración antigua.',
   // Sessions
   sessions_title: 'Sesiones',
   sessions_filter_all: 'Todas',
