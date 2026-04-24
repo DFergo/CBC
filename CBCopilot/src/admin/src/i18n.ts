@@ -176,6 +176,7 @@ export type AdminTranslationKeys =
   | 'llm_context_first_threshold' | 'llm_context_step_size'
   | 'llm_summary_routing' | 'llm_summary_routing_description'
   | 'llm_summary_document' | 'llm_summary_final'
+  | 'llm_summary_contextual' | 'llm_summary_contextual_hint'
   | 'llm_thinking_mode' | 'llm_thinking_mode_description'
   | 'llm_max_concurrent_turns' | 'llm_max_concurrent_turns_description'
   | 'llm_save_config' | 'llm_check_health' | 'llm_refresh_providers'
@@ -511,6 +512,8 @@ const EN: AdminTranslations = {
   llm_summary_routing_description: 'Pick which slot handles each summarisation task. The compressor can be used here too — any slot works.',
   llm_summary_document: 'Document summary on injection',
   llm_summary_final: 'Final conversation summary',
+  llm_summary_contextual: 'Contextual Retrieval (per chunk)',
+  llm_summary_contextual_hint: 'Which slot generates the 60-word context sentence CR prepends to each chunk at ingest. Default Compressor — the task is light and this keeps a 100-CBA reindex at ~3-4 h instead of ~35 h on the Summariser. Switch to Summariser only if CR quality is visibly off with a smaller model.',
   llm_thinking_mode: 'Thinking / Reasoning',
   llm_thinking_mode_description: 'OFF (recommended) = model answers directly; reasoning tokens are suppressed and, if any slip through, stripped before they reach the user. Cuts first-token latency dramatically on qwen3 / deepseek-r1 family models. ON = model emits its <think> reasoning prelude into the chat. Harmless either way for models without a thinking mode (gemma, llama, mistral).',
   llm_max_concurrent_turns: 'Max concurrent turns (backend-wide)',
@@ -921,6 +924,8 @@ const ES: AdminTranslations = {
   llm_summary_routing_description: 'Seleccione qué ranura gestiona cada tarea de resumen. También puede usarse el Compressor — cualquier ranura es válida.',
   llm_summary_document: 'Resumen de documento al inyectarlo',
   llm_summary_final: 'Resumen final de la conversación',
+  llm_summary_contextual: 'Contextual Retrieval (por chunk)',
+  llm_summary_contextual_hint: 'Qué slot genera la frase de contexto de 60 palabras que CR añade a cada chunk en ingesta. Default Compressor — la tarea es liviana y mantener un reindex de 100 CBAs en ~3-4 h en vez de ~35 h con el Summariser. Cambia a Summariser sólo si notas que la calidad de CR es claramente peor con un modelo más pequeño.',
   llm_thinking_mode: 'Thinking / Reasoning',
   llm_thinking_mode_description: 'OFF (recomendado) = el modelo responde directo; los tokens de razonamiento se suprimen en el request y, si alguno escapa, se filtra antes de mostrarlo. Reduce bastante la latencia hasta el primer token en modelos qwen3 / deepseek-r1. ON = el modelo emite su prelude <think> de razonamiento dentro del chat. Inofensivo en modelos sin modo thinking (gemma, llama, mistral) — el toggle no tiene efecto visible en ellos.',
   llm_max_concurrent_turns: 'Máximo de turnos simultáneos (todo el backend)',

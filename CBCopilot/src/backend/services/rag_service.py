@@ -370,7 +370,12 @@ def _get_ctx_executor() -> "concurrent.futures.ThreadPoolExecutor":
 
 
 def _generate_chunk_context(document_text: str, chunk_text: str) -> str:
-    """Synchronously get a context line for one chunk from the summariser slot.
+    """Synchronously get a context line for one chunk from whichever slot the
+    admin has routed CR to (default: compressor — small fast slot, e.g.
+    qwen3.5-9b on Ollama). Sprint 15 phase 5 made this configurable via
+    `LLMConfig.routing.contextual_retrieval_slot` so a 100-CBA reindex drops
+    from ~35h on the summariser (qwen3.5-122b) to ~3-4h on the compressor.
+
     Errors are swallowed — we return "" so the chunk still indexes without
     enrichment rather than blocking the whole reindex on a transient LLM hiccup.
 
@@ -382,17 +387,26 @@ def _generate_chunk_context(document_text: str, chunk_text: str) -> str:
     import asyncio
 
     from src.services import llm_provider
+    from src.services.llm_config_store import load_config
 
     doc_excerpt = (document_text or "")[: backend_config.rag_contextual_max_doc_chars]
     prompt = _CONTEXT_PROMPT.format(document=doc_excerpt, chunk=chunk_text)
     messages = [{"role": "user", "content": prompt}]
+
+    # Read the routing toggle on every call so an admin flip takes effect
+    # without a restart. Cheap — the config read is a file + JSON parse, and
+    # it's dwarfed by the LLM call itself.
+    try:
+        cr_slot = load_config().routing.contextual_retrieval_slot
+    except Exception:
+        cr_slot = "compressor"  # safe fallback if LLMConfig read fails
 
     def _call() -> str:
         # asyncio.run() creates a fresh event loop in THIS thread. Since the
         # executor runs us in a separate thread from the FastAPI main loop,
         # there is no running-loop conflict.
         return asyncio.run(
-            llm_provider.chat(messages, slot="summariser", frontend_id=None)
+            llm_provider.chat(messages, slot=cr_slot, frontend_id=None)
         )
 
     try:

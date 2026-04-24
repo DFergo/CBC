@@ -77,6 +77,13 @@ class CompressionSettings(BaseModel):
 class RoutingToggles(BaseModel):
     document_summary_slot: SlotName = "summariser"
     user_summary_slot: SlotName = "summariser"
+    # Sprint 15 phase 5: CR generates a 60-word context sentence per chunk at
+    # ingest time. The task is "summarise this chunk with document context" —
+    # doesn't need a 122B model. Default to `compressor` (small fast slot,
+    # e.g. qwen3.5-9b on Ollama). For a 100-CBA corpus this cuts a CR reindex
+    # from ~35 hours on the summariser slot to ~3-4 hours on the compressor.
+    # Admin can bump to `summariser` if quality ever requires it.
+    contextual_retrieval_slot: SlotName = "compressor"
 
 
 def _default_compressor() -> SlotConfig:

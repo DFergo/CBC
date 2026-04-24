@@ -267,6 +267,11 @@ export interface CompressionSettings {
 export interface RoutingToggles {
   document_summary_slot: SlotName
   user_summary_slot: SlotName
+  // Sprint 15 phase 5 — which slot handles Contextual Retrieval's per-chunk
+  // context-sentence generation at ingest time. Default "compressor" because
+  // the task doesn't need a heavy model and the scale gets brutal (~35 h on
+  // 122B for 100 CBAs vs ~3-4 h on 9B).
+  contextual_retrieval_slot: SlotName
 }
 
 export interface LLMConfig {

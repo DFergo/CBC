@@ -235,7 +235,7 @@ export default function LLMSection() {
         <p className="text-xs text-gray-500 mb-3">
           {t('llm_summary_routing_description')}
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
             <label className="block text-xs text-gray-500 mb-1">{t('llm_summary_document')}</label>
             <select
@@ -256,7 +256,20 @@ export default function LLMSection() {
               {SLOT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">{t('llm_summary_contextual')}</label>
+            <select
+              value={cfg.routing.contextual_retrieval_slot}
+              onChange={e => updateRouting({ contextual_retrieval_slot: e.target.value as SlotName })}
+              className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+            >
+              {SLOT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
         </div>
+        <p className="text-[11px] text-gray-500 mt-2">
+          {t('llm_summary_contextual_hint')}
+        </p>
       </div>
 
       <div className="flex gap-2 mt-4">
