@@ -63,7 +63,15 @@ def ensure_defaults() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from src.services import rag_watcher
+    from src.services.runtime_overrides_store import apply_startup_overrides
     from src.services.session_lifecycle import lifecycle_loop
+
+    # Sprint 15 phase 4 — apply admin-editable persisted overrides (RAG
+    # chunk size / embedding model / contextual retrieval) BEFORE any
+    # service reads backend_config. Otherwise e.g. rag_watcher.start()
+    # would latch the deployment JSON default, ignoring whatever the
+    # admin changed in a previous session.
+    apply_startup_overrides()
 
     ensure_defaults()
     asyncio.create_task(check_smtp_health())

@@ -255,17 +255,19 @@ async def toggle_contextual_retrieval(req: ContextualToggleRequest, _admin: dict
             "scopes_reindexed": 0,
             "note": "Already in requested state; no reindex triggered.",
         }
-    # Flip the in-memory config. Persisting to deployment_backend.json is
-    # deferred — admins that need it to survive container restart can edit
-    # the JSON manually. Keeps the endpoint side-effect-free on disk beyond
-    # the rebuilt indexes.
+    # Flip the in-memory config AND persist to runtime_overrides.json so the
+    # next container restart picks it up (Sprint 15 phase 4). Before this, a
+    # restart silently reverted to the deployment_backend.json default.
+    from src.services import runtime_overrides_store
     config.rag_contextual_enabled = req.enabled
+    runtime_overrides_store.save_override("rag_contextual_enabled", req.enabled)
     try:
         stats = rag_service.reindex_all_scopes()
     except Exception as e:
         # Roll back the toggle if the reindex blows up mid-way — otherwise
         # we'd be in a half-indexed state with config saying "on".
         config.rag_contextual_enabled = not req.enabled
+        runtime_overrides_store.save_override("rag_contextual_enabled", not req.enabled)
         raise HTTPException(status_code=500, detail=f"Reindex failed, toggle rolled back: {e}")
     return {
         "enabled": req.enabled,

@@ -27,6 +27,12 @@ LLM_CONFIG_FILE = DATA_DIR / "llm_config.json"
 SMTP_CONFIG_FILE = DATA_DIR / "smtp_config.json"
 GLOSSARY_FILE = KNOWLEDGE_DIR / "glossary.json"
 ORGANIZATIONS_FILE = KNOWLEDGE_DIR / "organizations.json"
+# Sprint 15 phase 4: admin-editable runtime overrides that need to survive
+# container restart. Sibling of llm_config.json, covers the RAG-pipeline
+# knobs that `backend_config` holds (rag_chunk_size, rag_embedding_model,
+# rag_contextual_enabled) — LLMConfig fields already persist via
+# llm_config_store. See runtime_overrides_store.py.
+RUNTIME_OVERRIDES_FILE = DATA_DIR / "runtime_overrides.json"
 
 
 def frontend_dir(frontend_id: str) -> Path:

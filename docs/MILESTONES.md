@@ -388,6 +388,22 @@ Cold-load of qwen3.6:35b at NP=4 costs ~30-45 s per first request. Preloading vi
 ### H — BM25 retriever cache per scope
 Currently `_hybrid_retrieve` rebuilt the BM25 index from scratch on every query. Empirically validated to be only ~20 ms per rebuild on the 111-chunk Amcor scope — much smaller win than the 6-7 s the log-progress-bar first suggested (those turned out to be sentence-transformer encodings, not BM25). Still worth caching for code cleanliness and to scale cleanly with 200 CBAs. Fix: cache the BM25 retriever keyed by scope_key, invalidate on reindex. **Landed as part of Sprint 15's Phase 2 commit alongside the glossary name fix.**
 
+### K — ✅ Persist admin-editable backend_config fields across container restart — CLOSED in Sprint 15 phase 4 (2026-04-24)
+
+Resolved. New `runtime_overrides_store.py` + `/app/data/runtime_overrides.json` sibling of `llm_config.json`. Main.py lifespan calls `apply_startup_overrides()` before any service reads backend_config. Three tracked fields: `rag_chunk_size`, `rag_embedding_model`, `rag_contextual_enabled`. Admin endpoints that flip them now `save_override(...)` so the next restart reads the persisted value instead of the deployment JSON default. Extensible via `_TRACKED_FIELDS` — add a new entry there when surfacing a new admin-editable backend_config setting.
+
+### L — Dedicated (smaller) summariser model for Contextual Retrieval
+CR currently reuses the `summariser` slot (Daniel's setup: qwen3.5-122b-a10b on LM Studio, 256k ctx). For the 60-word context sentence CR produces, that model is massive overkill — ~20-40 s per chunk, making a 100-CBA reindex take ~35 hours. A smaller model (qwen3.5-9b or qwen3.5-27b on Ollama) would do this ~5-10× faster. Add a dedicated `contextual_retrieval_slot` to LLMConfig (4th slot alongside inference/compressor/summariser) or a simple `rag_contextual_slot` enum on backend_config pointing at one of the existing slots with a smaller override. ~20 lines.
+
+### M — Content-hash cache for Contextual Retrieval
+When re-ingesting an already-enriched scope whose chunks are mostly unchanged, don't re-call the LLM for chunks whose content hash matches. Cache keyed on `sha256(chunk.text)` → stored context sentence. First ingest pays the full CR cost; subsequent ingests only pay for chunks whose text actually changed. For a deployment that curates 100 CBAs with occasional edits, this turns a 35-hour reindex into ~minutes. ~30 lines, new JSON file at `/app/data/cr_cache.json` or similar.
+
+### N — Parallelise Contextual Retrieval calls
+`_generate_chunk_context` runs through a single-worker ThreadPoolExecutor (from the Sprint 15 phase 4 asyncio fix). If the summariser runtime has parallel slots available (Ollama NUM_PARALLEL=4, LM Studio Parallel=4), bumping the ThreadPool to 4 workers gives ~4× speedup on the CR pass. Requires care that the summariser slot's runtime actually has the parallel capacity. 1 line change + a config knob.
+
+### O — UX polish for slow reindex operations
+Progress feedback during long-running reindexes (CR=on on big corpora can be 30+ min) is limited to OrbStack logs. Surface progress to the admin UI via a server-sent-events or polling endpoint (e.g. `GET /admin/api/v1/rag/reindex-status`) so the UI shows "12/44 chunks processed" instead of a blank spinner. Not urgent but noticeable on large deployments.
+
 ### J — Unify save-feedback pattern across admin sections
 Daniel flagged (2026-04-24): across CBC's admin panel, Save buttons don't give consistent feedback. LLMSection / GuardrailsSection / BrandingSection / SMTPSection / RAGSection etc. variously put `saveStatus` as tiny gray text in the header, or no feedback at all. HRDD's pattern (`HRDDHelper/src/admin/src/LLMTab.tsx`) is better: inline next to the button, button label switches to `Saving…`, green `✓ Saved` pill appears for ~3 s post-success.
 

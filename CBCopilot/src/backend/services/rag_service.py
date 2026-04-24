@@ -773,13 +773,14 @@ def update_runtime_rag_settings(
     embedding_model: str | None = None,
 ) -> dict[str, Any]:
     """Update `backend_config.rag_chunk_size` / `.rag_embedding_model` in
-    memory. Returns whether either value changed, so the admin UI can decide
-    whether to prompt for a Wipe & Reindex All.
+    memory AND persist to `runtime_overrides.json` so they survive container
+    restarts (Sprint 15 phase 4).
 
-    Persistence: the values are NOT written back to `deployment_backend.json`.
-    Matches the contextual-toggle pattern — ephemeral unless the admin edits
-    the JSON manually. Keeps this endpoint side-effect-free on disk.
+    Returns whether either value changed so the admin UI can decide whether
+    to prompt for a Wipe & Reindex All.
     """
+    from src.services import runtime_overrides_store
+
     changed_chunk = False
     changed_embed = False
     if chunk_size is not None:
@@ -800,6 +801,17 @@ def update_runtime_rag_settings(
         if embedding_model != backend_config.rag_embedding_model:
             backend_config.rag_embedding_model = embedding_model
             changed_embed = True
+
+    # Persist both changed fields in one write so the next backend restart
+    # picks them up instead of reverting to deployment_backend.json defaults.
+    persist_payload: dict[str, Any] = {}
+    if changed_chunk:
+        persist_payload["rag_chunk_size"] = backend_config.rag_chunk_size
+    if changed_embed:
+        persist_payload["rag_embedding_model"] = backend_config.rag_embedding_model
+    if persist_payload:
+        runtime_overrides_store.save_overrides(**persist_payload)
+
     return {
         "chunk_size": backend_config.rag_chunk_size,
         "embedding_model": backend_config.rag_embedding_model,
