@@ -120,6 +120,12 @@ export type AdminTranslationKeys =
   | 'rag_pipeline_contextual_enable_confirm' | 'rag_pipeline_contextual_disable_confirm'
   | 'rag_pipeline_enabling' | 'rag_pipeline_disabling'
   | 'rag_pipeline_reindexed' | 'rag_pipeline_already_in_state'
+  | 'rag_pipeline_embedder_hint' | 'rag_pipeline_chunk_size_hint'
+  | 'rag_pipeline_save_settings' | 'rag_pipeline_save_requires_wipe'
+  | 'rag_pipeline_saving' | 'rag_pipeline_settings_saved'
+  | 'rag_pipeline_wipe_title' | 'rag_pipeline_wipe_description'
+  | 'rag_pipeline_wipe_button' | 'rag_pipeline_wipe_confirm'
+  | 'rag_pipeline_wiping' | 'rag_pipeline_wipe_done'
   // Sessions tab
   | 'sessions_title' | 'sessions_filter_all' | 'sessions_filter_active'
   | 'sessions_filter_completed' | 'sessions_filter_flagged'
@@ -393,6 +399,18 @@ const EN: AdminTranslations = {
   rag_pipeline_disabling: 'Disabling + reindexing…',
   rag_pipeline_reindexed: 'Reindexed {count} scopes.',
   rag_pipeline_already_in_state: 'Already in that state.',
+  rag_pipeline_embedder_hint: 'Changing the embedder requires wiping the Chroma collection (vector dimensions differ). Both options are pre-downloaded in the Docker image.',
+  rag_pipeline_chunk_size_hint: 'Tokens per chunk. Larger chunks preserve tables and dense sections intact; smaller chunks improve retrieval granularity. 1024 is a good default for CBAs; bump to 1536/2048 only if large salary tables or annexes keep getting split.',
+  rag_pipeline_save_settings: 'Save settings',
+  rag_pipeline_save_requires_wipe: 'Changes are staged — press Wipe & Reindex All to apply.',
+  rag_pipeline_saving: 'Saving…',
+  rag_pipeline_settings_saved: 'Settings saved. Press Wipe & Reindex All to apply.',
+  rag_pipeline_wipe_title: 'Wipe & Reindex All',
+  rag_pipeline_wipe_description: 'Deletes the entire Chroma collection and re-ingests every scope with the current settings. Required after changing the embedder or chunk size. Synchronous — can take several minutes on a large corpus. Queries will fail or return empty results during the run.',
+  rag_pipeline_wipe_button: 'Wipe & Reindex All',
+  rag_pipeline_wipe_confirm: 'This will DELETE the entire Chroma collection and re-ingest every document in every scope with the current embedder + chunk size. Queries will fail or return empty during the run. Continue?',
+  rag_pipeline_wiping: 'Wiping Chroma + reindexing every scope… (can take minutes)',
+  rag_pipeline_wipe_done: 'Wiped. Reindexed {count} scopes.',
   // Sessions
   sessions_title: 'Sessions',
   sessions_filter_all: 'All',
@@ -790,6 +808,18 @@ const ES: AdminTranslations = {
   rag_pipeline_disabling: 'Desactivando + reindexando…',
   rag_pipeline_reindexed: '{count} ámbitos reindexados.',
   rag_pipeline_already_in_state: 'Ya se encuentra en ese estado.',
+  rag_pipeline_embedder_hint: 'Cambiar el embedder requiere borrar la colección Chroma (las dimensiones de los vectores no coinciden). Ambas opciones vienen pre-descargadas en la imagen Docker.',
+  rag_pipeline_chunk_size_hint: 'Tokens por chunk. Chunks grandes preservan tablas y secciones densas intactas; chunks pequeños mejoran la granularidad de recuperación. 1024 es buen default para CBAs; sube a 1536/2048 sólo si tablas salariales grandes o anexos quedan partidos.',
+  rag_pipeline_save_settings: 'Guardar configuración',
+  rag_pipeline_save_requires_wipe: 'Cambios pendientes — pulsa Wipe & Reindex All para aplicarlos.',
+  rag_pipeline_saving: 'Guardando…',
+  rag_pipeline_settings_saved: 'Configuración guardada. Pulsa Wipe & Reindex All para aplicarla.',
+  rag_pipeline_wipe_title: 'Wipe & Reindex All',
+  rag_pipeline_wipe_description: 'Borra la colección Chroma entera y re-ingesta cada scope con la configuración actual. Obligatorio tras cambiar embedder o chunk size. Síncrono — puede tardar varios minutos con un corpus grande. Las consultas fallarán o devolverán vacío mientras corre.',
+  rag_pipeline_wipe_button: 'Wipe & Reindex All',
+  rag_pipeline_wipe_confirm: 'Esto BORRARÁ la colección Chroma entera y re-ingestará todos los documentos de todos los scopes con el embedder + chunk size actuales. Las consultas fallarán o devolverán vacío mientras corre. ¿Continuar?',
+  rag_pipeline_wiping: 'Borrando Chroma + re-indexando todos los scopes… (puede tardar minutos)',
+  rag_pipeline_wipe_done: 'Borrado. {count} scopes re-indexados.',
   // Sessions
   sessions_title: 'Sesiones',
   sessions_filter_all: 'Todas',

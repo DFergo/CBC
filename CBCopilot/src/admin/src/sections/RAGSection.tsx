@@ -145,8 +145,19 @@ export default function RAGSection({ frontendId, companySlug, company, onCompany
     setError('')
     setBusy(true)
     try {
-      const s = await reindexRAG(frontendId, companySlug)
-      setStats(s)
+      // Sprint 15 phase 3: at the global tier, plain "Reindex" cascades to
+      // every scope in the deployment. Rationale: global-tier settings (embed
+      // model, chunk size, contextual retrieval) apply to ALL scopes, so
+      // rebuilding only the global scope leaves every frontend + company
+      // holding stale chunks against the new settings. At other tiers the
+      // plain Reindex still means "just this scope" — that makes sense there.
+      if (tierLabel === 'global') {
+        await reindexAllRAG()
+        await refresh()
+      } else {
+        const s = await reindexRAG(frontendId, companySlug)
+        setStats(s)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {

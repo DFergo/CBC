@@ -616,6 +616,129 @@ def reindex_all_scopes() -> list[dict[str, Any]]:
     return out
 
 
+def wipe_chroma_and_reindex_all() -> dict[str, Any]:
+    """Delete the entire Chroma collection + all caches, then rebuild every
+    scope from scratch. Required whenever the embedding model or chunk size
+    changes, because:
+
+    - Embedding dim change (e.g. MiniLM 384 → BGE-M3 1024) makes existing
+      vectors incompatible with new ones in the same Chroma collection.
+    - Chunk size change produces a different set of nodes; keeping legacy
+      chunks alongside new ones would confuse retrieval and double-count.
+
+    Steps:
+    1. Invalidate every in-memory cache (LlamaIndex wrappers, BM25 retrievers,
+       embed_model, reranker) so the next `_get_embed_model()` re-reads
+       `config.rag_embedding_model` and `_setup_settings()` picks up the
+       new `config.rag_chunk_size`.
+    2. Close the Chroma client and `rm -rf` its data dir. Re-open on next
+       `_get_chroma_collection()` call — a fresh, empty collection that
+       accepts whichever embedding dim we produce.
+    3. Call `reindex_all_scopes()` to re-ingest every document with the
+       new settings.
+
+    Returns: `{"scopes_reindexed": N, "stats": [...], "embedding_model": ...,
+               "chunk_size": ...}`
+    """
+    global _chroma_client, _chroma_collection, _embed_model, _reranker
+    import shutil
+
+    logger.warning(
+        f"Wipe & reindex triggered: chroma={CHROMA_DIR}, "
+        f"new embedding={backend_config.rag_embedding_model}, "
+        f"new chunk_size={backend_config.rag_chunk_size}"
+    )
+
+    # 1. Drop in-memory caches.
+    with _indexes_lock:
+        _indexes.clear()
+    _invalidate_bm25_cache(None)  # all scopes
+    with _embed_lock:
+        _embed_model = None
+    with _reranker_lock:
+        _reranker = None
+
+    # 2. Close + wipe Chroma on disk.
+    with _chroma_lock:
+        try:
+            if _chroma_client is not None:
+                # chromadb has no public .close(); dropping references +
+                # rm-rf'ing the dir is the supported path in PersistentClient
+                _chroma_client.reset()  # clears collections the client knows about
+        except Exception as e:
+            logger.warning(f"Chroma client reset failed (non-fatal): {e}")
+        _chroma_client = None
+        _chroma_collection = None
+        if CHROMA_DIR.exists():
+            try:
+                shutil.rmtree(CHROMA_DIR, ignore_errors=False)
+            except OSError as e:
+                logger.error(f"Could not remove chroma dir {CHROMA_DIR}: {e}")
+                raise
+
+    # 3. Rebuild every scope. `_get_chroma_collection()` will create a fresh
+    #    collection on demand when `reindex()` calls `_scope_index_wrapper()`.
+    stats = reindex_all_scopes()
+
+    return {
+        "scopes_reindexed": len(stats),
+        "stats": stats,
+        "embedding_model": backend_config.rag_embedding_model,
+        "chunk_size": backend_config.rag_chunk_size,
+    }
+
+
+# Allowlist of embedding models that the Dockerfile pre-downloads. Admins
+# picking one outside this list would force a network download at request
+# time (slow, may fail with no HF token) — so we refuse the change.
+SUPPORTED_EMBEDDING_MODELS: tuple[str, ...] = (
+    "BAAI/bge-m3",
+    "sentence-transformers/all-MiniLM-L6-v2",
+)
+
+SUPPORTED_CHUNK_SIZES: tuple[int, ...] = (512, 1024, 1536, 2048)
+
+
+def update_runtime_rag_settings(
+    chunk_size: int | None = None,
+    embedding_model: str | None = None,
+) -> dict[str, Any]:
+    """Update `backend_config.rag_chunk_size` / `.rag_embedding_model` in
+    memory. Returns whether either value changed, so the admin UI can decide
+    whether to prompt for a Wipe & Reindex All.
+
+    Persistence: the values are NOT written back to `deployment_backend.json`.
+    Matches the contextual-toggle pattern — ephemeral unless the admin edits
+    the JSON manually. Keeps this endpoint side-effect-free on disk.
+    """
+    changed_chunk = False
+    changed_embed = False
+    if chunk_size is not None:
+        if chunk_size not in SUPPORTED_CHUNK_SIZES:
+            raise ValueError(
+                f"chunk_size {chunk_size} not supported; "
+                f"pick one of {SUPPORTED_CHUNK_SIZES}"
+            )
+        if chunk_size != backend_config.rag_chunk_size:
+            backend_config.rag_chunk_size = chunk_size
+            changed_chunk = True
+    if embedding_model is not None:
+        if embedding_model not in SUPPORTED_EMBEDDING_MODELS:
+            raise ValueError(
+                f"embedding_model {embedding_model!r} not supported; "
+                f"pick one of {SUPPORTED_EMBEDDING_MODELS}"
+            )
+        if embedding_model != backend_config.rag_embedding_model:
+            backend_config.rag_embedding_model = embedding_model
+            changed_embed = True
+    return {
+        "chunk_size": backend_config.rag_chunk_size,
+        "embedding_model": backend_config.rag_embedding_model,
+        "changed": changed_chunk or changed_embed,
+        "requires_wipe_and_reindex": changed_chunk or changed_embed,
+    }
+
+
 def reindex_frontend_cascade(frontend_id: str) -> list[dict[str, Any]]:
     """Rebuild the frontend-tier index plus every company under it. Used by
     the frontend-tier RAGSection's "Reindex frontend + companies" button.

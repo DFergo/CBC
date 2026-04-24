@@ -190,6 +190,53 @@ async def get_rag_settings(_admin: dict = Depends(require_admin)):
     }
 
 
+class RAGSettingsUpdate(BaseModel):
+    """Sprint 15 phase 3 — partial update of the editable RAG settings.
+    Both fields optional; pass only what you want to change."""
+    chunk_size: int | None = None
+    embedding_model: str | None = None
+
+
+@router.patch("/rag/settings")
+async def update_rag_settings(req: RAGSettingsUpdate, _admin: dict = Depends(require_admin)):
+    """Update the in-memory RAG config (chunk_size + embedding_model).
+    Returns whether a wipe-and-reindex is needed to apply the change.
+
+    Changing either field does NOT automatically rebuild the index — the admin
+    must separately POST /rag/wipe-and-reindex-all. This two-step flow lets
+    the admin change both values in one save before paying the reindex cost.
+
+    Persistence: values are in-memory only (survives until container restart).
+    Matches the Sprint 9 contextual-toggle pattern. For permanent changes,
+    edit deployment_backend.json and redeploy."""
+    try:
+        result = rag_service.update_runtime_rag_settings(
+            chunk_size=req.chunk_size,
+            embedding_model=req.embedding_model,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@router.post("/rag/wipe-and-reindex-all")
+async def wipe_and_reindex_all(_admin: dict = Depends(require_admin)):
+    """Nuclear reindex. Wipes /app/data/chroma entirely + every in-memory
+    cache (LlamaIndex wrappers, BM25 retrievers, embedder, reranker), then
+    re-ingests every registered scope with the current
+    `rag_embedding_model` + `rag_chunk_size`.
+
+    Required after changing embedding model (dim change breaks the
+    collection) or chunk_size (new splits needed). Synchronous — response
+    blocks until every scope finishes indexing. Heavy on a big corpus;
+    the admin UI should show a spinner + expected duration warning."""
+    try:
+        result = rag_service.wipe_chroma_and_reindex_all()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Wipe & reindex failed: {e}")
+    return result
+
+
 @router.post("/rag/settings/contextual")
 async def toggle_contextual_retrieval(req: ContextualToggleRequest, _admin: dict = Depends(require_admin)):
     """Flip the Contextual Retrieval toggle. When it changes, reindex every

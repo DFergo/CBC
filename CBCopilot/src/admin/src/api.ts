@@ -605,6 +605,35 @@ export async function toggleContextualRetrieval(enabled: boolean): Promise<Conte
   })
 }
 
+// --- Sprint 15 phase 3: editable chunk_size + embedding_model ---
+
+export interface RAGSettingsUpdateResult {
+  chunk_size: number
+  embedding_model: string
+  changed: boolean
+  requires_wipe_and_reindex: boolean
+}
+
+export async function updateRAGSettings(
+  patch: { chunk_size?: number; embedding_model?: string },
+): Promise<RAGSettingsUpdateResult> {
+  return request('/admin/api/v1/rag/settings', {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+export interface WipeAndReindexResult {
+  scopes_reindexed: number
+  stats: { scope_key: string; document_count?: number; node_count?: number; error?: string }[]
+  embedding_model: string
+  chunk_size: number
+}
+
+export async function wipeAndReindexAll(): Promise<WipeAndReindexResult> {
+  return request('/admin/api/v1/rag/wipe-and-reindex-all', { method: 'POST' })
+}
+
 // --- Per-frontend organizations override ---
 
 export interface FrontendOrgsOverride {

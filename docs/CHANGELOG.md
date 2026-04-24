@@ -1,5 +1,77 @@
 # CBC — Changelog
 
+## Sprint 15 phase 3 — Editable RAG settings + close item I (2026-04-24)
+
+Closes the pipeline drift discovered during phase 2 empirical investigation: `deployment_backend.json` had been pinning `rag_embedding_model` to the legacy `all-MiniLM-L6-v2` (384-dim) and `rag_chunk_size` to `512`, silently overriding Sprint 9's code defaults of `BAAI/bge-m3` (1024-dim) and `1024`. Daniel's deployment had been running a half-deployed Sprint 9 state — reranker updated, embedder not — without anyone noticing.
+
+### Config drift fix
+
+- `CBCopilot/config/deployment_backend.json`: `rag_embedding_model: all-MiniLM-L6-v2 → BAAI/bge-m3`, `rag_chunk_size: 512 → 1024`.
+
+### Admin-editable RAG settings
+
+Both changed values are now controlled from the admin panel RAG Pipeline section:
+- **Embedding model**: dropdown, `BAAI/bge-m3` (default) vs `sentence-transformers/all-MiniLM-L6-v2`. Both are pre-downloaded in the Dockerfile so switching is instantaneous on disk; the wipe-and-reindex cost is the slow part.
+- **Chunk size**: slider, 512 / 1024 / 1536 / 2048 tokens. 1024 is the default for CBAs; 1536/2048 recommended when large salary tables or annexes keep getting split.
+- Reranker + retrieval strategy stay read-only (only one reranker pre-downloaded).
+
+Editor UX: admin changes draft values, clicks Save → values update in-memory via `PATCH /admin/api/v1/rag/settings`. Save does NOT reindex — admin must click the destacado red "Wipe & Reindex All" button to actually apply the new settings against the corpus.
+
+### Wipe & Reindex All
+
+New `POST /admin/api/v1/rag/wipe-and-reindex-all` endpoint + UI button. Does:
+1. Drops every in-memory cache: `_indexes` (LlamaIndex wrappers), `_bm25_cache` (Sprint 15 phase 2), `_embed_model`, `_reranker`.
+2. Closes the Chroma client + `rm -rf /app/data/chroma/` entirely.
+3. Calls `reindex_all_scopes()` to re-ingest every scope with the current settings.
+
+Required after any embedding-model or chunk_size change (dim/bucketing changes break the existing collection). Synchronous; on a big corpus it can take several minutes. Queries against any scope return empty during the run — intended.
+
+### Global reindex cascades
+
+`RAGSection.onReindex` at the global tier now calls `reindexAllRAG()` instead of `reindexRAG(undefined, undefined)`. Rationale: global-tier settings (embedder, chunk size, Contextual Retrieval) apply to every scope, so rebuilding only the global scope would leave frontend + company scopes holding stale chunks. At other tiers `onReindex` still means "just this scope" — that semantic stays correct there.
+
+### Validation allowlists (backend)
+
+`rag_service.update_runtime_rag_settings()` validates:
+- `chunk_size ∈ {512, 1024, 1536, 2048}` — rejects arbitrary values.
+- `embedding_model ∈ {BAAI/bge-m3, sentence-transformers/all-MiniLM-L6-v2}` — rejects values whose weights aren't pre-downloaded by the Dockerfile.
+
+### Files touched
+
+Backend:
+- `CBCopilot/config/deployment_backend.json` — two value changes
+- `CBCopilot/src/backend/services/rag_service.py` — `wipe_chroma_and_reindex_all()`, `update_runtime_rag_settings()`, allowlists
+- `CBCopilot/src/backend/api/v1/admin/rag.py` — PATCH `/rag/settings`, POST `/rag/wipe-and-reindex-all`
+
+Admin:
+- `CBCopilot/src/admin/src/api.ts` — `updateRAGSettings()`, `wipeAndReindexAll()` + types
+- `CBCopilot/src/admin/src/sections/RAGPipelineSection.tsx` — rebuilt: editable dropdown + slider + Save + Wipe (destacado red)
+- `CBCopilot/src/admin/src/sections/RAGSection.tsx` — `onReindex` cascades at global tier
+- `CBCopilot/src/admin/src/i18n.ts` — 12 new keys in EN + ES
+
+Docs:
+- `docs/MILESTONES.md` — item I marked CLOSED with resolution notes
+- `docs/CHANGELOG.md` — this entry
+
+### Deploy + first-time use
+
+1. Portainer re-pull backend + frontend.
+2. Admin panel → General → RAG Pipeline → expand.
+3. Verify current values: embedder should now say `BAAI/bge-m3`, chunk size `1024`.
+4. (First time after this deploy) click **Wipe & Reindex All** — rebuilds every scope against the new settings. Expect minutes on big corpora.
+5. After the run, test a query. Logs in OrbStack should show:
+   - `chunker: ...  → N nodes (max=... mean=...)` during each scope's reindex
+   - `Loaded embedding model BAAI/bge-m3` once (on first embed call post-wipe)
+   - `rag.query scope=... returned=5 max_chunk=~4000 chars` at query time
+
+### No regression of Sprint 15 phase 1/2 work
+
+- MarkdownNodeParser + SentenceSplitter fix (phase 1): unchanged.
+- BM25 retriever cache (phase 2, item H): unchanged. `wipe_chroma_and_reindex_all` calls `_invalidate_bm25_cache(None)` to drop the cache cleanly.
+- Glossary bug fix (phase 2): unchanged.
+
+---
+
 ## Sprint 15 — RAG chunker fix + observability (2026-04-24)
 
 ### Why this sprint

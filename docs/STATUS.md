@@ -1,6 +1,6 @@
 # CBC — Project Status
 
-**Current Sprint:** 15 — **CODE LANDED 2026-04-24** — RAG chunker fix + observability. Daniel approved the plan; fix implemented in `rag_service._parse_nodes`. Live-test verified 1 node → 45 nodes on the real Amcor CBA.md. Awaits Daniel's Portainer re-pull + manual reindex via admin panel.
+**Current Sprint:** 15 — **CLOSED 2026-04-24** — RAG chunker + BM25 cache + editable embedder/chunk + Wipe & Reindex admin. Three phases landed same day. Sprint 9's silent deployment drift (item I) resolved. Daniel will do ~48h of QA; flagged items in MILESTONES A-G for future sessions.
 **Last Updated:** 2026-04-24
 
 ## Sprint 15 — RAG chunker fix + observability
