@@ -26,6 +26,7 @@ drained the next time the UI reconnects (within 30s keepalive window).
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -87,6 +88,26 @@ _pending_cancellations: set[str] = set()
 # semaphore drain naturally into it.
 _turn_semaphore: asyncio.Semaphore | None = None
 _turn_semaphore_cap: int = 0
+
+# Sprint 14 follow-up — strong refs to in-flight turn tasks. Sprint 14's
+# initial implementation awaited asyncio.gather() on the per-tick task batch,
+# which meant the polling loop itself blocked until EVERY concurrent stream
+# finished. A single 20-30 s turn froze the tick, so new messages in OTHER
+# frontends' queues accumulated until the tick returned. User-visible
+# symptom: "en cola" with just two devices, serialised feel despite the
+# parallelism work. Fix: fire-and-forget via create_task + a set to keep
+# strong references (otherwise Python can GC the task mid-flight). The
+# semaphore below still caps effective concurrency at max_concurrent_turns.
+_inflight_turns: set[asyncio.Task] = set()
+
+
+def _spawn_turn(coro) -> asyncio.Task:
+    """Fire-and-forget an LLM-bound task. Strong-referenced in _inflight_turns
+    until completion; cleaned up via done_callback."""
+    task = asyncio.create_task(coro)
+    _inflight_turns.add(task)
+    task.add_done_callback(_inflight_turns.discard)
+    return task
 
 
 def _ensure_turn_semaphore() -> None:
@@ -483,16 +504,37 @@ async def _maybe_alert_admins(token: str, session: dict[str, Any], filename: str
         logger.warning(f"[{token}] admin alert for upload {filename} failed: {e}")
 
 
+TERMINAL_EVENTS = ("done", "error", "cancelled")
+
+
 async def _push_chunk(client: httpx.AsyncClient, url: str, token: str, event: str, data: str) -> None:
-    try:
-        await client.post(
-            f"{url.rstrip('/')}/internal/stream/{token}/chunk",
-            json={"event": event, "data": data},
-            timeout=STREAM_PUSH_TIMEOUT,
-        )
-    except httpx.HTTPError as e:
-        # Non-fatal — the React side may have disconnected. Log and continue.
-        logger.info(f"Push chunk to {url}/{token} [{event}] dropped: {e}")
+    """Push one SSE event to the sidecar. Terminal events (done/error/cancelled)
+    retry once on failure — losing a terminal event leaves the user's UI stuck
+    on isStreaming=true, showing a generic "something went wrong" after the
+    onerror strikes out. Non-terminal tokens fail silently (individual token
+    drops degrade content quality but the UI still gets the terminal and
+    unlocks the input).
+    """
+    is_terminal = event in TERMINAL_EVENTS
+    attempts = 2 if is_terminal else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            r = await client.post(
+                f"{url.rstrip('/')}/internal/stream/{token}/chunk",
+                json={"event": event, "data": data},
+                timeout=STREAM_PUSH_TIMEOUT,
+            )
+            if r.status_code // 100 == 2:
+                return
+            level = logger.warning if is_terminal else logger.info
+            level(f"[{token}] push_chunk [{event}] HTTP {r.status_code} "
+                  f"(attempt {attempt}/{attempts})")
+        except httpx.HTTPError as e:
+            level = logger.warning if is_terminal else logger.info
+            level(f"[{token}] push_chunk [{event}] failed: {e} "
+                  f"(attempt {attempt}/{attempts})")
+        if attempt < attempts:
+            await asyncio.sleep(0.5)
 
 
 async def _process_turn(
@@ -591,6 +633,9 @@ async def _process_turn(
     # or below threshold.
     messages = await context_compressor.compress_if_needed(session_token, messages, frontend_id)
     accumulated: list[str] = []
+    turn_started_at = time.monotonic()
+    first_token_at: float | None = None
+    logger.info(f"[{session_token}] turn start (inference slot, {len(messages)} msgs, inflight_turns={len(_inflight_turns)})")
 
     # Sprint 14 — cooperative cancellation via shared backend-level set.
     # `cancel_watcher_loop` (started from main.py lifespan) drains each
@@ -608,6 +653,12 @@ async def _process_turn(
             frontend_id=frontend_id,
             cancel_check=lambda: session_token in _pending_cancellations,
         ):
+            if first_token_at is None:
+                first_token_at = time.monotonic()
+                logger.info(
+                    f"[{session_token}] first token after "
+                    f"{first_token_at - turn_started_at:.2f}s"
+                )
             accumulated.append(token_text)
             await _push_chunk(client, url, session_token, "token", token_text)
     except asyncio.CancelledError:
@@ -616,6 +667,11 @@ async def _process_turn(
         logger.exception(f"[{session_token}] LLM stream failed: {e}")
         await _push_chunk(client, url, session_token, "error", f"LLM error: {e}")
         _pending_cancellations.discard(session_token)
+        logger.info(
+            f"[{session_token}] turn end (ERROR) elapsed="
+            f"{time.monotonic() - turn_started_at:.2f}s "
+            f"partial_chars={len(''.join(accumulated))}"
+        )
         return
     finally:
         _pending_cancellations.discard(session_token)
@@ -627,7 +683,11 @@ async def _process_turn(
         partial = "".join(accumulated).strip()
         if partial:
             session_store.add_message(session_token, "assistant", partial)
-        logger.info(f"[{session_token}] turn cancelled by user (partial chars={len(partial)})")
+        logger.info(
+            f"[{session_token}] turn end (CANCELLED) elapsed="
+            f"{time.monotonic() - turn_started_at:.2f}s "
+            f"partial_chars={len(partial)}"
+        )
         await _push_chunk(client, url, session_token, "cancelled", "")
         return
 
@@ -641,6 +701,12 @@ async def _process_turn(
     if sources:
         await _push_chunk(client, url, session_token, "sources", json.dumps(sources))
     await _push_chunk(client, url, session_token, "done", "")
+    ttft = f"{first_token_at - turn_started_at:.2f}s" if first_token_at else "N/A"
+    logger.info(
+        f"[{session_token}] turn end (OK) elapsed="
+        f"{time.monotonic() - turn_started_at:.2f}s "
+        f"ttft={ttft} chars={len(full)} tokens≈{len(accumulated)}"
+    )
 
 
 async def _process_message(client: httpx.AsyncClient, fe: dict[str, Any], msg: dict[str, Any]) -> None:
@@ -820,15 +886,16 @@ async def _process_frontend(client: httpx.AsyncClient, fe: dict[str, Any]) -> No
     # 3. Queue drain
     drained = await _drain_queue(client, url)
 
-    # 3a. Messages: run in parallel, bounded by the global turn semaphore
-    #     (each `_process_message` → `_process_turn` acquires the semaphore).
-    #     Exceptions per message are logged but don't cancel siblings.
-    msg_tasks = [
-        _process_message_safe(client, fe, msg, fid)
-        for msg in drained.get("messages") or []
-    ]
-    if msg_tasks:
-        await asyncio.gather(*msg_tasks)
+    # 3a. Messages: fire-and-forget so this tick doesn't block on LLM
+    #     streaming time. Each spawned task acquires the global turn
+    #     semaphore before running `_process_message` → `_process_turn`,
+    #     so effective concurrency is capped at max_concurrent_turns even
+    #     with dispatch-without-await. Critical: NOT awaiting here is what
+    #     lets the polling loop keep draining OTHER frontends' queues (and
+    #     OTHER users of this same frontend) every POLL_INTERVAL_SECONDS,
+    #     regardless of how long any individual turn takes to stream.
+    for msg in drained.get("messages") or []:
+        _spawn_turn(_process_message_safe(client, fe, msg, fid))
 
     # 4. Recovery requests (not LLM-heavy, run sequentially for simplicity).
     for token in drained.get("recovery_requests") or []:
