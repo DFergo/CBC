@@ -10,7 +10,6 @@ import PerFrontendOrgsPanel from './panels/PerFrontendOrgsPanel'
 import PerFrontendLLMPanel from './panels/PerFrontendLLMPanel'
 import PromptsSection from './sections/PromptsSection'
 import RAGSection from './sections/RAGSection'
-import TablesSection from './sections/TablesSection'
 import { useT } from './i18n'
 
 const POLL_INTERVAL_MS = 10000  // refresh status every 10s
@@ -168,7 +167,6 @@ export default function FrontendsTab() {
           <SessionSettingsPanel frontendId={selectedFrontend.frontend_id} />
           <PromptsSection frontendId={selectedFrontend.frontend_id} />
           <RAGSection frontendId={selectedFrontend.frontend_id} />
-          <TablesSection frontendId={selectedFrontend.frontend_id} />
           <PerFrontendOrgsPanel frontendId={selectedFrontend.frontend_id} />
           <PerFrontendLLMPanel frontendId={selectedFrontend.frontend_id} />
           <CompanyManagementPanel frontendId={selectedFrontend.frontend_id} />

@@ -1,5 +1,41 @@
 # CBC — Changelog
 
+## Sprint 16 follow-ups — UX polish + concurrency tightening (2026-04-24)
+
+Three items surfaced during Daniel's post-Sprint-16 live validation. All resolved in this commit; Sprint 16 closed.
+
+### Task #36 — Disambiguate tables that share a source_location
+
+**Problem:** the Amcor Lezo CBA only has one top-level `####` heading, so all 4 extracted tables ended up with the same `name` and `source_location` (the document title). The admin listing + Chroma card texts became four indistinguishable rows — cosmetic but confusing for validation.
+
+**Fix** (`CBCopilot/src/backend/services/table_extractor.py`):
+- After the main extraction loop, count tables per source_location. When two or more collapse onto the same location:
+  1. Append the first 3 column names as a discriminator (`"Convenio... — Coef., Al día, A la noche"`) — works when different tables in the same section have different columns.
+  2. If column-based disambiguation still leaves duplicates (e.g. two tables with identical headers), add a `"(tabla N de M)"` ordinal suffix.
+- Leaves names alone when the table already had a unique label. No-op for single-table documents.
+
+### Task #37 — Redesign admin UI: tables as a compact dropdown under each company
+
+**Problem:** the Sprint 16 `TablesSection` mounted at three tiers (General, Frontends, Companies) as a full-width card with a 5-row CSV preview inline per table. With 50 CBAs per company the page would be unscrollable. Global + frontend tiers barely have documents anyway.
+
+**Fix:**
+- `admin/src/GeneralTab.tsx`: remove `TablesSection` from the global tier.
+- `admin/src/FrontendsTab.tsx`: remove `TablesSection` from the frontend tier.
+- `admin/src/sections/TablesSection.tsx`: rewrite as a collapsed-by-default `<details>` element. Summary line shows `Tablas extraídas (N)` + the Re-extract button. On expand, a flat list per document: `name · source_location · N rows · CSV download link`. No inline previews. Compact enough to drop inside `CompanyManagementPanel`'s existing flow without overwhelming the page.
+- Intent shift: the admin just needs to verify "did my CBA produce tables, and can I pull one if I want to check it?". The CSV link stays for deep inspection; the 5-row inline preview was overkill.
+
+### Task #38 — Eliminate the redundant 2× `_build_index` during wipe-and-reindex
+
+**Problem:** `wipe_chroma_and_reindex_all` triggers two full `_build_index(g-p1/amcor)` passes (each ~23 s with BGE-M3 embedding + table extraction). The Fase 0.b per-scope lock prevents chunk duplication, so the final count is correct (44 / 4), but the wipe takes twice as long as it should. The re-extract path (single-scope reindex) has only one pass, which pinpointed the race: a concurrent `get_index()` from the chat path or the UI firing during the wipe finds 0 chunks mid-build and re-enters `_build_index`.
+
+**Fix** (`CBCopilot/src/backend/services/rag_service.py`):
+- `_build_locks` now uses `threading.RLock` instead of `threading.Lock`. Reentrant semantics are needed for the next step without deadlocking.
+- `get_index()` now acquires the per-scope `build_lock` before deciding whether to build. If the wipe thread is inside, `get_index` waits, then re-checks `_scope_chunk_count`. By then the wipe's insert has landed, so it just wraps the existing chunks instead of firing a redundant rebuild.
+- No change to `_build_index` itself — it still acquires the same lock, now as a reentrant acquire from either caller.
+- Observable impact: Wipe & Reindex All should drop from ~53 s to ~27 s on Daniel's 1-CBA corpus.
+
+---
+
 ## Sprint 16 — Structured Table Pipeline + Fase 0.b duplicado fix (2026-04-24)
 
 ### Why

@@ -86,17 +86,21 @@ _indexes_lock = threading.Lock()
 # calling get_index() at the same moment). Both would run _delete_scope on
 # an empty collection and then both insert their 44 nodes → 88 chunks in
 # Chroma. BM25 rebuilt with 88 nodes. Serialising per-scope keeps the
-# delete/insert atomic for each builder. The second thread rebuilds over
-# the first's output (wasteful but correct — final chunk count is right).
-_build_locks: dict[str, threading.Lock] = {}
+# delete/insert atomic for each builder.
+#
+# RLock (not Lock) — Sprint 16 task #38 follow-up: `get_index` also needs
+# to acquire this lock to avoid a redundant 2× rebuild during wipe. Since
+# `get_index` then calls `_build_index` which re-acquires the same lock
+# from the same thread, we need reentrant semantics.
+_build_locks: dict[str, threading.RLock] = {}
 _build_locks_mutex = threading.Lock()
 
 
-def _get_build_lock(scope_key: str) -> threading.Lock:
+def _get_build_lock(scope_key: str) -> threading.RLock:
     with _build_locks_mutex:
         lock = _build_locks.get(scope_key)
         if lock is None:
-            lock = threading.Lock()
+            lock = threading.RLock()
             _build_locks[scope_key] = lock
         return lock
 
@@ -809,15 +813,26 @@ def get_index(scope_key: str) -> Any | None:
     With Chroma the storage is the collection itself — the wrapper is just a
     LlamaIndex façade. We cache the wrapper to skip StorageContext rebuilds
     on hot paths but it's safe to discard at any time.
+
+    Sprint 16 #38 — when wipe_chroma_and_reindex_all is mid-flight for this
+    scope, an incoming chat query used to fire a redundant `_build_index`
+    (both threads saw 0 chunks before the admin thread had inserted its
+    batch). We now acquire the scope's build_lock before deciding whether
+    to build: if the admin thread is inside, we wait, and once it exits
+    `_scope_chunk_count` returns the fresh count and we just wrap (no
+    rebuild). RLock lets the same thread re-acquire in `_build_index`
+    when a real rebuild is needed.
     """
     with _indexes_lock:
         if scope_key in _indexes:
             return _indexes[scope_key]
 
-    if _scope_chunk_count(scope_key) > 0:
-        wrapper = _scope_index_wrapper(scope_key)
-    else:
-        wrapper = _build_index(scope_key)
+    build_lock = _get_build_lock(scope_key)
+    with build_lock:
+        if _scope_chunk_count(scope_key) > 0:
+            wrapper = _scope_index_wrapper(scope_key)
+        else:
+            wrapper = _build_index(scope_key)
 
     with _indexes_lock:
         if wrapper is not None:

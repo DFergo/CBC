@@ -1,6 +1,6 @@
 # CBC — Project Status
 
-**Current Sprint:** 16 — **CODE DONE 2026-04-24**, pending Portainer repull + Daniel's validation. Covers Fase 0 (async reindex), Fase 0.b (dup-chunks fix + CR off by default), and Fases 1-9 (full table pipeline). Sprint 17 **PLANNED**.
+**Current Sprint:** 16 — **CLOSED 2026-04-24**. All three follow-ups from Daniel's live validation shipped (nombre tablas md, UI redesign as collapsible, redundant build elimination). Sprint 17 **PLANNED**.
 **Last Updated:** 2026-04-24
 
 ## Sprint 16 — Structured Table Pipeline + concurrency fixes

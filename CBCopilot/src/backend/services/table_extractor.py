@@ -239,9 +239,50 @@ def extract_markdown_tables(md_text: str, doc_name: str) -> list[TableSpec]:
         )
         i = k
 
+    # Sprint 16 task #36 — disambiguate tables that share a source_location.
+    # Happens when a CBA only has one top-level heading and all tables land
+    # under that same chain. Without this, the admin listing shows four
+    # identical-looking rows. Strategy: (1) if the existing name equals the
+    # location, append the first 3 column names as a discriminator; (2) if
+    # that still collides, append a "(tabla N de M)" ordinal.
+    if len(tables) > 1:
+        from collections import Counter
+        loc_counts = Counter(t.source_location for t in tables)
+        _enhance_names_with_columns(tables, loc_counts)
+        # Re-evaluate after column-based enhancement. Any leftover collisions
+        # (e.g. two tables with identical headers) get the ordinal suffix.
+        name_counts = Counter(t.name for t in tables)
+        if any(c > 1 for c in name_counts.values()):
+            seq: dict[str, int] = {}
+            for t in tables:
+                if name_counts[t.name] > 1:
+                    idx = seq.get(t.name, 0) + 1
+                    seq[t.name] = idx
+                    t.name = f"{t.name} (tabla {idx} de {name_counts[t.name]})"
+
     if tables:
         logger.info(f"md tables: {doc_name} → {len(tables)} tables")
     return tables
+
+
+def _enhance_names_with_columns(tables: list[TableSpec], loc_counts) -> None:
+    """For tables whose `name` collapsed to the raw source_location (shared
+    heading chain), append a short "— col1, col2, col3" suffix built from
+    the header row. Leaves names alone when the table already had a more
+    specific label."""
+    for t in tables:
+        if loc_counts[t.source_location] <= 1:
+            continue
+        if t.name != t.source_location:
+            continue
+        cols = [c for c in (t.columns or []) if c and c.strip()]
+        if not cols:
+            continue
+        discriminator = ", ".join(cols[:3])
+        # Keep the line short for UI rows — the full heading is already in
+        # source_location, so we can trim the duplication to something like
+        # "... — Coef., Al día, A la noche".
+        t.name = f"{t.name[:60].rstrip()}… — {discriminator}" if len(t.name) > 60 else f"{t.name} — {discriminator}"
 
 
 # --- PDF table extraction ---------------------------------------------------

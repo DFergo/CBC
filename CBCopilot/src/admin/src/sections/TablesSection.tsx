@@ -1,12 +1,12 @@
-// Sprint 16 — Structured Table Pipeline admin view.
+// Sprint 16 — Structured Table Pipeline admin view (compact, collapsible).
 //
-// Tier-aware like RAGSection: omit both props for global, frontendId for
-// frontend tier, frontendId+companySlug for company tier. Shows every table
-// the extractor has stored for the scope grouped by source document, with
-// a 5-row preview per table plus a download link for the full CSV. The
-// "Re-extract" button triggers a full scope reindex (prose + tables) via
-// /admin/api/v1/tables/reextract — useful for forcing a fresh pass after
-// editing a document outside of the upload flow.
+// Only mounted at the company tier (inside CompanyManagementPanel). Intent is
+// "let the admin verify that tables got extracted from a CBA", not "browse
+// tabular content". So by default the section renders collapsed with a
+// "Tablas extraídas (N)" summary; expanding shows a flat list (one row per
+// table) with name + source location + row count + a CSV download link.
+// No 5-row previews — that made the page unusable once a company had more
+// than a handful of CBAs.
 
 import { useEffect, useState } from 'react'
 import { listTables, reextractTables, tableCsvUrl } from '../api'
@@ -37,7 +37,6 @@ export default function TablesSection({ frontendId, companySlug }: Props) {
 
   useEffect(() => {
     refresh()
-    // Reset per-scope state when the scope identity changes.
     setStatus('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frontendId, companySlug])
@@ -60,109 +59,82 @@ export default function TablesSection({ frontendId, companySlug }: Props) {
     }
   }
 
+  const total = data?.total_tables ?? 0
+
   return (
-    <section className="bg-white rounded-lg shadow p-4 space-y-4">
-      <header className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-800">{t('tables_heading')}</h3>
-          <p className="text-sm text-gray-500">{t('tables_description')}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {status && <span className="text-sm text-gray-500">{status}</span>}
-          <button
-            onClick={reextract}
-            disabled={busy}
-            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded disabled:opacity-50"
-          >
-            {busy ? t('tables_reextracting') : t('tables_reextract')}
-          </button>
-        </div>
-      </header>
+    <section className="bg-white rounded-lg shadow p-3">
+      <details className="group">
+        <summary className="flex items-center justify-between cursor-pointer list-none select-none">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-400 group-open:rotate-90 transition-transform">▸</span>
+            <h4 className="text-sm font-semibold text-gray-800">
+              {t('tables_heading')}
+            </h4>
+            <span className="text-xs text-gray-500">
+              ({t('tables_doc_count').replace('{n}', String(total))})
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {status && <span className="text-xs text-gray-500">{status}</span>}
+            <button
+              onClick={(e) => { e.preventDefault(); reextract() }}
+              disabled={busy}
+              className="px-2 py-1 text-xs border border-gray-300 text-gray-700 rounded disabled:opacity-50 hover:bg-gray-50"
+            >
+              {busy ? t('tables_reextracting') : t('tables_reextract')}
+            </button>
+          </div>
+        </summary>
 
-      {error && (
-        <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
-          {error}
-        </div>
-      )}
+        <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
+          {error && (
+            <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
+              {error}
+            </div>
+          )}
 
-      {!data && !error && <p className="text-sm text-gray-400">{t('generic_loading')}</p>}
+          {!data && !error && (
+            <p className="text-xs text-gray-400">{t('generic_loading')}</p>
+          )}
 
-      {data && data.total_tables === 0 && (
-        <p className="text-sm text-gray-500 italic">{t('tables_empty')}</p>
-      )}
+          {data && total === 0 && (
+            <p className="text-xs text-gray-500 italic">{t('tables_empty')}</p>
+          )}
 
-      {data && data.total_tables > 0 && (
-        <div className="space-y-6">
-          <p className="text-sm text-gray-600">
-            {t('tables_summary')
-              .replace('{tables}', String(data.total_tables))
-              .replace('{docs}', String(data.doc_count))}
-          </p>
-          {data.docs.map(doc => (
-            <div key={doc.doc_name} className="border border-gray-200 rounded-md">
-              <div className="bg-gray-50 px-3 py-2 border-b border-gray-200">
-                <h4 className="text-sm font-semibold text-gray-800">{doc.doc_name}</h4>
-                <p className="text-xs text-gray-500">
-                  {t('tables_doc_count').replace('{n}', String(doc.tables.length))}
+          {data && total > 0 && data.docs.map(doc => (
+            <div key={doc.doc_name} className="text-xs">
+              <p className="font-medium text-gray-700 mb-1">{doc.doc_name}</p>
+              {doc.tables.length === 0 ? (
+                <p className="text-amber-700 bg-amber-50 rounded px-2 py-1">
+                  {t('tables_doc_zero_warning')}
                 </p>
-              </div>
-              <div className="divide-y divide-gray-100">
-                {doc.tables.length === 0 && (
-                  <div className="px-3 py-3 text-xs text-amber-700 bg-amber-50">
-                    {t('tables_doc_zero_warning')}
-                  </div>
-                )}
-                {doc.tables.map(tbl => (
-                  <div key={tbl.id} className="px-3 py-3 space-y-2">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-800">{tbl.name}</p>
-                        <p className="text-xs text-gray-500">
-                          {tbl.source_location} · {t('tables_rows').replace('{n}', String(tbl.row_count))}
-                        </p>
-                        {tbl.description && tbl.description !== tbl.name && (
-                          <p className="text-xs text-gray-500 mt-1 italic">{tbl.description}</p>
-                        )}
-                      </div>
+              ) : (
+                <ul className="space-y-0.5 pl-3">
+                  {doc.tables.map(tbl => (
+                    <li key={tbl.id} className="flex items-baseline gap-2">
+                      <span className="text-gray-800 truncate">{tbl.name}</span>
+                      <span className="text-gray-400 shrink-0">·</span>
+                      <span className="text-gray-500 truncate">{tbl.source_location}</span>
+                      <span className="text-gray-400 shrink-0">·</span>
+                      <span className="text-gray-500 shrink-0">
+                        {t('tables_rows').replace('{n}', String(tbl.row_count))}
+                      </span>
                       <a
                         href={tableCsvUrl({ frontendId, companySlug }, doc.doc_name, tbl.id)}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="shrink-0 px-2 py-1 text-xs border border-gray-300 rounded text-gray-700 hover:bg-gray-50"
+                        className="ml-auto shrink-0 text-uni-blue hover:underline"
                       >
-                        {t('tables_download')}
+                        CSV
                       </a>
-                    </div>
-                    {tbl.preview_rows.length > 0 && (
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full text-xs border-collapse">
-                          <tbody>
-                            {tbl.preview_rows.map((row, rIdx) => (
-                              <tr
-                                key={rIdx}
-                                className={rIdx === 0 ? 'bg-gray-100 font-medium' : ''}
-                              >
-                                {row.map((cell, cIdx) => (
-                                  <td
-                                    key={cIdx}
-                                    className="border border-gray-200 px-2 py-1 align-top whitespace-pre-wrap"
-                                  >
-                                    {cell}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           ))}
         </div>
-      )}
+      </details>
     </section>
   )
 }
