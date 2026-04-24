@@ -1,7 +1,38 @@
 # CBC — Project Status
 
-**Current Sprint:** 15 — **CLOSED 2026-04-24** — RAG chunker + BM25 cache + editable embedder/chunk + Wipe & Reindex admin. Three phases landed same day. Sprint 9's silent deployment drift (item I) resolved. Daniel will do ~48h of QA; flagged items in MILESTONES A-G for future sessions.
+**Current Sprint:** 16 — **Fase 0 CODE DONE 2026-04-24**, pending Portainer repull + Daniel's validation. Fases 1-N (Structured Table Pipeline) **NOT STARTED**. Sprint 17 **PLANNED**.
 **Last Updated:** 2026-04-24
+
+## Sprint 16 — Structured Table Pipeline + concurrency fix
+
+### Fase 0 — Admin reindex no longer blocks the event loop (code done 2026-04-24)
+
+**Why it exists (discovered mid-Sprint-15 QA):** during a long CR reindex Daniel found the admin UI returning empty, the chat stuck on "waiting for slot", and `polling_loop` not ticking. Root cause: four of the five reindex endpoints in `api/v1/admin/rag.py` called the sync `rag_service.reindex_*()` directly inside their `async def` handler, pinning the FastAPI event loop for the whole reindex. Only `wipe_and_reindex_all` was already offloading (Sprint 15 phase 6).
+
+**Fix shipped:** all five endpoints now wrap the sync work in `asyncio.to_thread(...)`:
+- `POST /admin/api/v1/rag/reindex`
+- `POST /admin/api/v1/rag/reindex-all`
+- `POST /admin/api/v1/rag/reindex-frontend-cascade/{frontend_id}`
+- `POST /admin/api/v1/rag/wipe-and-reindex-all` (tidied up)
+- `POST /admin/api/v1/rag/settings/contextual` (happy + rollback paths)
+
+**Files:** `CBCopilot/src/backend/api/v1/admin/rag.py` only — `import asyncio` at top + 4 new `await asyncio.to_thread(...)` wraps + 1 cleanup.
+
+**Validation pending Daniel after repull:** trigger a long reindex, then verify in parallel that (a) Admin → Frontends lists frontends, (b) a chat message gets a response, (c) `polling_loop` keeps ticking in logs.
+
+**Why Fase 0 and not a standalone hotfix:** without this the Sprint 16 table-extractor reindex path would lock the admin UI on every run, making QA painful.
+
+### Fases 1-N — Structured Table Pipeline (not started)
+
+Full plan in `docs/MILESTONES.md` under "Sprint 16 — Structured Table Pipeline". Summary: extract tables from `.md` and `.pdf` at ingest → persist as CSV + manifest per document → embed cards into a separate `cbc_tables` Chroma collection → inject matched CSVs verbatim into the prompt under `## Relevant tables`. Scanned PDFs accepted as low-fidelity (no OCR fallback). New admin UI `Admin → General → Tables` for per-scope inspection + re-extract.
+
+Estimated scope: ~500 lines backend, ~250 lines admin, ~100 lines frontend, 1 new dep (`pdfplumber`), 2-3 days.
+
+Not starting Fases 1-N until Daniel validates Fase 0 against the live backend.
+
+## Upcoming sprints (planned, not started — see MILESTONES.md for full scope)
+
+- **Sprint 17 — Living ARCHITECTURE.md.** Dual-use doc (Claude + Daniel as operator) referenced in CLAUDE.md, maintained via extended `/sprint` workflow. Ten sections including an Admin UI map that maps every admin toggle to backend file + persistence + service. Half a day.
 
 ## Sprint 15 — RAG chunker fix + observability
 

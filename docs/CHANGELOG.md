@@ -1,5 +1,42 @@
 # CBC — Changelog
 
+## Sprint 16 Fase 0 — Admin reindex no longer blocks the event loop (2026-04-24)
+
+### Problem
+
+During a Contextual Retrieval reindex Daniel noticed the entire backend freezing — the admin UI's Frontends tab returned nothing, the chat replied "waiting for slot", and `polling_loop` stopped ticking. Logs confirmed nothing was crashing; the request simply never progressed while the reindex ran.
+
+Root cause: four of the five admin reindex endpoints in `api/v1/admin/rag.py` were declared `async def` but called the **sync** `rag_service.reindex_all_scopes()` / `rag_service.reindex_frontend_cascade()` / `rag_store.reindex()` directly inside the handler. That pins the FastAPI event loop on the current task until the reindex returns (minutes to hours with CR on), starving every other async task — admin routes, polling loop, sidecar pulls. Only `wipe_and_reindex_all` was already offloading correctly to a worker thread (Sprint 15 phase 6).
+
+### Fix
+
+All five reindex endpoints now offload the sync work to a thread via `asyncio.to_thread(...)`:
+
+- `POST /admin/api/v1/rag/reindex`
+- `POST /admin/api/v1/rag/reindex-all`
+- `POST /admin/api/v1/rag/reindex-frontend-cascade/{frontend_id}`
+- `POST /admin/api/v1/rag/wipe-and-reindex-all` (already done in Sprint 15; tidied up to use the module-level `asyncio` import)
+- `POST /admin/api/v1/rag/settings/contextual` (both the happy path and the rollback branch)
+
+The reindex still runs synchronously from the HTTP client's point of view — the admin still sees a spinner, the response still carries the per-scope stats — but the Python event loop is free to process other requests concurrently. Since the heavy inner work is mostly I/O-bound (HTTP calls to Ollama for embeddings + CR summaries), the GIL releases cleanly in the worker thread and the main thread has plenty of CPU for the chat path.
+
+### Files touched
+
+- `CBCopilot/src/backend/api/v1/admin/rag.py` — `import asyncio` at top, 4 new `await asyncio.to_thread(...)` wraps, 1 cleanup in the existing wipe handler.
+
+### Validation (pending Daniel after repull)
+
+- Trigger a long reindex (CR toggle or Wipe & Reindex All) and, while it's running:
+  - Open Admin → Frontends — should list frontends immediately.
+  - Send a chat message — should get a response (dependent on a non-CR inference slot being free; not on the reindex finishing).
+  - Confirm `polling_loop` still ticks in backend logs.
+
+### Why this is Sprint 16 Fase 0
+
+Without this fix, Sprint 16's Structured Table Pipeline can't be validated end-to-end: every table-extractor reindex would lock the admin UI, making QA painful. Better to land it before the table code.
+
+---
+
 ## Sprint 15 phase 3 — Editable RAG settings + close item I (2026-04-24)
 
 Closes the pipeline drift discovered during phase 2 empirical investigation: `deployment_backend.json` had been pinning `rag_embedding_model` to the legacy `all-MiniLM-L6-v2` (384-dim) and `rag_chunk_size` to `512`, silently overriding Sprint 9's code defaults of `BAAI/bge-m3` (1024-dim) and `1024`. Daniel's deployment had been running a half-deployed Sprint 9 state — reranker updated, embedder not — without anyone noticing.

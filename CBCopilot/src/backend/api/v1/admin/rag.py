@@ -1,4 +1,6 @@
 """Admin RAG management (SPEC §4.2)."""
+import asyncio
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
@@ -80,7 +82,10 @@ async def get_stats(frontend_id: str | None = None, company_slug: str | None = N
 @router.post("/rag/reindex")
 async def reindex(frontend_id: str | None = None, company_slug: str | None = None, _admin: dict = Depends(require_admin)):
     fid, slug = _qs(frontend_id, company_slug)
-    s = rag_store.reindex(fid, slug)
+    # Sprint 16 Fase 0: offload to worker thread so the FastAPI event loop
+    # stays responsive (admin UI + polling_loop keep ticking) during the
+    # minutes-long reindex.
+    s = await asyncio.to_thread(rag_store.reindex, fid, slug)
     return {
         "status": "ok",
         "document_count": s.document_count,
@@ -95,8 +100,9 @@ async def reindex(frontend_id: str | None = None, company_slug: str | None = Non
 async def reindex_all(_admin: dict = Depends(require_admin)):
     """Cascade reindex: rebuild global + every frontend + every company.
     Intended for the "Reindex entire corpus" button on the global RAG
-    section. Synchronous — admin UI shows a spinner + per-scope stats."""
-    stats = rag_service.reindex_all_scopes()
+    section. Offloaded to a worker thread (Sprint 16 Fase 0) so admin UI
+    + polling_loop remain responsive during the long-running rebuild."""
+    stats = await asyncio.to_thread(rag_service.reindex_all_scopes)
     return {"status": "ok", "scopes_reindexed": len(stats), "stats": stats}
 
 
@@ -104,8 +110,11 @@ async def reindex_all(_admin: dict = Depends(require_admin)):
 async def reindex_frontend_cascade(frontend_id: str, _admin: dict = Depends(require_admin)):
     """Cascade reindex for one frontend: the frontend-tier index + every
     company under it. Global is not touched. Used by the frontend-tier
-    "Reindex frontend + its companies" button."""
-    stats = rag_service.reindex_frontend_cascade(frontend_id)
+    "Reindex frontend + its companies" button.
+
+    Offloaded to a worker thread (Sprint 16 Fase 0) so the event loop stays
+    free while the cascade runs."""
+    stats = await asyncio.to_thread(rag_service.reindex_frontend_cascade, frontend_id)
     return {
         "status": "ok",
         "frontend_id": frontend_id,
@@ -227,11 +236,12 @@ async def wipe_and_reindex_all(_admin: dict = Depends(require_admin)):
     `rag_embedding_model` + `rag_chunk_size`.
 
     Required after changing embedding model (dim change breaks the
-    collection) or chunk_size (new splits needed). Synchronous — response
-    blocks until every scope finishes indexing. Heavy on a big corpus;
-    the admin UI should show a spinner + expected duration warning."""
+    collection) or chunk_size (new splits needed). Offloaded to a worker
+    thread via asyncio.to_thread so it doesn't block the FastAPI event
+    loop (otherwise polling_loop and other admin requests starve for the
+    reindex's ~minutes duration, Sprint 15 phase 6 fix)."""
     try:
-        result = rag_service.wipe_chroma_and_reindex_all()
+        result = await asyncio.to_thread(rag_service.wipe_chroma_and_reindex_all)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Wipe & reindex failed: {e}")
     return result
@@ -262,7 +272,10 @@ async def toggle_contextual_retrieval(req: ContextualToggleRequest, _admin: dict
     config.rag_contextual_enabled = req.enabled
     runtime_overrides_store.save_override("rag_contextual_enabled", req.enabled)
     try:
-        stats = rag_service.reindex_all_scopes()
+        # Sprint 16 Fase 0: CR-wide reindex can take minutes-to-hours. Must
+        # run in a worker thread so the admin UI + polling_loop keep working
+        # while it churns.
+        stats = await asyncio.to_thread(rag_service.reindex_all_scopes)
     except Exception as e:
         # Roll back the toggle if the reindex blows up mid-way — otherwise
         # we'd be in a half-indexed state with config saying "on".

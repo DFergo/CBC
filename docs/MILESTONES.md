@@ -360,9 +360,11 @@ Post-v1 enhancements captured in `docs/IDEAS.md` (ChromaDB migration, etc.) are 
 
 ---
 
-## Sprint 15 follow-ups — backlog (queued 2026-04-24)
+## Sprint 15 follow-ups — backlog (queued 2026-04-24, reviewed after Sprint 16 planning 2026-04-24)
 
 Items surfaced during the RAG chunker audit. Each ~1 hour. Pick individually; none blocks anything else. Tracked here rather than in `docs/IDEAS.md` because they're specific code changes with clear scope, not open-ended ideas.
+
+**Review note (2026-04-24):** with Sprint 16 (Structured Table Pipeline) replacing CR's primary role for tabular data, CR-specific optimisations (M, N) drop in priority. They stay useful **if** CR remains active for prose-chunk enrichment after Sprint 16; if CR gets deactivated entirely, they become moot. Mark ⚠︎ = re-evaluate after Sprint 16 ships.
 
 ### A — Startup scan for oversized legacy chunks (diagnostic WARNING)
 On backend startup, walk each Chroma scope and emit `WARNING: Scope X has pre-Sprint-15 oversized chunks, reindex recommended` if any chunk exceeds 30 000 chars. Non-intrusive, no auto-action. ~15 lines in `rag_service.py`, hooked from `main.py` lifespan.
@@ -396,11 +398,18 @@ Resolved. New `runtime_overrides_store.py` + `/app/data/runtime_overrides.json` 
 
 Resolved. Added `contextual_retrieval_slot: SlotName = "compressor"` to `RoutingToggles` alongside the existing `document_summary_slot` / `user_summary_slot`. `_generate_chunk_context` now reads the toggle on every call (flip takes effect without restart). Admin UI extended the Summary routing block from a 2-column grid to 3, with EN+ES copy explaining the 10× cost difference. Default = compressor (e.g. qwen3.5-9b on Ollama), ~2-4 s/chunk; admin can switch to summariser (qwen3.5-122b) if the smaller model produces noticeably worse context sentences. For a 100-CBA reindex this cuts CR from ~35 h to ~3-4 h. Future work on the table-extraction pipeline (Sprint 16 plan) will reuse the same slot.
 
-### M — Content-hash cache for Contextual Retrieval
+### M — ⚠︎ Content-hash cache for Contextual Retrieval (re-evaluate after Sprint 16)
 When re-ingesting an already-enriched scope whose chunks are mostly unchanged, don't re-call the LLM for chunks whose content hash matches. Cache keyed on `sha256(chunk.text)` → stored context sentence. First ingest pays the full CR cost; subsequent ingests only pay for chunks whose text actually changed. For a deployment that curates 100 CBAs with occasional edits, this turns a 35-hour reindex into ~minutes. ~30 lines, new JSON file at `/app/data/cr_cache.json` or similar.
 
-### N — Parallelise Contextual Retrieval calls
+**Post-Sprint-16 relevance:** only if CR stays on after Sprint 16's Table Pipeline handles tabular data. If CR becomes optional/off, this item is moot.
+
+### N — ⚠︎ Parallelise Contextual Retrieval calls (re-evaluate after Sprint 16)
 `_generate_chunk_context` runs through a single-worker ThreadPoolExecutor (from the Sprint 15 phase 4 asyncio fix). If the summariser runtime has parallel slots available (Ollama NUM_PARALLEL=4, LM Studio Parallel=4), bumping the ThreadPool to 4 workers gives ~4× speedup on the CR pass. Requires care that the summariser slot's runtime actually has the parallel capacity. 1 line change + a config knob.
+
+**Post-Sprint-16 relevance:** only if CR stays on after Sprint 16.
+
+### Q — Metadata prepending to chunks (CR-lite, no LLM)
+Prepend `file_name` + `header_path` + tier info to each chunk's text BEFORE embedding, so BGE-M3 captures document context in the vector itself. For example a chunk from `CBA—Amcor—Lezo.md` inside section "Art. 23 Retribuciones" embeds as `[doc: CBA—Amcor—Lezo; section: Art. 23 Retribuciones]\n\n<chunk text>` instead of just the raw chunk. Zero LLM calls, ~15 lines. Complements Sprint 16 tables for prose-chunk queries like "what does Amcor say about vacations?" where the section name is a strong semantic signal. Still valuable after Sprint 16.
 
 ### O — UX polish for slow reindex operations
 Progress feedback during long-running reindexes (CR=on on big corpora can be 30+ min) is limited to OrbStack logs. Surface progress to the admin UI via a server-sent-events or polling endpoint (e.g. `GET /admin/api/v1/rag/reindex-status`) so the UI shows "12/44 chunks processed" instead of a blank spinner. Not urgent but noticeable on large deployments.
@@ -421,6 +430,180 @@ Sprint 15 phase 3 ported this pattern into **`RAGPipelineSection.tsx` only** bec
 - EN + ES i18n keys; other 13 languages fall back to EN per the Sprint 12 Phase B partial-translation pattern.
 
 **Operational note for any future deployment:** after applying these settings changes, the admin MUST click "Wipe & Reindex All" once to rebuild indices against the new embedder + chunk size. Without the wipe, existing chunks remain at the old dimensions and live queries will fail or degrade.
+
+---
+
+---
+
+## Sprint 16 — Structured Table Pipeline (planned 2026-04-24, not started)
+
+**Goal:** Tabular data (salary schedules, shift tables, etc.) becomes a first-class citizen in CBC's retrieval. Extracted to CSV at ingest, indexed as semantic "cards", and injected verbatim into the prompt when queries are table-relevant. CR becomes optional — tables replace its primary use case (numeric retrieval blindspot).
+
+### Rationale
+
+CR pays an LLM cost per chunk (~35 h for 100 CBAs on a 122B summariser, ~3-4 h on a 9B compressor after Sprint 15 phase 5). It enriches chunk embeddings with a context sentence but chunks containing tables still embed as "numbers + table structure" — inherently weak for semantic search on tabular queries. The actual solution is to treat tables as structured data: extract them, store them as CSV, retrieve them via a separate card-based index, and inject them intact. Compare All mode is especially improved — cross-company salary comparisons land as two CSVs side-by-side instead of scattered chunks.
+
+Accepted trade-off: **scanned PDFs** (image-only) will extract nothing or garbage. That's the reality of OCR-less pipelines. Those documents still ingest as unstructured RAG (the .md/.pdf text passes through the regular chunker) so the chat works, just without table benefits.
+
+### Deliverables
+
+**Backend — new service `services/table_extractor.py`:**
+- `extract_markdown_tables(md_text, doc_name) → list[TableSpec]` — regex-based, detects `|...|...|` pipe-table blocks, groups contiguous rows, captures the nearest preceding `#`/`##`/`###` heading as source_location. No LLM, fast.
+- `extract_pdf_tables(pdf_path, doc_name) → list[TableSpec]` — `pdfplumber.open().pages[].extract_tables()`. Works for vector PDFs. Logs WARN and returns `[]` for image-only PDFs. `pdfplumber` added to `requirements.txt` and pre-downloaded in `Dockerfile.backend`.
+- `TableSpec` dataclass: `id` (sha1 of content), `name` (auto from heading), `description` (auto from heading + nearby prose), `csv_text`, `source_location` (heading or page#), `columns` (list), `row_count`, `doc_name`.
+- `save_tables_for_doc(scope_key, doc_name, tables)` — writes `/app/data/campaigns/{fid}/companies/{slug}/tables/{doc_stem}/{table_id}.csv` + `manifest.json` (list of TableCard).
+- `load_manifest(scope_key, doc_name) → list[TableCard]` — reads the manifest, returns card metadata for query-time use.
+- `load_csv(scope_key, doc_name, table_id) → str` — reads the CSV file content (for injection into the prompt).
+
+**Backend — `services/rag_service.py` extensions:**
+- New module-level `_tables_collection: Any | None` (separate Chroma collection `cbc_tables` for card embeddings — distinct from `cbc_chunks`).
+- `_get_tables_collection()` with same `allow_reset=True` pattern as `_get_chroma_collection()`.
+- `_build_index(scope_key)` extended: for each ingested document, call `table_extractor.extract_*`, save CSVs + manifest, optionally call compressor LLM to enrich each card's `name`/`description` (one call per table, reuses `_generate_chunk_context` plumbing and the `contextual_retrieval_slot` toggle). Embed card text (`name + description + source_location`) into `cbc_tables`.
+- `query_tables(scope_keys, query_text, top_k=2) → list[TableHit]` — parallel to `query_scopes`. Queries `cbc_tables` with scope filter, returns top-K cards with their CSV content loaded from disk.
+- `wipe_chroma_and_reindex_all()` extended to also wipe `cbc_tables` (via the shared Chroma client reset).
+- `_delete_scope(scope_key)` extended to also delete table cards for that scope.
+
+**Backend — `services/prompt_assembler.py` integration:**
+- In `_resolve_rag`, after retrieving prose chunks, also call `rag_service.query_tables(scope_keys, query_text, top_k=2)`.
+- New section in the assembled prompt: `## Relevant tables` containing each matched table's `name`, `description`, `source_location`, and full CSV content.
+- Token budget: per-table cap of ~6 000 chars (roughly 1 500 tokens); if CSV exceeds, clip with a `[... table truncated — see source document ...]` note.
+- New layer key `"tables"` in the existing `AssembledPrompt.layers` dict; per-section size breakdown log already covers it automatically.
+- `sources` SSE event extended: each hit includes a `table_id` field so the sidepanel can cite the table specifically.
+
+**Backend — `services/rag_watcher.py`:**
+- On detected change to a document file, re-run table extraction for that doc + embed new cards into `cbc_tables` alongside the existing chunk reindex.
+
+**Admin API — `api/v1/admin/tables.py` (new router):**
+- `GET /admin/api/v1/tables` (query params `frontend_id`, `company_slug`) → returns per-scope list of extracted tables (name, description, row_count, source_location, doc_name) as JSON for the admin UI.
+- `POST /admin/api/v1/tables/reextract` (query params `frontend_id`, `company_slug`) → force re-extraction for all docs in that scope. Useful when the extractor code changes.
+- `GET /admin/api/v1/tables/{scope}/{doc}/{table_id}.csv` → returns the CSV file for download/preview.
+
+**Admin UI — `src/admin/src/sections/TablesSection.tsx` (new section):**
+- Per-scope list of extracted tables.
+- Preview first 5 rows of each table (inline).
+- "Re-extract tables" button per scope.
+- Inline indicator of extraction quality for PDFs (e.g. "0 tables extracted — document may be scanned").
+
+**Frontend — `src/frontend/src/components/ChatShell.tsx`:**
+- Render the new `table_id` citations inside the existing `CitationsPanel` alongside prose sources. Clickable chip that previews the table CSV.
+
+**Docs:**
+- `docs/SPEC.md` §4.12 new section: Table Extraction Pipeline (contract, formats, limits).
+- `docs/architecture/decisions.md` ADR-009: "Structured Table Pipeline as complement to vector RAG" — rationale, trade-offs, scanned-PDF acceptance.
+- `docs/CHANGELOG.md`: sprint entry.
+- `docs/architecture/ARCHITECTURE.md`: if Sprint 17 has shipped before 16, update it alongside this sprint. If 16 ships first, the changes queue for whenever 17 lands. Entries to add: new `table_extractor` service, new `cbc_tables` Chroma collection, new storage layout `tables/{doc_stem}/`, new admin UI location `Admin → General → Tables`, new data flow "table query".
+
+### Acceptance Criteria
+
+- [ ] Ingesting `CBA—Amcor—Lezo.md` produces at least 2 CSVs under `/app/data/campaigns/g-p1/companies/amcor/tables/CBA—Amcor—Lezo/` (daily + monthly salary tables from ANEXO I).
+- [ ] `manifest.json` lists those tables with non-empty `name` / `description`.
+- [ ] Card embeddings present in `cbc_tables` Chroma collection (verified via `sqlite3` query).
+- [ ] Query "salario medio en el convenio" → `prompt_assembler` includes the daily-salary CSV verbatim under `## Relevant tables`.
+- [ ] The chat response correctly calculates an average from the injected numbers (or explicitly states the weighting limitation from a simple mean).
+- [ ] PDF CBA upload → tables extracted via pdfplumber when the PDF is vector; `[]` with WARN log when scanned.
+- [ ] File watcher re-extracts tables when a document file changes on disk.
+- [ ] Compare All mode with two companies → both companies' top tables appear in prompt when the query is tabular.
+- [ ] Admin UI `TablesSection` shows per-scope tables with row preview and re-extract button.
+- [ ] CR toggle OFF + table pipeline active → salary-table queries succeed (validates tables replace CR for tabular cases).
+- [ ] `_build_index` log gains a `tables_extracted: N` counter per document.
+
+### Open questions (decide before execution)
+
+- **LLM-enriched cards vs raw heading:** default to NO LLM enrichment (use the heading literal as card name + nearby prose as description). Admin can flip to LLM-enriched via a new `table_card_enrichment` toggle. Saves the ~1 call per table cost for deployments that don't need semantic polish.
+- **Per-table size cap in prompt:** 6 000 chars per table feels right for CBAs (salary tables of 30 rows × 4 cols fit). Tune based on real tables.
+- **Scanned-PDF detection:** should the backend try OCR fallback via Tesseract? **Decision: NO** for this sprint. Scanned CBAs are accepted as low-fidelity. Admin can convert externally.
+
+### Estimated scope
+
+- ~500 lines backend Python (extractor, service wiring, admin API)
+- ~250 lines admin TSX (TablesSection + API client + i18n)
+- ~100 lines frontend (citation integration)
+- 1 new dependency (`pdfplumber`)
+- Dockerfile change (pre-download `pdfplumber` + `pdfminer.six`)
+- 2-3 days of focused work
+
+---
+
+## Sprint 17 — Living Architecture Documentation (planned 2026-04-24, not started)
+
+**Goal:** One document — `docs/architecture/ARCHITECTURE.md` — describes CBC's current architecture in-place: services, data flows, storage layout, failure modes, runtime controls. Read by every Claude Code session at sprint start. Maintained automatically via the `/sprint` skill workflow so it never drifts.
+
+### Rationale
+
+Every multi-turn Claude session currently rediscovers the architecture by reading source code. That's thousands of tokens per session spent recovering state that was known last time. A single living document — authored at Sprint 17 and maintained after every architectural change — keeps the context window efficient and the architecture legible.
+
+Alternative considered: dedicated drift-detection sub-agent. Rejected for now as overkill for a 1-developer repo with high Claude-Code involvement. If drift accumulates despite the sprint-workflow discipline, add the sub-agent in a future sprint.
+
+### Deliverables
+
+**New file — `docs/architecture/ARCHITECTURE.md`:**
+
+Authored from the current post-Sprint-15 state. Suggested sections:
+
+**Format requirement (Daniel, 2026-04-24):** the doc is dual-use — read by Claude AND by Daniel himself without Claude. Every section that describes a behaviour controlled from the admin panel MUST cite the exact UI location (tab + section name, e.g. "Admin → General → LLM → Summary routing → Contextual Retrieval dropdown"). Every section that describes code MUST cite the file path. This lets the doc serve as the single source of truth: an operator wanting to change behaviour reads the "where is this UI control" link, a developer wanting to trace logic reads the "where is this code" link. No need to guess either end.
+
+1. **System overview** — 2-paragraph description of what CBC is, + a textual architecture diagram (services + storage + external dependencies).
+2. **Services layer** — one entry per `src/backend/services/*.py` file: responsibility, who calls it, what it exports, what state it owns. Cite file path: `CBCopilot/src/backend/services/{name}.py`.
+3. **Data flows** — sequence descriptions for:
+   - Chat turn: user → sidecar queue → backend polling → prompt_assembler → llm_provider → SSE stream → browser
+   - RAG query: query text → embedder → hybrid (vector + BM25) → reranker → chunks
+   - Table query (post-Sprint 16): query → card lookup → CSV injection
+   - Document ingest: file on disk → chunker → (optional CR) → table extractor → Chroma (chunks + cards)
+   - Compare All: multi-scope retrieval + combined tables
+   - Session lifecycle: create → store → compress if needed → close → destroy
+4. **Storage layout** — every directory under `/app/data/`, what lives there, read/write patterns. Format: absolute path + "written by: {service}" + "read by: {services}".
+5. **Runtime control** — table mapping each admin-editable knob to (a) its admin UI location, (b) the persistence file, (c) the backend service that reads it. Example row:
+   - `rag_contextual_enabled`
+   - UI: **Admin → General → RAG Pipeline → Contextual Retrieval toggle**
+   - Persisted at: `/app/data/runtime_overrides.json`
+   - Read by: `rag_service._build_index` on every ingest
+   - Default: `false`
+   - Cost of flipping: triggers full reindex of every scope.
+6. **Failure modes** — circuit breaker, inactivity timeout, cancel flow, wipe recovery, partial-reindex detection. Each: trigger condition + recovery path + related admin UI (e.g. "Wipe & Reindex All" button location).
+7. **Dependencies and integrations** — Ollama, LM Studio, Chroma, BGE-M3, cross-encoder reranker, pdfplumber (post-Sprint-16). For each: where it's configured (deployment_backend.json, admin UI, or Dockerfile), version pinned, graceful-degradation behaviour if unavailable.
+8. **Architectural invariants** — things that MUST be true (e.g. "every chunk embedding is <8192 tokens", "session_store writes are atomic", "polling is fire-and-forget, not blocking"). Cite the code location where each invariant is enforced.
+9. **Admin UI map** — inverse of §5: a walk-through of the admin panel from Daniel's POV. For each tab → section, describe what it controls and which backend service / config file / service method is wired to it. Allows Daniel to open the admin, see a toggle, and immediately know "clicking this changes X in file Y which affects service Z". Frontend paths for the curious: `CBCopilot/src/admin/src/sections/*.tsx`, `CBCopilot/src/admin/src/panels/*.tsx`.
+10. **Pointers** — one-line pointers to SPEC.md, MILESTONES.md, ADRs, hrdd-helper-patterns.md for specific deep-dives.
+
+**Update — `CLAUDE.md`:**
+
+Add `docs/architecture/ARCHITECTURE.md` to the "Key Documents — READ ORDER" block as the FIRST read after MILESTONES/STATUS. Rationale: before any sprint work, know the system as it stands.
+
+**Update — `.claude/commands/sprint.md` (the `/sprint` skill):**
+
+In the Finalizing phase, add:
+> **Update `docs/architecture/ARCHITECTURE.md`** if this sprint changed any of:
+> - Service responsibilities or cross-service contracts
+> - Data flow paths (new stages, removed stages, reordered)
+> - Storage layout (new files/directories, schema changes)
+> - Admin-editable runtime controls (added, removed, defaults changed)
+> - External dependencies (added/removed/version-major-bumped)
+> - Architectural invariants (new constraints, relaxed constraints)
+>
+> If none of the above changed, skip. Document the decision either way in the sprint's CHANGELOG entry.
+
+**Optional — `docs/knowledge/architecture-drift-audit.md`:**
+
+Brief note describing the drift-detection approach we're deferring: after N sprints, if ARCHITECTURE.md accuracy degrades, add a sub-agent that diffs the doc against the current code state and surfaces gaps. This file captures the decision so future me doesn't re-debate it.
+
+### Acceptance Criteria
+
+- [ ] `docs/architecture/ARCHITECTURE.md` exists and covers all 10 sections above.
+- [ ] Every section that describes admin-controlled behaviour cites the exact UI path (`Admin → tab → section → control name`).
+- [ ] Every section that describes code cites the file path.
+- [ ] Section 9 (Admin UI map) walks the admin panel tab-by-tab and links each control to backend file + service + persistence file.
+- [ ] `CLAUDE.md` lists it in "Key Documents — READ ORDER" as required pre-sprint reading.
+- [ ] `/sprint` skill's Finalizing phase explicitly calls out the ARCHITECTURE.md update step.
+- [ ] The next sprint after 17 (whichever it is) follows the new flow: arch doc is updated (or a "no arch changes this sprint" note lands in CHANGELOG).
+- [ ] A fresh Claude session reading only CLAUDE.md + ARCHITECTURE.md can answer questions like "where is the compressor LLM slot used?" or "what triggers a Chroma wipe?" without reading source.
+- [ ] Daniel can use the same document as his operator manual — finding a UI toggle and reading what it does without opening VS Code.
+
+### Estimated scope
+
+- 1 authoring session for ARCHITECTURE.md (~600-800 lines, one sitting, mostly writing)
+- 3 lines in CLAUDE.md
+- ~10 lines in the `/sprint` skill
+- Half a day total
 
 ---
 
