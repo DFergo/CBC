@@ -1,6 +1,6 @@
 # CBC — Project Status
 
-**Current Sprint:** 16 — **CLOSED 2026-04-24**. All three follow-ups from Daniel's live validation shipped (nombre tablas md, UI redesign as collapsible, redundant build elimination). Sprint 17 **PLANNED**.
+**Current Sprint:** 17 — **CLOSED 2026-04-24**. ARCHITECTURE.md authored (10 sections, dual-use Claude+operator), CLAUDE.md READ ORDER updated, `/sprint` skill extended with arch-update step, drift-audit decision recorded. Sprint 16 fully closed in same day. Next: queued ideas in MILESTONES backlog or IDEAS.md.
 **Last Updated:** 2026-04-24
 
 ## Sprint 16 — Structured Table Pipeline + concurrency fixes

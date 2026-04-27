@@ -1,5 +1,48 @@
 # CBC — Changelog
 
+## Sprint 17 — Living Architecture Documentation (2026-04-24)
+
+Sprint 16 closure flushed enough drift that re-discovering the architecture from source on every Claude session became visibly wasteful. Sprint 17 lands a single living document plus the discipline to keep it honest.
+
+### Deliverables
+
+**New file — `docs/architecture/ARCHITECTURE.md` (~580 lines).** Ten sections, paste-ready dual-use:
+- §1 System overview + textual architecture diagram.
+- §2 Services layer — every file under `CBCopilot/src/backend/services/` with responsibility, state, callers, and the admin UI path that drives it.
+- §3 Data flows — chat turn, RAG query (prose), table query (Sprint 16), document ingest, Compare All, session lifecycle.
+- §4 Storage layout — the full `/app/data/` tree with writer + reader per path.
+- §5 Runtime control reference table — every admin-editable knob with UI path, persistence file, reader service, default, and cost of flipping. Covers RAG settings, three LLM slots + routing + thinking + max_concurrent_turns, branding, prompts, glossary, organizations, contacts, SMTP, frontends, companies, session settings, document metadata.
+- §6 Failure modes — Stop / cancel, inactivity timeout, circuit breaker, wipe & reindex, partial reindex detection, watcher debouncing, prefix-cache cold spots, concurrent reindex (Sprint 16 #38 fix), session destroy.
+- §7 Dependencies and integrations — Ollama, LM Studio, Chroma, BGE-M3, bge-reranker-v2-m3, pdfplumber, watchdog, sentence-transformers / llama-index-*, FastAPI / uvicorn / pydantic. Each: where pinned, graceful degradation, Dockerfile pre-download (or absence thereof).
+- §8 Architectural invariants — 11 hard invariants tied to the file that enforces each.
+- §9 Admin UI map — walk-through of every tab (General, Frontends, Sessions, Registered Users, language selector) with each control wired to backend service + persistence file + behaviour.
+- §10 Pointers to SPEC, MILESTONES, STATUS, CHANGELOG, decisions (ADR log), lessons-learned, hrdd-helper-patterns, IDEAS, Ollama_UNI_Tools_Config.
+
+**Updated — `CLAUDE.md` "Key Documents — READ ORDER".** ARCHITECTURE.md is now item 1, before MILESTONES + SPEC. The original `architecture/overview.md` stays in the list as historical context (item 7) but ARCHITECTURE.md supersedes it.
+
+**Updated — `.claude/commands/sprint.md` (the `/sprint` skill).** Planning gains a step 1 "Read ARCHITECTURE.md" before MILESTONES. Finalizing gains an explicit "Update ARCHITECTURE.md if this sprint changed services / data flows / storage / runtime controls / dependencies / invariants — otherwise note 'no architecture changes this sprint' in the CHANGELOG." This is the discipline that keeps the doc honest without a drift-detection sub-agent.
+
+**New file — `docs/knowledge/architecture-drift-audit.md`.** Records the deferred decision on the drift-detection sub-agent: what it would do, why we're not building it now (single dev + high Claude involvement + the workflow change above is the cheapest path), four concrete triggers to revisit. Future Claude / developer reads this before re-debating.
+
+### Sprint 16 idea capture
+
+Daniel surfaced a use-case while walking the live system: the chat refuses to give a verbatim quote of a CBA article ("I don't have access to the source text") because it only has paraphrased chunks. The CBAs are on disk and could be searched literally for the matched fragment when the user asks for a "cita textual / verbatim / transcribe". Captured as a candidate sprint in `docs/IDEAS.md` under "Modo cita textual — full-text search sobre los docs recuperados en la sesión". Not scheduled.
+
+### Architecture impact of this sprint
+
+By the new `/sprint` step 2 rule: Sprint 17 added one document (`ARCHITECTURE.md`) and a knowledge note, but no services, data flows, storage paths, runtime controls, dependencies, or invariants changed. The doc itself describes the post-Sprint-16 state. Self-referential but consistent.
+
+### Files touched
+
+- `docs/architecture/ARCHITECTURE.md` (new, ~580 lines)
+- `docs/knowledge/architecture-drift-audit.md` (new, ~40 lines)
+- `docs/IDEAS.md` (added one entry, "Modo cita textual")
+- `CLAUDE.md` (READ ORDER reordered, two new entries)
+- `.claude/commands/sprint.md` (Planning + Finalizing extended)
+- `docs/STATUS.md`, `docs/CHANGELOG.md` (sprint close)
+
+---
+
 ## Sprint 16 follow-ups — UX polish + concurrency tightening (2026-04-24)
 
 Three items surfaced during Daniel's post-Sprint-16 live validation. All resolved in this commit; Sprint 16 closed.

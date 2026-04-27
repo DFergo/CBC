@@ -6,6 +6,37 @@ Statuses: `captured` → `triaged` → `planned` (→ Sprint N) → `shipped` / 
 
 ---
 
+## Modo cita textual — full-text search sobre los docs recuperados en la sesión
+
+**Captured:** 2026-04-24 (post-Sprint-16 validation)
+**Status:** captured
+**Candidate sprint:** TBD — depende de cuántos usuarios pidan citas textuales en producción.
+
+**Symptom seen by Daniel:** el RAG funciona bien (chunks relevantes en el prompt, generación correcta), pero cuando le pide al chat "dame la cita textual del artículo 23" el LLM responde "no tengo acceso al texto fuente, sólo a fragmentos". Comportamiento correcto del LLM — no debe inventar texto literal. Pero la información que el usuario pide SÍ existe en el corpus.
+
+**Idea:** cuando el usuario pide explícitamente una cita textual, el backend salta el path RAG-generativo y entra en un modo extractivo:
+
+1. Detectar intención. Heurística por keyword en el turno del usuario ("cita textual", "transcribe", "literal", "verbatim", "exact wording", "palabras exactas") o un toggle UI "modo cita".
+2. Construir el conjunto de documentos que ya alimentaron el contexto RAG en esta sesión — disponible vía los `sources` que el prompt_assembler ya emite turno a turno (el sidepanel CBA ya los lista).
+3. Backend nuevo helper, p. ej. `rag_store.find_textual_matches(scope_keys, doc_names, needle, max_chars=2000)` — abre cada doc en disco y hace búsqueda literal o regex sobre el texto completo. Devuelve fragmentos crudos con filename + offset/línea.
+4. El prompt assembler inyecta los matches verbatim bajo una sección `## Cita textual solicitada` con instrucción al LLM: "el usuario pidió cita textual; transcribe verbatim los fragmentos siguientes y atribúyelos al documento del que vienen".
+
+**Ventajas:**
+- Cero re-indexación; usa los archivos que ya están en `/app/data/.../documents/`.
+- Permite extracción exacta sin alucinaciones, con trazabilidad ("según artículo 23 del CBA Amcor Lezo, página X: '...'").
+- Compatible con Compare All — busca en todos los CBAs activos.
+- Funciona con tablas (busca dentro del .md con la tabla intacta) y con .pdf vía pdfplumber.extract_text.
+
+**Riesgos / decisiones previas:**
+- Intención mal detectada: si la heurística falla, el modo se activa cuando no toca y se llena el prompt. Mitigación: empezar con toggle UI explícito antes de auto-detect.
+- Tamaño del corpus: una sesión con 50 CBAs cargados haría 50 lecturas + búsquedas por turno. OK con regex pre-compilado + cap de matches; mejor aún con cache LRU del texto crudo por doc.
+- Coincidencias múltiples: si la query matchea 30 sitios en 5 docs, hay que rankear (proximidad a la pregunta semántica, score RAG) y truncar.
+- Permisos: sólo docs del scope visible al usuario actual (mismo filtro que session_rag).
+
+**Estimación:** ~150 líneas backend (helper + integración prompt_assembler + heurística), ~30 líneas frontend (toggle + i18n), ~50 líneas tests.
+
+---
+
 ## ChromaDB as vector store (drop SimpleVectorStore when scale demands it)
 
 **Captured:** 2026-04-21 (Sprint 9)
