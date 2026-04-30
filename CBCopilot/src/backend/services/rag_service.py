@@ -1269,17 +1269,24 @@ def query(scope_key: str, query_text: str, top_k: int | None = None) -> list[Chu
     Pipeline: scope-filtered hybrid retrieve `rag_reranker_fetch_k` chunks
     from the shared Chroma collection → cross-encoder rerank to
     `rag_reranker_top_n` (or the explicit `top_k` if passed).
+
+    Sprint 18 — fetch_k is now `max(rag_reranker_fetch_k, top_k * 3)`.
+    Without the *3 multiplier, when `top_k` is bumped (dynamic top-K
+    based on corpus size), `fetch_k` could equal `top_k` → reranker
+    becomes a no-op because every fetched chunk is already in the
+    final set. *3 gives the cross-encoder real candidates to choose
+    among at every K.
     """
     idx = get_index(scope_key)
     if idx is None or _scope_chunk_count(scope_key) == 0:
         return []
     try:
+        final_top_n = top_k or backend_config.rag_reranker_top_n
         fetch_k = max(
             backend_config.rag_reranker_fetch_k,
-            top_k or backend_config.rag_reranker_top_n,
+            final_top_n * 3,
         )
         nodes = _hybrid_retrieve(scope_key, idx, query_text, fetch_k)
-        final_top_n = top_k or backend_config.rag_reranker_top_n
         nodes = _rerank(nodes, query_text, final_top_n)
         chunks = [
             Chunk(
@@ -1335,6 +1342,71 @@ def query_scopes(
             f"total_chunks={len(out)} total_chars={total_chars}"
         )
     return out
+
+
+# --- Sprint 18 — Dynamic top-K -------------------------------------------
+#
+# The static `RAG_TOP_K_PER_SCOPE = 5` constant in prompt_assembler couldn't
+# scale: with 1 doc loaded it was fine, with 23 docs it left ~80% of the
+# corpus invisible to the LLM ("compara vacaciones" → 4 of 23 docs cited;
+# "list FR convenios" → 4 of 15 enumerated). The fix scales K linearly with
+# the number of source files in the active scopes, capped on both ends so
+# small corpora don't pay rerank cost they don't need and huge corpora
+# don't blow the prompt budget.
+#
+# Numbers picked from observed corpora:
+#   1 doc   →  K=5    (status quo)
+#   5 docs  →  K=10   (~2 chunks/doc on average)
+#   23 docs →  K=40   (cap)
+#   50 docs →  K=40   (capped — at this scale query rewriting from
+#                      Sprint 18 phase 3 is the right next move)
+#
+# Reranker cost scales with fetch_k = top_k * 3 (see `query`), so K=40
+# means the cross-encoder scores ~120 candidates per scope. On the bge-
+# reranker-v2-m3 with batch size 32, that's ~4 batches ≈ 1-2 s extra
+# latency vs K=5.
+
+_DYNAMIC_TOP_K_FLOOR = 5
+_DYNAMIC_TOP_K_CEIL = 40
+_DYNAMIC_TOP_K_PER_DOC = 2
+
+
+def compute_dynamic_top_k(scope_keys: list[str]) -> int:
+    """Return a top_k_per_scope appropriate for the size of the active scopes.
+
+    Used by `prompt_assembler._resolve_rag` so single-doc sessions stay cheap
+    and big-corpus sessions get enough recall to actually cover the docs the
+    user expects to see cited.
+
+    Counts files via `_list_indexable_files` per scope and sums them; this
+    matches what `_build_index` indexes. Empty scopes contribute zero so
+    they don't inflate K artificially.
+    """
+    total_files = 0
+    for sk in scope_keys:
+        try:
+            docs_dir = _docs_dir_for(sk)
+        except ValueError:
+            continue
+        if not docs_dir.exists():
+            continue
+        try:
+            total_files += len(_list_indexable_files(docs_dir))
+        except OSError:
+            continue
+    return min(max(_DYNAMIC_TOP_K_FLOOR, total_files * _DYNAMIC_TOP_K_PER_DOC), _DYNAMIC_TOP_K_CEIL)
+
+
+def compute_dynamic_tables_top_k(scope_keys: list[str], is_compare_all: bool) -> int:
+    """Tables top-K. Lower base than prose because each table card is dense
+    metadata + a CSV — fewer cards needed for the same retrieval coverage.
+    Compare All doubles the cap because each company contributes its own
+    tables and we want at least one per company to land in the prompt.
+    """
+    base = compute_dynamic_top_k(scope_keys) // 4
+    floor = 2
+    ceil = 12 if is_compare_all else 6
+    return min(max(floor, base), ceil)
 
 
 def index_stats(scope_key: str) -> dict[str, Any]:

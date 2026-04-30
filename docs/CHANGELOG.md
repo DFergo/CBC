@@ -1,5 +1,70 @@
 # CBC — Changelog
 
+## Sprint 18 fases 1+2 — Top-K dinámico + watcher debounce robusto (2026-04-29)
+
+### Why
+
+Daniel uploaded 20 archivos (4 PDFs AU + 19 .md FR + 1 CBA ES = 23 docs) to the Amcor scope and ran three test queries:
+
+1. "Compara vacaciones en los convenios de Amcor" → response covered ES + 2 PDFs AU; **15+ FR docs ignored** despite being indexed.
+2. "Lista los convenios FR del corpus" → enumerated only 4 of 15+.
+3. "Compara subidas salariales pactadas" → claimed "no figures available" though every CBA had its salary tables.
+
+Diagnosis (logs + code read): `RAG_TOP_K_PER_SCOPE = 5`. With one scope holding 23 documents, the chat saw 5 chunks per turn — by definition incapable of covering the corpus. Cross-lingüe with technical terms (`enveloppe individuelle`, `prévoyance`, `astreinte`) made it worse, but the top-K cap was the dominant cause.
+
+Same upload also triggered **three full reindex passes** (logs: `Built Chroma chunks for scope g-p1/amcor: 1 files → 390 nodes` then `... 24 files → 760 nodes` then `... 24 files → 760 nodes` again, ~50 s each). Browser uploads paced at >5 s between files break the existing debounce.
+
+### Fase 1 — Top-K dinámico
+
+**`CBCopilot/src/backend/services/rag_service.py`**:
+- New `compute_dynamic_top_k(scope_keys)` — counts files via `_list_indexable_files` per scope, returns `min(max(5, total_files * 2), 40)`. 1 doc → 5 (status quo), 5 docs → 10, 23 docs → 40 (cap), 50 docs → 40 (cap; sprint 18 phase 3+ if recall still falls short at that scale).
+- New `compute_dynamic_tables_top_k(scope_keys, is_compare_all)` — base `dynamic_top_k // 4`, floor 2, ceil 12 in Compare All / 6 single. Lower than prose because table cards are dense + a CSV.
+- `query()` reranker pipeline: `fetch_k = max(rag_reranker_fetch_k, top_k * 3)` so the cross-encoder always has 3× headroom over the final K. Otherwise bumping `top_k` would make the reranker a no-op.
+
+**`CBCopilot/src/backend/services/prompt_assembler.py`**:
+- `_resolve_rag` calls `rag_service.compute_dynamic_top_k(scope_keys)` and passes the result to `rag_service.query_scopes`.
+- `assemble`: same for `compute_dynamic_tables_top_k`.
+- `effective_max_chunks = max(max_rag_chunks, len(chunks))` — prevents the static 20-chunk cap in `polling.py` from re-strangling the prompt to fewer chunks than the dynamic K just retrieved.
+- `RAG_TOP_K_PER_SCOPE = 5` kept as the floor for `session_rag` queries (where the scope is one session's uploads, not corpus tiers).
+
+**Verified live in container** before push:
+```
+compute_dynamic_top_k(['g-p1/amcor'])                         = 40
+compute_dynamic_top_k(['g-p1/amcor', 'g-p1', 'global'])       = 40
+compute_dynamic_top_k(['global'])                             = 5
+compute_dynamic_tables_top_k(['g-p1/amcor'], False)           = 6
+compute_dynamic_tables_top_k(['g-p1/amcor'], True)            = 10
+compute_dynamic_tables_top_k(['global'], False)               = 2
+```
+
+### Fase 2 — Watcher debounce robusto
+
+**`CBCopilot/src/backend/services/rag_watcher.py`**:
+- `DEBOUNCE_SECONDS`: 5 → 30. Browser file picker pacing tolerated; bulk uploads collapse to one reindex.
+- New `MAX_DEBOUNCE_HOLD_SECONDS = 300` ceiling. `_ScopeDebouncer` tracks `_first_event_at[scope]`; when an incoming event arrives within the hold window, the next timer fires after `min(DEBOUNCE_SECONDS, remaining_hold)`. Continuous slow uploads (e.g. iCloud trickling) reindex every 5 minutes anyway instead of being deferred forever.
+- New `LOCK_BUSY_REPLAN_SECONDS = 30`. `_fire(scope)` probes `rag_service._build_locks[scope_key]` via `acquire(blocking=False)`. If a reindex is already running, defer the watcher fire 30 s rather than queueing behind the lock — keeps chat queries unblocked for the duration of the in-flight build.
+
+### Cost / impact
+
+- Prompt size: max ~80 k chars in worst case (40 chunks × ~2 k chars + tables block). Comfortable inside the 130 k num_ctx Daniel runs on gemma4:26b.
+- TTFT: rerank scales from 5×3=15 candidates to 40×3=120 candidates per scope. ~1-2 s extra latency on cold cache. Steady-state with prefix cache hot is unchanged.
+- Watcher behaviour: small individual uploads still trigger a reindex (30 s after the last event). Bulk uploads collapse to one reindex regardless of pacing inside the hold window.
+
+### Architecture impact
+
+§5 of `docs/architecture/ARCHITECTURE.md` (Runtime control reference) — top-K is no longer a fixed knob; describe `compute_dynamic_top_k` as the policy. §6 (Failure modes) — add "watcher amplification" as a now-prevented mode. Will fold into the doc when Daniel validates and we close the sprint formally; for now the CHANGELOG carries the canonical record.
+
+### Validation pending Daniel post-repull
+
+1. Re-run "Compara vacaciones en los convenios de Amcor" — expected: response covers all 23 docs (or names which ones lack a vacaciones clause).
+2. Re-run "Lista los convenios FR del corpus" — expected: 15+ filenames listed.
+3. Re-run "Compara subidas salariales pactadas" — expected: numbers from each CBA cited.
+4. Trigger another 20-file upload — expected: a single reindex log line, not three.
+
+If validation 1-3 passes, sprint closes here. If it doesn't, fases 3-5 land next: modo catálogo, query rewriting cross-lingüe, glossary técnico-legal, MVCC chat protection.
+
+---
+
 ## Sprint 17 — Living Architecture Documentation (2026-04-24)
 
 Sprint 16 closure flushed enough drift that re-discovering the architecture from source on every Claude session became visibly wasteful. Sprint 17 lands a single living document plus the discipline to keep it honest.

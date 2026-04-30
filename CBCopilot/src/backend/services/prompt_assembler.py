@@ -32,7 +32,11 @@ from src.services import (
 
 logger = logging.getLogger("prompt_assembler")
 
-# Per SPEC §4.2 — admin-configurable later.
+# Sprint 18 — top-K is now dynamic, computed per-turn from
+# `rag_service.compute_dynamic_top_k(scope_keys)` so single-doc sessions
+# stay at K=5 and big corpora scale up to K=40. The constant below stays
+# only as a fallback floor for `session_rag` queries (where the scope is
+# the upload set of one session, not corpus-tier scopes).
 RAG_TOP_K_PER_SCOPE = 5
 
 # Phase B citation helpers — best-effort pointer inside the source document
@@ -227,7 +231,10 @@ def _resolve_rag(
         user_country=survey.get("country"),
     )
     scope_keys = [p["scope_key"] or "global" for p in paths.paths]
-    chunks = rag_service.query_scopes(scope_keys, query_text, top_k_per_scope=RAG_TOP_K_PER_SCOPE)
+    # Sprint 18 — scale top-K with corpus size. K=5 for single-doc sessions,
+    # K=40 cap for big corpora. See `rag_service.compute_dynamic_top_k`.
+    dynamic_k = rag_service.compute_dynamic_top_k(scope_keys)
+    chunks = rag_service.query_scopes(scope_keys, query_text, top_k_per_scope=dynamic_k)
 
     # Session RAG — two passes:
     # (a) force-include every chunk from the files the user just attached
@@ -423,17 +430,25 @@ def assemble(
         session_token=session_token,
         fresh_attachments=fresh_attachments,
     )
-    rag_text = _render_chunks(chunks, max_chunks=max_rag_chunks, cite_inline=cite_inline)
+    # Sprint 18 — let the dynamic top-K reach the prompt. `max_rag_chunks`
+    # came in via the caller default (20 in `polling.py`); on a 23-doc scope
+    # the dynamic K is 40 and clamping to 20 would re-strangle the corpus
+    # to the same problem the dynamic K just solved. Keep the larger of
+    # the two so dedicated callers (tests etc.) can still pass an explicit
+    # cap if they want one tighter than K.
+    effective_max_chunks = max(max_rag_chunks, len(chunks))
+    rag_text = _render_chunks(chunks, max_chunks=effective_max_chunks, cite_inline=cite_inline)
 
     # Sprint 16 — parallel lookup in `cbc_tables` for structured tables
-    # relevant to the query. top_k=2 by default; a salary query typically
-    # wants only the salary-base table plus maybe the overtime multiplier.
-    # Top_k doubled for Compare All because each company contributes.
+    # relevant to the query. Sprint 18 — top-K now scales with corpus size
+    # via `compute_dynamic_tables_top_k`: 1 doc → 2, big Compare All → 12.
     table_hits: list[dict[str, Any]] = []
     if q:
-        tables_top_k = 4 if is_compare_all else 2
+        scope_keys_for_tables = [p["scope_key"] or "global" for p in rag_paths]
+        tables_top_k = rag_service.compute_dynamic_tables_top_k(
+            scope_keys_for_tables, is_compare_all
+        )
         try:
-            scope_keys_for_tables = [p["scope_key"] or "global" for p in rag_paths]
             table_hits = rag_service.query_tables(
                 scope_keys_for_tables, q, top_k=tables_top_k
             )
@@ -462,9 +477,9 @@ def assemble(
     # are not part of the prompt so they don't belong in the citation list.
     # When the Phase B flag is on, also attach the distinct locator hints we
     # showed the LLM for each source so the sidepanel can surface them.
-    used_chunks = chunks[:max_rag_chunks]
+    used_chunks = chunks[:effective_max_chunks]
     labels_by_source: dict[str, list[str]] = (
-        _chunk_citation_labels(used_chunks, max_rag_chunks) if cite_inline else {}
+        _chunk_citation_labels(used_chunks, effective_max_chunks) if cite_inline else {}
     )
     seen: set[tuple[str, str]] = set()
     sources: list[dict[str, Any]] = []

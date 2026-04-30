@@ -1,7 +1,7 @@
 # CBC — Project Status
 
-**Current Sprint:** 17 — **CLOSED 2026-04-24**. ARCHITECTURE.md authored (10 sections, dual-use Claude+operator), CLAUDE.md READ ORDER updated, `/sprint` skill extended with arch-update step, drift-audit decision recorded. Sprint 16 fully closed in same day. Next: queued ideas in MILESTONES backlog or IDEAS.md.
-**Last Updated:** 2026-04-24
+**Current Sprint:** 18 — **Fases 1+2 CODE DONE 2026-04-29**, pending Daniel validation post-repull. Top-K dinámico (5→40 cap, scaling by num_files_in_scope) + watcher debounce robusto (5 s→30 s default, 5-min hold ceiling, lock-aware re-plan). Fases 3-5 (modo catálogo, query rewriting cross-lingüe, glossary técnico-legal, MVCC chat protection) PARKED — decidiremos tras validar 1+2. Sprint 17 CLOSED 2026-04-24.
+**Last Updated:** 2026-04-29
 
 ## Sprint 16 — Structured Table Pipeline + concurrency fixes
 
