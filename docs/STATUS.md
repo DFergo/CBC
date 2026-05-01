@@ -1,7 +1,14 @@
 # CBC — Project Status
 
-**Current Sprint:** 18 — **Fases 1+2 CODE DONE 2026-04-29**, pending Daniel validation post-repull. Top-K dinámico (5→40 cap, scaling by num_files_in_scope) + watcher debounce robusto (5 s→30 s default, 5-min hold ceiling, lock-aware re-plan). Fases 3-5 (modo catálogo, query rewriting cross-lingüe, glossary técnico-legal, MVCC chat protection) PARKED — decidiremos tras validar 1+2. Sprint 17 CLOSED 2026-04-24.
-**Last Updated:** 2026-04-29
+**Current Sprint:** 18 — **Fases 1+2+3 CODE DONE 2026-05-01**, pending Daniel validation post-repull + Wipe & Reindex All (Fase 3 cambia chunks → re-embed obligatorio). Fases 1-2 ya pusheadas (`57b2231`); Fase 3 pendiente push. Pipeline:
+1. Top-K dinámico (5→40 cap, scaling por num_files_in_scope).
+2. Watcher debounce robusto (5 s→30 s default, 5-min hold ceiling, lock-aware re-plan).
+3. **Chunking legal-aware** — `_segment_by_clause` pre-pass detecta Art. N / Artículo N / Article N / Cláusula N / Clause N / Section N.N.N / ANEXO I / Annexe N. Cada clause queda en su propio pseudo-doc al SentenceSplitter → no se parte mid-clause. `clause_id` propagado a metadata + `Chunk.clause_id` + citation panel lo usa como locator prioritario sobre el regex previo.
+
+Probado en vivo: CBA Lezo → 75 clause segments (Art. 1 a 72 + ANEXO II + III). FR docs con numeración → detectados; FR docs sin numeración → fall-through OK. AU sample SECTION 13.4.1 → detectado.
+
+Antiguas fases 4-5 (modo catálogo, query rewriting cross-lingüe, glossary técnico-legal, MVCC chat protection) parked en IDEAS.md — decidiremos tras validar 1+2+3. Sprint 17 CLOSED 2026-04-24.
+**Last Updated:** 2026-05-01
 
 ## Sprint 16 — Structured Table Pipeline + concurrency fixes
 

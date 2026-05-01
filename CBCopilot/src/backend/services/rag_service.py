@@ -30,6 +30,7 @@ Design rules:
   until first use — keeps `import` graph cheap for tests + cold paths.
 """
 import logging
+import re
 import shutil
 import threading
 from dataclasses import dataclass
@@ -118,6 +119,13 @@ class Chunk:
     # empty otherwise (the prompt assembler will fall back to an article /
     # annex regex on the chunk body when it needs a human-readable reference).
     page_label: str = ""
+    # Sprint 18 Fase 3 — clause id ("Art. 23", "Section 13.4.1", "ANEXO I")
+    # detected at chunk time by `_segment_by_clause` and propagated through
+    # the SentenceSplitter onto every sub-chunk that came out of the same
+    # clause body. Empty when the source text had no clause headers (intros
+    # / preambles, freeform sections). Citation panel prefers this over the
+    # body-regex fallback because it's authoritative.
+    clause_id: str = ""
 
 
 # --- Path helpers ---
@@ -299,6 +307,73 @@ def _list_indexable_files(docs_dir: Path) -> list[Path]:
     return out
 
 
+# --- Sprint 18 Fase 3 — Clause-aware segmentation -----------------------
+#
+# CBAs across countries share one structural signal: every substantive rule
+# lives under a numbered clause header (Art. 23 ES/IT/AU, Article 23 FR/EN,
+# Cláusula 23 ES/AU, Section 13.4.1 AU enterprise agreements, ANEXO I/II ES,
+# Annexe I/II FR). The Sprint 15 chunker respects markdown headings but
+# slices clause bodies arbitrarily by token count once inside a heading,
+# producing chunks like "...complemento por nocturnidad equivale al [CHUNK
+# BREAK] resto del párrafo" — half a rule cited at retrieval time.
+#
+# This pre-pass detects clause headers and uses them as forced chunk
+# boundaries: each clause becomes its own pseudo-doc fed to the splitter,
+# so Article N never spans two retrieved chunks unless its body alone
+# exceeds chunk_size (in which case the sub-chunks all inherit the same
+# clause_id metadata for citation propagation).
+
+_CLAUSE_HEADER_RE = re.compile(
+    r"(?im)^\s*("
+    r"Art\.?\s*\d+(?:\.\d+)*"          # Art. 23, Art 12.4, Art.12.4.1
+    r"|Art[íi]culo\s+\d+"               # Artículo 23
+    r"|Article\s+\d+"                   # Article 23 (FR formal, EN)
+    r"|Articolo\s+\d+"                  # Articolo 23 (IT)
+    r"|Cl[áa]usula\s+\d+"               # Cláusula 23
+    r"|Clause\s+\d+"                    # Clause 23
+    r"|Section\s+\d+(?:\.\d+)*"         # Section 13.4.1 (AU EAs)
+    r"|ANEXO\s+[IVX]+"                  # ANEXO I, II, III (ES uppercase)
+    r"|Anexo\s+[IVX\d]+"                # Anexo I or Anexo 2 (ES)
+    r"|Annexe?\s+(?:[IVX]+|\d+)"        # Annexe I / Annex 2 (FR / EN)
+    r")\b[\.\s:\-—–]*",
+    re.UNICODE,
+)
+
+
+def _segment_by_clause(text: str) -> list[tuple[str, str]]:
+    """Split text into (clause_id, body) tuples. Body extends from one
+    clause header (inclusive) up to the next header (exclusive) or EOF.
+    Text before the first header is yielded with clause_id="" (intro /
+    preamble).
+
+    Returns [("", text)] when the text contains no clause headers (so the
+    splitter still gets the full text). Returns [] for empty input.
+    """
+    if not text or not text.strip():
+        return []
+    matches = list(_CLAUSE_HEADER_RE.finditer(text))
+    if not matches:
+        return [("", text)]
+    segments: list[tuple[str, str]] = []
+    if matches[0].start() > 0:
+        intro = text[: matches[0].start()]
+        if intro.strip():
+            segments.append(("", intro))
+    for i, m in enumerate(matches):
+        clause_id = re.sub(r"\s+", " ", m.group(1).strip())
+        # Normalise "Art." → "Art." (canonical) and similar shorthands so
+        # downstream citation hits dedup cleanly.
+        if clause_id.lower().startswith("art ") or clause_id.lower().startswith("art."):
+            num_match = re.search(r"\d+(?:\.\d+)*", clause_id)
+            if num_match:
+                clause_id = f"Art. {num_match.group(0)}"
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[m.start() : end]
+        if body.strip():
+            segments.append((clause_id, body))
+    return segments
+
+
 def _parse_nodes(documents: list[Any]) -> list[Any]:
     """Route docs through the right chunker by file extension.
 
@@ -320,6 +395,13 @@ def _parse_nodes(documents: list[Any]) -> list[Any]:
     on every sub-node by re-wrapping the text in a fresh Document with the
     parent node's metadata before re-splitting.
 
+    Sprint 18 Fase 3: clause-aware pre-segmentation. Inside each markdown
+    heading-section (and inside non-markdown docs), `_segment_by_clause`
+    splits by clause header. Each clause becomes its own pseudo-doc fed
+    to the SentenceSplitter so Art. N body integrity is preserved (unless
+    the clause itself is longer than chunk_size, in which case all sub-
+    chunks inherit the same `clause_id` metadata for citation panel use).
+
     Everything else (.pdf / .txt / .docx): SentenceSplitter directly with the
     configured chunk size/overlap — unchanged, this path was always correct.
     """
@@ -340,18 +422,35 @@ def _parse_nodes(documents: list[Any]) -> list[Any]:
         chunk_overlap=CHUNK_OVERLAP,
     )
 
+    def _emit_clause_aware(parent_text: str, parent_meta: dict[str, Any]) -> list[Any]:
+        """Run clause segmentation on `parent_text`, then SentenceSplitter
+        per segment, propagating `clause_id` to every sub-chunk's metadata."""
+        out: list[Any] = []
+        for clause_id, segment in _segment_by_clause(parent_text):
+            seg_meta = dict(parent_meta) if parent_meta else {}
+            if clause_id:
+                seg_meta["clause_id"] = clause_id
+            wrapper = Document(text=segment, metadata=seg_meta)
+            out.extend(sentence_parser.get_nodes_from_documents([wrapper]))
+        return out
+
     nodes: list[Any] = []
     if md_docs:
         md_parser = MarkdownNodeParser()
         md_header_nodes = md_parser.get_nodes_from_documents(md_docs)
-        # Second pass: any md node that exceeds chunk_size gets split further.
-        # Rewrapping as Document preserves the header-derived metadata onto
-        # every sub-chunk (Sprint 11 Phase B inline citations depend on it).
+        # Second pass: clause-aware pre-segment, then SentenceSplitter caps
+        # any clause that's longer than chunk_size. Header metadata flows
+        # through unchanged; clause_id is added per segment when detected.
         for hn in md_header_nodes:
-            wrapper = Document(text=hn.text, metadata=hn.metadata or {})
-            nodes.extend(sentence_parser.get_nodes_from_documents([wrapper]))
+            nodes.extend(_emit_clause_aware(hn.text or "", hn.metadata or {}))
     if other_docs:
-        nodes.extend(sentence_parser.get_nodes_from_documents(other_docs))
+        # PDF / TXT / DOCX also get clause-aware splits — AU enterprise
+        # agreements use Section 13.4.1, FR formal docs use Article N, etc.
+        # When no clause headers are detected, _segment_by_clause yields the
+        # whole text as a single ("", text) entry → falls through to the
+        # SentenceSplitter as before.
+        for od in other_docs:
+            nodes.extend(_emit_clause_aware(od.text or "", od.metadata or {}))
 
     # Observability: per-document summary so future regressions are visible
     # without pulling session JSONs. Enumerates one log line per input doc.
@@ -1296,6 +1395,7 @@ def query(scope_key: str, query_text: str, top_k: int | None = None) -> list[Chu
                 tier=n.node.metadata.get("tier", _tier_for(scope_key)),
                 scope_key=scope_key,
                 page_label=str(n.node.metadata.get("page_label") or ""),
+                clause_id=str(n.node.metadata.get("clause_id") or ""),
             )
             for n in nodes
         ]

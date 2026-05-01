@@ -58,10 +58,21 @@ _ANNEX_RE = re.compile(
 def _citation_label_for(chunk: rag_service.Chunk) -> str:
     """Best-available short reference inside the chunk's source document.
 
-    Order of preference: PDF page label → article number found in the chunk
-    body → annex reference → empty string (panel will still show the doc,
-    the inline cite just won't include a location).
+    Order of preference (Sprint 18 Fase 3):
+      1. `clause_id` from chunk metadata — set by the clause-aware
+         segmenter at chunk time, so it's authoritative for the whole
+         chunk body (no risk of citing the wrong clause when a chunk
+         mentions Art. 23 in passing).
+      2. PDF page label — pdfplumber / PDFReader populates this for vector
+         PDFs.
+      3. Article regex on the chunk body — pre-Sprint-18 fallback for
+         chunks that the segmenter couldn't classify (mostly old indexed
+         data before re-indexing).
+      4. Annex regex.
+      5. Empty.
     """
+    if chunk.clause_id and chunk.clause_id.strip():
+        return chunk.clause_id.strip()
     if chunk.page_label and chunk.page_label.strip():
         return f"p. {chunk.page_label.strip()}"
     text = chunk.text or ""

@@ -1,5 +1,62 @@
 # CBC — Changelog
 
+## Sprint 18 fase 3 — Chunking legal-aware (clause splits + clause_id metadata) (2026-05-01)
+
+### Why
+
+Fases 1+2 abrieron el grifo de retrieval (top-K dinámico). Pero el chunker subyacente seguía partiendo artículos a mitad: un Artículo 23 largo de un CBA acababa con su cuerpo dividido en dos chunks por el SentenceSplitter, así el LLM citaba media regla. La validación externa (RAG-for-legal literature: Redis blog, arxiv 2504.16121, Milvus / Zilliz) confirma que el chunking estructural es la palanca low-cost-high-leverage para corpora legales — y CBAs comparten señal estructural fuerte: cada regla vive bajo un header numerado.
+
+### Fix
+
+**`CBCopilot/src/backend/services/rag_service.py`**:
+
+- Nuevo `_CLAUSE_HEADER_RE` (~12 alternativas regex, case-insensitive, multiline). Detecta `Art. N` / `Art. 12.4` / `Artículo N` / `Article N` / `Articolo N` / `Cláusula N` / `Clause N` / `Section N.N.N` / `ANEXO [IVX]+` / `Anexo N` / `Annexe N`. Cubre ES + FR + EN + IT + uppercase / lowercase variants observadas en el corpus real (Lezo, Capsules France, Saint Seurin, Venthenat, Australian enterprise agreements).
+- Nuevo `_segment_by_clause(text)` — devuelve `[(clause_id, body)]`. Body extiende desde un header (inclusive) al siguiente (exclusive) o EOF. Texto antes del primer header sale con `clause_id=""` (preámbulo). `[("", text)]` cuando el doc no tiene headers — fall-through al chunker tradicional, sin regresión.
+- Normalización: `Artículo N` → conserva forma original. `Art. 12.4` / `Art 12.4` → canonicalizado a `Art. 12.4` (strip whitespace + dot consistency).
+- `_parse_nodes` reescrito: extracted helper interno `_emit_clause_aware(text, meta)` aplica `_segment_by_clause` y luego SentenceSplitter por segmento. Cada segmento mete `clause_id` en su metadata. SentenceSplitter sigue capeando si la clause body excede `chunk_size` (e.g. Artículo 72 de Lezo = 17 543 chars → ~5 sub-chunks, todos con `clause_id="Artículo 72"`).
+- Aplicado a TODOS los formatos: markdown header-nodes (segunda pasada tras MarkdownNodeParser), .pdf, .txt, .docx. PDFs australianos con `SECTION 13.4.1` también capturados.
+- `Chunk` dataclass extendido con `clause_id: str = ""`.
+- `query()` propaga `clause_id` desde node metadata al `Chunk`.
+
+**`CBCopilot/src/backend/services/prompt_assembler.py`**:
+
+- `_citation_label_for(chunk)` ahora prioriza `chunk.clause_id` sobre los anteriores fallbacks (page_label → article regex → annex regex → empty). Es autoritativo: viene del chunker, no del body — así cuando un chunk menciona Art. 23 en passing pero pertenece a Art. 17, citation correcta.
+
+### Verificación en vivo (container actual, código nuevo cargado dinámicamente)
+
+Sobre los 23 docs Amcor reales:
+
+- `CBA Lezo (ES)` → 75 segments. Artículo 1 a 72, ANEXO II, ANEXO III. Cubre 100 % del CBA.
+- `Amcor-FR-Venthenat-PremioAntiguedad-2023.md` → 9 segments (Article 1-9). Detectado.
+- `Amcor-FR-PackagingFrance-IgualdadProfesional-2024.md` → 6 segments (ARTICLE 1-6 mayúscula). Detectado.
+- `Amcor-FR-Chalon-AstreintasTecnicas-2025.md` → 3 segments (Article 11 dos veces — el doc reusa numeración entre capítulos; ambos quedan con el mismo clause_id, comportamiento esperado del regex).
+- 11 docs FR sin clause headers (NAO, Prévoyance, FuncionamientoCSE, etc.) → 1 segment cada uno. Fall-through al SentenceSplitter normal.
+- AU sample `SECTION 13.4 / 13.5` → detectado correctamente.
+
+### Coste
+
+- Re-embed obligatorio: cada chunk cambia su texto + metadata. **Wipe & Reindex All** tras repull para aplicar.
+- Sin coste extra de embedding ni LLM por chunk (regex es O(n) sobre el texto).
+- Ingest time: ~+5 % por la pasada regex. Imperceptible.
+- Storage: idéntico (mismos N chunks, ligeramente distinto layout interno).
+
+### Validación pendiente Daniel post-repull + Wipe
+
+Además de los 4 tests del Sprint 18 fases 1+2:
+
+5. Query `"¿qué dice el Artículo 23 del CBA de Lezo?"` → un chunk único cita `Artículo 23` con su cuerpo entero, locator `Artículo 23` en citation panel.
+6. Query `"compara Artículo 37 entre Amcor Lezo y los franceses"` → chunks etiquetados con clause_id correspondiente, no fragmentos a mitad de regla.
+7. Query `"qué dicen los anexos del CBA de Lezo"` → chunks etiquetados `ANEXO II` y `ANEXO III` (no fragmentos arbitrarios).
+8. Citation panel: para cada source, los chips locator deben mostrar clause ids reales (`Art. 23`, `Section 13.4.1`, `ANEXO II`) en vez de `p. 14` o vacío.
+
+Si validación 5-8 pasa además de 1-4, Sprint 18 cierra. Las antiguas fases 4-5 (modo catálogo, query rewriting cross-lingüe, glossary técnico-legal, MVCC chat protection) pasan a Sprint 19 sólo si la validación lo exige.
+
+### Architecture impact
+
+§4.2 SPEC y §2 ARCHITECTURE.md (Services layer → rag_service) ganan línea sobre `_segment_by_clause`. §6 ARCHITECTURE.md (failure modes) sin cambios. Plegamos en la doc cuando Daniel valide y cerremos sprint formalmente.
+
+---
+
 ## Sprint 18 fases 1+2 — Top-K dinámico + watcher debounce robusto (2026-04-29)
 
 ### Why
