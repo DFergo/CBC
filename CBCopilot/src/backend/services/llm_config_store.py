@@ -298,17 +298,34 @@ def _slot_endpoint_for_provider(cfg: "LLMConfig", provider: ProviderType) -> str
     return None
 
 
-async def fetch_provider_status(timeout: float = 5.0) -> dict[str, dict[str, Any]]:
-    """Probe the lm_studio + ollama endpoints and return status + model list.
+async def fetch_provider_status(timeout: float = 5.0) -> dict[str, Any]:
+    """Probe every configured provider and return status + model list.
 
-    Feeds the top-level indicator in the admin LLM section (HRDD pattern).
-    Logic:
-    - If any saved slot uses this provider, probe that slot's endpoint
-    - Otherwise run auto-detect (host.docker.internal → localhost, with
-      deployment_backend.json override taking priority if set)
+    Feeds the top-level indicator in the admin LLM section (HRDD pattern) +
+    populates the per-slot model dropdown.
+
+    Shape (Sprint 18 Fase 5 — extended for `api` providers):
+    {
+      "lm_studio": { endpoint, status, models, error },
+      "ollama":    { endpoint, status, models, error },
+      "api":       [
+        { slot, api_flavor, api_endpoint, api_key_env, status, models, error },
+        ...one entry per slot configured with provider=api...
+      ]
+    }
+
+    Logic per provider:
+    - lm_studio / ollama (single endpoint each): if a saved slot uses this
+      provider, probe that slot's endpoint; otherwise run auto-detect
+      (host.docker.internal → localhost, with deployment_backend.json
+      override taking priority if set).
+    - api (potentially multiple): iterate every slot whose provider is
+      "api" and probe each one — different slots may point at different
+      API providers (e.g. summariser=Anthropic, inference=MiniMax). Each
+      slot becomes its own entry in the result list.
     """
     cfg = load_config()
-    result: dict[str, dict[str, Any]] = {}
+    result: dict[str, Any] = {}
 
     for provider_type in ("lm_studio", "ollama"):
         slot_endpoint = _slot_endpoint_for_provider(cfg, provider_type)
@@ -334,6 +351,43 @@ async def fetch_provider_status(timeout: float = 5.0) -> dict[str, dict[str, Any
             "models": models,
             "error": error,
         }
+
+    # Sprint 18 Fase 5 — also probe every slot configured as `api`. Each slot
+    # is its own entry (different endpoint / flavor / key per slot is allowed:
+    # you can have summariser=Anthropic + inference=MiniMax in the same setup).
+    api_entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str | None, str | None]] = set()
+    for slot_name, slot in (
+        ("inference", cfg.inference),
+        ("compressor", cfg.compressor),
+        ("summariser", cfg.summariser),
+    ):
+        if slot.provider != "api":
+            continue
+        # Dedup: if two slots happen to point at the exact same api_endpoint
+        # + flavor + key_env, probe once and report both slot names.
+        key = (slot.api_endpoint or "", slot.api_flavor, slot.api_key_env)
+        if key in seen:
+            for entry in api_entries:
+                if (
+                    entry["api_endpoint"] == (slot.api_endpoint or "")
+                    and entry["api_flavor"] == slot.api_flavor
+                    and entry["api_key_env"] == slot.api_key_env
+                ):
+                    entry["slots"].append(slot_name)
+            continue
+        seen.add(key)
+        r = await check_slot_health(slot, timeout=timeout)
+        api_entries.append({
+            "slots": [slot_name],
+            "api_flavor": slot.api_flavor,
+            "api_endpoint": slot.api_endpoint or "",
+            "api_key_env": slot.api_key_env,
+            "status": "online" if r["ok"] else "offline",
+            "models": r["models"],
+            "error": r["error"],
+        })
+    result["api"] = api_entries
 
     return result
 

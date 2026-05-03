@@ -386,9 +386,25 @@ export interface ProviderInfo {
   error: string | null
 }
 
+// Sprint 18 Fase 5 — one entry per slot configured with provider="api".
+// Different slots may point at different APIs (e.g. summariser=Anthropic,
+// inference=MiniMax) so this is a list, not a single object. When two slots
+// share the exact same api_endpoint+flavor+key_env, they're collapsed into
+// one entry whose `slots` lists both names.
+export interface ApiProviderInfo {
+  slots: string[]
+  api_flavor: 'anthropic' | 'openai' | 'openai_compatible' | null
+  api_endpoint: string
+  api_key_env: string | null
+  status: 'online' | 'offline'
+  models: string[]
+  error: string | null
+}
+
 export interface ProvidersStatus {
   lm_studio: ProviderInfo
   ollama: ProviderInfo
+  api: ApiProviderInfo[]
 }
 
 export async function getLLMConfig(): Promise<LLMConfig> {

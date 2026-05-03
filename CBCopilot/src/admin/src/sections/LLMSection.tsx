@@ -15,7 +15,7 @@ import type {
   CompressionSettings, RoutingToggles, LLMHealth, ProvidersStatus,
 } from '../api'
 import SlotEditor from '../components/llm/SlotEditor'
-import ProviderCard from '../components/llm/ProviderCard'
+import ProviderCard, { ApiProviderCard } from '../components/llm/ProviderCard'
 import { useT } from '../i18n'
 import type { AdminTranslationKeys } from '../i18n'
 
@@ -105,8 +105,22 @@ export default function LLMSection() {
   const modelsForSlot = (slot: SlotConfig, slotKey: 'inference' | 'compressor' | 'summariser'): string[] => {
     if (slot.provider === 'lm_studio') return providers?.lm_studio.models || []
     if (slot.provider === 'ollama') return providers?.ollama.models || []
-    // api — comes from per-slot health probe (requires key env var + Check health click)
-    return health?.[slotKey]?.models || []
+    // Sprint 18 Fase 5 — api provider models now also come from
+    // /llm/providers (auto-refreshed). Match the slot's saved api_endpoint
+    // + flavor + key_env against the entries the backend returned. Falls
+    // back to the per-slot Health probe result if the providers list
+    // doesn't have a matching entry yet (e.g. slot just edited but Save
+    // not clicked, so providers/ hasn't re-fetched).
+    if (slot.provider === 'api') {
+      const match = providers?.api?.find(
+        e => e.api_endpoint === (slot.api_endpoint || '')
+          && e.api_flavor === (slot.api_flavor || null)
+          && e.api_key_env === (slot.api_key_env || null),
+      )
+      if (match && match.models.length > 0) return match.models
+      return health?.[slotKey]?.models || []
+    }
+    return []
   }
 
   return (
@@ -119,10 +133,16 @@ export default function LLMSection() {
         {t('llm_description')}
       </p>
 
-      {/* Top indicator: LM Studio + Ollama live status + model count */}
+      {/* Top indicator: LM Studio + Ollama live status + model count.
+          Sprint 18 Fase 5 — also one card per slot configured as API
+          (MiniMax, Anthropic, OpenAI, etc.) so admin sees the same
+          green dot + model count across every configured provider. */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
         <ProviderCard name="LM Studio" info={providers?.lm_studio} />
         <ProviderCard name="Ollama" info={providers?.ollama} />
+        {(providers?.api || []).map((entry, i) => (
+          <ApiProviderCard key={`api-${i}-${entry.api_endpoint}`} info={entry} />
+        ))}
       </div>
 
       {error && <p className="text-uni-red text-sm mb-3">{error}</p>}

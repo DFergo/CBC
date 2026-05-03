@@ -14,7 +14,7 @@ import {
 } from '../api'
 import type { LLMConfig, LLMOverride, SlotConfig, ProvidersStatus } from '../api'
 import SlotEditor from '../components/llm/SlotEditor'
-import ProviderCard from '../components/llm/ProviderCard'
+import ProviderCard, { ApiProviderCard } from '../components/llm/ProviderCard'
 import { useT } from '../i18n'
 import type { AdminTranslationKeys } from '../i18n'
 
@@ -109,7 +109,19 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
   const modelsForSlot = (slot: SlotConfig): string[] => {
     if (slot.provider === 'lm_studio') return providers?.lm_studio.models || []
     if (slot.provider === 'ollama') return providers?.ollama.models || []
-    return []  // api: would need a per-slot health probe — skipped at this tier
+    if (slot.provider === 'api') {
+      // Sprint 18 Fase 5 — match by api_endpoint + flavor + key_env against
+      // the global providers/ probe. Per-frontend overrides reuse the
+      // global LLMConfig's API slots, so this lookup works as long as the
+      // override points at the same API endpoint as a global slot.
+      const match = providers?.api?.find(
+        e => e.api_endpoint === (slot.api_endpoint || '')
+          && e.api_flavor === (slot.api_flavor || null)
+          && e.api_key_env === (slot.api_key_env || null),
+      )
+      return match?.models || []
+    }
+    return []
   }
 
   const overriddenCount = Object.values(override).filter(Boolean).length
@@ -134,6 +146,9 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
         <ProviderCard name="LM Studio" info={providers?.lm_studio} />
         <ProviderCard name="Ollama" info={providers?.ollama} />
+        {(providers?.api || []).map((entry, i) => (
+          <ApiProviderCard key={`api-${i}-${entry.api_endpoint}`} info={entry} />
+        ))}
       </div>
 
       {error && <p className="text-uni-red text-xs mb-3">{error}</p>}

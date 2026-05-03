@@ -1,6 +1,8 @@
 # CBC — Project Status
 
-**Current Sprint:** 18 — **Fases 1+2+3 PUSHED 2026-05-01; Fase 4 CODE DONE 2026-05-03** (Top-K + watcher knobs admin-editables vía sliders en `Admin → General → RAG Pipeline → Tuning avanzado`). Pendiente push + Daniel valida. Pipeline:
+**Current Sprint:** 18 — **CLOSED 2026-05-03** tras 5 fases. Fases 1+2+3+4+5 todas pusheadas. Próximo sprint TBD según validación de Daniel post-repull (8 tests RAG + tuning + listing API providers).
+
+Pipeline completo:
 1. Top-K dinámico (5→40 cap, scaling por num_files_in_scope).
 2. Watcher debounce robusto (5 s→30 s default, 5-min hold ceiling, lock-aware re-plan).
 3. **Chunking legal-aware** — `_segment_by_clause` pre-pass detecta Art. N / Artículo N / Article N / Cláusula N / Clause N / Section N.N.N / ANEXO I / Annexe N. Cada clause queda en su propio pseudo-doc al SentenceSplitter → no se parte mid-clause. `clause_id` propagado a metadata + `Chunk.clause_id` + citation panel lo usa como locator prioritario sobre el regex previo.

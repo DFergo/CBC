@@ -1,5 +1,60 @@
 # CBC — Changelog
 
+## Sprint 18 fase 5 — Listing de modelos para providers API + cierre sprint (2026-05-03)
+
+### Why
+
+Daniel configuró un slot LLM con provider=api apuntando a MiniMax, le dio a Health (status=online), pero el dropdown de modelos del slot seguía mostrando los de LM Studio. La tarjeta superior del admin LLM tampoco mostraba MiniMax. Diagnóstico: `fetch_provider_status` (la fuente del dropdown) sólo iteraba `("lm_studio", "ollama")` — el path de provider=api se quedaba fuera. `POST /llm/health` SÍ hacía la probe de la API (con auth) pero el frontend leía del endpoint equivocado para poblar el dropdown.
+
+### Backend
+
+- `llm_config_store.fetch_provider_status` extendido. Sigue devolviendo `lm_studio` y `ollama` como antes (un objeto cada uno). Añade `api`: lista con una entrada por cada slot configurado como provider=api. Cada entrada lleva `slots` (lista de nombres — dedup cuando dos slots comparten endpoint+flavor+key), `api_flavor`, `api_endpoint`, `api_key_env`, `status`, `models`, `error`. Reusa `check_slot_health` que ya sabía probar Anthropic / OpenAI / openai_compatible con auth correcto.
+- Sin cambios en endpoint admin (`GET /admin/api/v1/llm/providers` devuelve el mismo JSON con la nueva clave `api`).
+
+### Admin UI
+
+- `api.ts`: nuevo type `ApiProviderInfo` (con `slots`, `api_flavor`, `api_endpoint`, `api_key_env`, `status`, `models`, `error`). `ProvidersStatus` extendido con `api: ApiProviderInfo[]`.
+- `components/llm/ProviderCard.tsx`: nuevo export `ApiProviderCard` mostrando flavor + slots que la usan + endpoint + env var del key (no el valor) + dot verde/rojo + count de modelos. Mismo estilo que el ProviderCard original.
+- `sections/LLMSection.tsx`: tras los dos cards LM Studio + Ollama, render una `ApiProviderCard` por cada entrada en `providers.api`. `modelsForSlot` extendido — cuando el slot es provider=api, busca en `providers.api` por endpoint+flavor+key_env. Fall-back al per-slot Health probe si no hay match (caso slot recién editado pero sin Save todavía).
+- `panels/PerFrontendLLMPanel.tsx`: idéntico tratamiento. Antes el caso api era `return []` ("would need a per-slot health probe — skipped at this tier"). Ahora reusa el listing global vía endpoint+flavor+key match.
+
+### Cost / impact
+
+- Cero coste runtime extra para deploys sin slots api. Cuando hay N slots api configurados con providers únicos, son N probes HTTP extra cada vez que el admin pulsa Refresh providers (~15 s polling cycle). Cap natural por `_TURN_SEMAPHORE`-like behaviour: cada probe respeta el `timeout=5.0`.
+- Sin reindex.
+- Sin cambios de schema persisted (los slots api ya guardaban api_flavor/endpoint/key_env desde Sprint 9).
+
+### Validación pendiente Daniel post-repull
+
+1. Configurar un slot (ej. summariser) con provider=api, flavor=openai_compatible, endpoint MiniMax, api_key_env apuntando a una env var con la key.
+2. Save config.
+3. Pulsar Refresh providers → debe aparecer una tarjeta "OpenAI-compatible · summariser" verde con count de modelos y el endpoint MiniMax.
+4. Volver al slot summariser → el dropdown de modelos debe poblar con los modelos reales de MiniMax (no los de LM Studio).
+5. Configurar un segundo slot (ej. inference) con OTRO API distinto (Anthropic con su propia key) → segunda tarjeta API en el panel, modelos correctos en su dropdown.
+6. Configurar dos slots apuntando al MISMO endpoint+flavor+key → una sola tarjeta cuyo `slots: ["inference", "summariser"]` indica los dos.
+
+### Sprint 18 — CLOSED
+
+5 fases shipped en 4 días (2026-04-29 a 2026-05-03):
+
+| Fase | Commit | Resumen |
+|------|--------|---------|
+| 1 | 57b2231 | Top-K dinámico (5→40 cap, scaling por num_files) |
+| 2 | 57b2231 | Watcher debounce robusto (5s→30s, 5-min hold ceiling, lock-aware re-plan) |
+| 3 | 2dcf569 | Chunking legal-aware (clause splits + clause_id metadata) |
+| 4 | 76c3d11 | Top-K + watcher knobs admin-editables (sliders en RAG Pipeline) |
+| 5 | (este)  | Listing de modelos para providers API |
+
+Origen: Daniel subió 23 docs Amcor y el chat ignoraba 15+ docs FR ("compara vacaciones" → 4 de 23 cubiertos; "lista convenios FR" → 4 de 15+). Fases 1+2+3 atacaron el recall (top-K dinámico + watcher robusto + chunks por cláusula). Fase 4 hizo todo eso tunable desde admin sin redeploy. Fase 5 cerró el bug latente de listing de modelos para providers API.
+
+Antiguas fases parked (modo catálogo, query rewriting cross-lingüe, glossary técnico-legal, MVCC chat protection, modo cita textual) — siguen en `docs/IDEAS.md` como Sprint 19+ candidates si la validación post-repull lo exige.
+
+### Architecture impact
+
+§5 ARCHITECTURE.md (Runtime control reference): añade 9 filas de tuning + actualiza la fila de `rag_watcher_debounce_seconds` (5s→30s default). §2 (services): nota sobre `_segment_by_clause` en rag_service y los helpers `_debounce_seconds()/_max_hold_seconds()/_lock_busy_replan_seconds()` en rag_watcher. §6 (failure modes): "watcher amplification" como modo prevenido. Pliego al ARCHITECTURE.md cuando Daniel valide post-repull.
+
+---
+
 ## Sprint 18 fase 4 — Top-K + watcher knobs admin-editables (2026-05-03)
 
 ### Why
