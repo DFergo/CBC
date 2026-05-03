@@ -1446,12 +1446,20 @@ def _hybrid_retrieve(scope_key: str, idx: Any, query_text: str, fetch_k: int) ->
 def _rerank(nodes: list[Any], query_text: str, top_n: int) -> list[Any]:
     """Cross-encoder reranker pass over the hybrid candidates. Narrows the
     fetched set down to the most relevant top_n using bge-reranker-v2-m3.
-    Returns `nodes` unchanged if the reranker isn't available."""
+    Returns `nodes` unchanged if the reranker isn't available.
+
+    Sprint 18 Fase 1 hotfix — `SentenceTransformerRerank` is instantiated
+    once at startup with `top_n=rag_reranker_top_n` (default 8); the
+    `top_n` we pass here was being clipped INSIDE the reranker before our
+    `[:top_n]` slice ever ran. Mutate the reranker's own `top_n` per
+    call so the dynamic K from `compute_dynamic_top_k` actually reaches
+    the prompt assembler."""
     rr = _get_reranker()
     if rr is None or not nodes:
         return nodes[:top_n]
     try:
         from llama_index.core import QueryBundle
+        rr.top_n = top_n
         reranked = rr.postprocess_nodes(nodes, query_bundle=QueryBundle(query_text))
         return reranked[:top_n]
     except Exception as e:

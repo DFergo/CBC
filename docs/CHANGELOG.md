@@ -1,5 +1,45 @@
 # CBC — Changelog
 
+## Sprint 18 hotfix — Reranker top_n era estático, anulaba el top-K dinámico (2026-05-03)
+
+### Why
+
+Daniel arrancó la validación post-repull con la query "Compara las condiciones de vacaciones en todos los países" sobre el scope amcor (23 docs). Logs mostraron:
+
+```
+rag.query scope=g-p1/amcor fetch_k=180 rerank_top=60 returned=8
+```
+
+El `compute_dynamic_top_k(['g-p1/amcor', 'g-p1', 'global'])` devolvía 40 (verificado en vivo) pero al LLM solo llegaban 8 chunks. El top-K dinámico de Sprint 18 Fase 1 estaba **completamente anulado** en producción.
+
+### Diagnóstico
+
+`rag_service._get_reranker()` instancia `SentenceTransformerRerank(model=..., top_n=backend_config.rag_reranker_top_n)` UNA VEZ al startup (lazy). El `top_n` queda fijo en 8 (el default de deployment_backend.json). `_rerank()` llama a `rr.postprocess_nodes(...)` y luego hace `[:top_n]` con el `top_n` dinámico — pero el reranker ya devolvió solo 8 nodos internamente, así que el slice es no-op.
+
+Resultado: aunque Sprint 18 Fase 1 calculaba K dinámico = 40 para 23 docs, el reranker LO RECORTABA a 8 antes de que llegaran al `prompt_assembler`. El prompt acababa con 8 chunks en vez de los 40 esperados. Causa raíz del recall pobre que Sprint 18 supuestamente arreglaba.
+
+### Fix
+
+`CBCopilot/src/backend/services/rag_service.py:_rerank` — una línea: setear `rr.top_n = top_n` antes de `postprocess_nodes`. El reranker es un objeto módulo-level mutable; LlamaIndex lo respeta. Ahora cada query usa el `top_n` dinámico correcto.
+
+### Coste
+
+- Sin reindex (solo query path).
+- Sin schema changes.
+- Repull en Portainer + retry de la query → `returned=40` en vez de `returned=8`.
+
+### Validación pendiente Daniel post-repull
+
+1. Repull (sin wipe — el índice ya está bien).
+2. Repetir "Compara las condiciones de vacaciones en todos los países" → logs deberían mostrar `returned=40` (o el ceiling configurado en sliders).
+3. Respuesta del chat debería cubrir más de 4 docs FR ahora — el bug era que solo 8 chunks llegaban, distribuidos en 2-3 docs.
+
+### Architecture impact
+
+Ninguno estructural — bug del path de query, no de los invariants. ARCHITECTURE.md §2 ya describe `_rerank` correctamente; §8 invariant #12 (Top-K scales with corpus size) ahora se cumple realmente, antes era aspiracional.
+
+---
+
 ## Sprint 19 fase 1 — API keys inline (Open WebUI pattern) + ARCHITECTURE.md sync (2026-05-03)
 
 ### Why
