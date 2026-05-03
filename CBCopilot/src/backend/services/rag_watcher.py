@@ -39,22 +39,25 @@ from typing import Any, Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from src.core.config import config as backend_config
 from src.services import rag_service
 from src.services._paths import DATA_DIR
 
 logger = logging.getLogger("rag_watcher")
 
-DEBOUNCE_SECONDS = 30.0
-# Hard ceiling on how long a single scope can stay debounced before we
-# force the reindex through. Without this, a slow continuous upload
-# (e.g. iCloud trickling files in for 10 min) would defer the rebuild
-# forever, so chat queries against the scope would be using a stale index
-# the whole time.
-MAX_DEBOUNCE_HOLD_SECONDS = 300.0
-# When the debouncer wakes up but `_build_locks[scope]` is held by a still-
-# running reindex, push the next attempt this far into the future. Long
-# enough that the vast majority of in-flight rebuilds finish first.
-LOCK_BUSY_REPLAN_SECONDS = 30.0
+# Sprint 18 Fase 4 — these used to be module-level constants. They're now
+# read live from `backend_config.rag_watcher_*` via the helpers below so an
+# admin tuning change (PATCH /admin/api/v1/rag/tuning) applies on the next
+# debouncer tick — no restart needed. Defaults live in `core/config.py`.
+
+def _debounce_seconds() -> float:
+    return float(backend_config.rag_watcher_debounce_seconds)
+
+def _max_hold_seconds() -> float:
+    return float(backend_config.rag_watcher_max_hold_seconds)
+
+def _lock_busy_replan_seconds() -> float:
+    return float(backend_config.rag_watcher_lock_replan_seconds)
 
 # Files we should never reindex on. Lessons-learned #8.
 _IGNORE_PATTERNS = re.compile(
@@ -126,6 +129,8 @@ class _ScopeDebouncer:
 
     def schedule(self, scope_key: str) -> None:
         now = time.monotonic()
+        debounce = _debounce_seconds()
+        max_hold = _max_hold_seconds()
         with self._lock:
             existing = self._timers.pop(scope_key, None)
             if existing is not None:
@@ -135,11 +140,11 @@ class _ScopeDebouncer:
                 self._first_event_at[scope_key] = now
                 first_seen = now
             held_for = now - first_seen
-            remaining_hold = MAX_DEBOUNCE_HOLD_SECONDS - held_for
+            remaining_hold = max_hold - held_for
             # If we've been holding longer than the ceiling, fire ASAP
             # (use a tiny non-zero delay so the timer thread still owns
             # the call rather than blocking the watchdog event thread).
-            delay = min(DEBOUNCE_SECONDS, max(0.1, remaining_hold))
+            delay = min(debounce, max(0.1, remaining_hold))
             t = threading.Timer(delay, self._fire, args=(scope_key,))
             t.daemon = True
             self._timers[scope_key] = t
@@ -157,13 +162,14 @@ class _ScopeDebouncer:
         if lock is not None:
             got = lock.acquire(blocking=False)
             if not got:
+                replan_in = _lock_busy_replan_seconds()
                 logger.info(
                     f"Debounced reindex deferred for {scope_key}: "
-                    f"build lock held; replan in {LOCK_BUSY_REPLAN_SECONDS}s"
+                    f"build lock held; replan in {replan_in}s"
                 )
                 with self._lock:
                     self._timers.pop(scope_key, None)
-                    t = threading.Timer(LOCK_BUSY_REPLAN_SECONDS, self._fire, args=(scope_key,))
+                    t = threading.Timer(replan_in, self._fire, args=(scope_key,))
                     t.daemon = True
                     self._timers[scope_key] = t
                     t.start()
@@ -235,7 +241,7 @@ def start() -> None:
     obs.daemon = True
     obs.start()
     _observer = obs
-    logger.info(f"RAG file watcher started on {DATA_DIR} (debounce {DEBOUNCE_SECONDS}s)")
+    logger.info(f"RAG file watcher started on {DATA_DIR} (debounce {_debounce_seconds()}s)")
 
 
 def stop() -> None:

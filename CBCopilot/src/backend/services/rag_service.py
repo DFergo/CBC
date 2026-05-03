@@ -1205,6 +1205,104 @@ def update_runtime_rag_settings(
     }
 
 
+# Sprint 18 Fase 4 — sane ranges for the admin-tunable retrieval / watcher
+# knobs. The admin UI's sliders also enforce these but we re-validate here
+# so a hand-crafted PATCH can't push the system into pathological config.
+_TUNING_RANGES: dict[str, tuple[int, int]] = {
+    "top_k_floor": (1, 40),
+    "top_k_ceil": (5, 100),
+    "top_k_per_doc": (1, 10),
+    "tables_top_k_floor": (1, 20),
+    "tables_top_k_ceil_single": (1, 30),
+    "tables_top_k_ceil_compare_all": (1, 50),
+    "watcher_debounce_seconds": (1, 600),
+    "watcher_max_hold_seconds": (10, 3600),
+    "watcher_lock_replan_seconds": (5, 600),
+}
+
+# Map between the API surface (no `rag_` prefix, friendlier) and the
+# `backend_config` attribute names. Single source of truth.
+_TUNING_FIELD_MAP: dict[str, str] = {
+    "top_k_floor": "rag_top_k_floor",
+    "top_k_ceil": "rag_top_k_ceil",
+    "top_k_per_doc": "rag_top_k_per_doc",
+    "tables_top_k_floor": "rag_tables_top_k_floor",
+    "tables_top_k_ceil_single": "rag_tables_top_k_ceil_single",
+    "tables_top_k_ceil_compare_all": "rag_tables_top_k_ceil_compare_all",
+    "watcher_debounce_seconds": "rag_watcher_debounce_seconds",
+    "watcher_max_hold_seconds": "rag_watcher_max_hold_seconds",
+    "watcher_lock_replan_seconds": "rag_watcher_lock_replan_seconds",
+}
+
+
+def update_runtime_rag_tuning(**fields: int) -> dict[str, Any]:
+    """Update one or more retrieval / watcher knobs in `backend_config` AND
+    persist to runtime_overrides.json. No reindex needed (these are
+    query-path / watcher-path settings, not indexing settings).
+
+    Validates every supplied value against `_TUNING_RANGES` and the cross-
+    field constraint `top_k_floor ≤ top_k_ceil`. Raises `ValueError` on
+    bad input — caller (admin endpoint) wraps as HTTP 400.
+
+    Returns a payload with `applied` (the new effective values for every
+    knob, not just the changed ones) and `changed` (list of fields that
+    actually moved). The admin UI uses `changed` to highlight what just
+    saved.
+    """
+    from src.services import runtime_overrides_store
+
+    # Validate ranges first so we don't half-apply.
+    for name, value in fields.items():
+        if name not in _TUNING_FIELD_MAP:
+            raise ValueError(f"Unknown tuning field {name!r}")
+        if not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer, got {type(value).__name__}")
+        lo, hi = _TUNING_RANGES[name]
+        if value < lo or value > hi:
+            raise ValueError(
+                f"{name}={value} out of range [{lo}, {hi}]"
+            )
+
+    # Cross-field: floor ≤ ceil for both prose and tables-single + tables-CA.
+    # Use the new value where supplied, fall back to current backend_config.
+    def _eff(name: str) -> int:
+        return fields.get(name, getattr(backend_config, _TUNING_FIELD_MAP[name]))
+
+    if _eff("top_k_floor") > _eff("top_k_ceil"):
+        raise ValueError(
+            f"top_k_floor ({_eff('top_k_floor')}) must be ≤ "
+            f"top_k_ceil ({_eff('top_k_ceil')})"
+        )
+    if _eff("tables_top_k_floor") > _eff("tables_top_k_ceil_single"):
+        raise ValueError(
+            f"tables_top_k_floor ({_eff('tables_top_k_floor')}) must be ≤ "
+            f"tables_top_k_ceil_single ({_eff('tables_top_k_ceil_single')})"
+        )
+    if _eff("tables_top_k_floor") > _eff("tables_top_k_ceil_compare_all"):
+        raise ValueError(
+            f"tables_top_k_floor ({_eff('tables_top_k_floor')}) must be ≤ "
+            f"tables_top_k_ceil_compare_all ({_eff('tables_top_k_ceil_compare_all')})"
+        )
+
+    # Apply + persist.
+    changed: list[str] = []
+    persist_payload: dict[str, Any] = {}
+    for name, value in fields.items():
+        attr = _TUNING_FIELD_MAP[name]
+        if getattr(backend_config, attr) != value:
+            setattr(backend_config, attr, value)
+            persist_payload[attr] = value
+            changed.append(name)
+    if persist_payload:
+        runtime_overrides_store.save_overrides(**persist_payload)
+
+    applied = {
+        name: getattr(backend_config, attr)
+        for name, attr in _TUNING_FIELD_MAP.items()
+    }
+    return {"applied": applied, "changed": changed}
+
+
 def reindex_frontend_cascade(frontend_id: str) -> list[dict[str, Any]]:
     """Rebuild the frontend-tier index plus every company under it. Used by
     the frontend-tier RAGSection's "Reindex frontend + companies" button.
@@ -1454,21 +1552,23 @@ def query_scopes(
 # small corpora don't pay rerank cost they don't need and huge corpora
 # don't blow the prompt budget.
 #
-# Numbers picked from observed corpora:
+# Numbers (defaults — admin-tunable from Sprint 18 Fase 4):
+#   floor=5, ceil=40, per_doc=2
 #   1 doc   →  K=5    (status quo)
 #   5 docs  →  K=10   (~2 chunks/doc on average)
 #   23 docs →  K=40   (cap)
 #   50 docs →  K=40   (capped — at this scale query rewriting from
-#                      Sprint 18 phase 3 is the right next move)
+#                      Sprint 19 candidates is the right next move)
 #
 # Reranker cost scales with fetch_k = top_k * 3 (see `query`), so K=40
 # means the cross-encoder scores ~120 candidates per scope. On the bge-
 # reranker-v2-m3 with batch size 32, that's ~4 batches ≈ 1-2 s extra
 # latency vs K=5.
-
-_DYNAMIC_TOP_K_FLOOR = 5
-_DYNAMIC_TOP_K_CEIL = 40
-_DYNAMIC_TOP_K_PER_DOC = 2
+#
+# Sprint 18 Fase 4: floor / ceil / per_doc + tables knobs are now read
+# from `backend_config` (admin-editable via PATCH /admin/api/v1/rag/tuning,
+# persisted in runtime_overrides.json). The constants below are gone;
+# everything reads `backend_config.rag_top_k_*`.
 
 
 def compute_dynamic_top_k(scope_keys: list[str]) -> int:
@@ -1481,6 +1581,9 @@ def compute_dynamic_top_k(scope_keys: list[str]) -> int:
     Counts files via `_list_indexable_files` per scope and sums them; this
     matches what `_build_index` indexes. Empty scopes contribute zero so
     they don't inflate K artificially.
+
+    Knobs (admin-editable, see backend_config): rag_top_k_floor,
+    rag_top_k_ceil, rag_top_k_per_doc.
     """
     total_files = 0
     for sk in scope_keys:
@@ -1494,18 +1597,28 @@ def compute_dynamic_top_k(scope_keys: list[str]) -> int:
             total_files += len(_list_indexable_files(docs_dir))
         except OSError:
             continue
-    return min(max(_DYNAMIC_TOP_K_FLOOR, total_files * _DYNAMIC_TOP_K_PER_DOC), _DYNAMIC_TOP_K_CEIL)
+    floor = backend_config.rag_top_k_floor
+    ceil = backend_config.rag_top_k_ceil
+    per_doc = backend_config.rag_top_k_per_doc
+    return min(max(floor, total_files * per_doc), ceil)
 
 
 def compute_dynamic_tables_top_k(scope_keys: list[str], is_compare_all: bool) -> int:
     """Tables top-K. Lower base than prose because each table card is dense
     metadata + a CSV — fewer cards needed for the same retrieval coverage.
-    Compare All doubles the cap because each company contributes its own
+    Compare All gets a higher cap because each company contributes its own
     tables and we want at least one per company to land in the prompt.
+
+    Knobs (admin-editable): rag_tables_top_k_floor,
+    rag_tables_top_k_ceil_single, rag_tables_top_k_ceil_compare_all.
     """
     base = compute_dynamic_top_k(scope_keys) // 4
-    floor = 2
-    ceil = 12 if is_compare_all else 6
+    floor = backend_config.rag_tables_top_k_floor
+    ceil = (
+        backend_config.rag_tables_top_k_ceil_compare_all
+        if is_compare_all
+        else backend_config.rag_tables_top_k_ceil_single
+    )
     return min(max(floor, base), ceil)
 
 

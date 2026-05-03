@@ -654,6 +654,18 @@ export async function deleteFrontendRAGSettings(frontendId: string): Promise<{ f
 
 // --- Global RAG pipeline settings (Sprint 9) ---
 
+export interface RAGTuning {
+  top_k_floor: number
+  top_k_ceil: number
+  top_k_per_doc: number
+  tables_top_k_floor: number
+  tables_top_k_ceil_single: number
+  tables_top_k_ceil_compare_all: number
+  watcher_debounce_seconds: number
+  watcher_max_hold_seconds: number
+  watcher_lock_replan_seconds: number
+}
+
 export interface GlobalRAGSettings {
   embedding_model: string
   chunk_size: number
@@ -662,6 +674,20 @@ export interface GlobalRAGSettings {
   reranker_fetch_k: number
   reranker_top_n: number
   contextual_enabled: boolean
+  // Sprint 18 Fase 4 — admin-tunable retrieval + watcher knobs.
+  tuning?: RAGTuning
+}
+
+export interface RAGTuningUpdateResult {
+  applied: RAGTuning
+  changed: string[]
+}
+
+export async function updateRAGTuning(patch: Partial<RAGTuning>): Promise<RAGTuningUpdateResult> {
+  return request('/admin/api/v1/rag/tuning', {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
 }
 
 export interface ContextualToggleResult {

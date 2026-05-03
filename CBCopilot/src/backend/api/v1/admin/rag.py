@@ -196,6 +196,18 @@ async def get_rag_settings(_admin: dict = Depends(require_admin)):
         "reranker_fetch_k": config.rag_reranker_fetch_k,
         "reranker_top_n": config.rag_reranker_top_n,
         "contextual_enabled": config.rag_contextual_enabled,
+        # Sprint 18 Fase 4 — admin-tunable retrieval + watcher knobs.
+        "tuning": {
+            "top_k_floor": config.rag_top_k_floor,
+            "top_k_ceil": config.rag_top_k_ceil,
+            "top_k_per_doc": config.rag_top_k_per_doc,
+            "tables_top_k_floor": config.rag_tables_top_k_floor,
+            "tables_top_k_ceil_single": config.rag_tables_top_k_ceil_single,
+            "tables_top_k_ceil_compare_all": config.rag_tables_top_k_ceil_compare_all,
+            "watcher_debounce_seconds": config.rag_watcher_debounce_seconds,
+            "watcher_max_hold_seconds": config.rag_watcher_max_hold_seconds,
+            "watcher_lock_replan_seconds": config.rag_watcher_lock_replan_seconds,
+        },
     }
 
 
@@ -222,6 +234,40 @@ async def update_rag_settings(req: RAGSettingsUpdate, _admin: dict = Depends(req
         result = rag_service.update_runtime_rag_settings(
             chunk_size=req.chunk_size,
             embedding_model=req.embedding_model,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+class RAGTuningUpdate(BaseModel):
+    """Sprint 18 Fase 4 — partial update of admin-tunable retrieval and watcher
+    knobs. All fields optional; pass only what you want to change. Validated
+    against sane ranges in `rag_service.update_runtime_rag_tuning`.
+
+    Effect is immediate (next query / next watcher fire reads the new value)
+    AND persisted to runtime_overrides.json so it survives container restart.
+    No reindex needed — these are query-path / watcher-path settings, not
+    indexing settings."""
+    top_k_floor: int | None = None
+    top_k_ceil: int | None = None
+    top_k_per_doc: int | None = None
+    tables_top_k_floor: int | None = None
+    tables_top_k_ceil_single: int | None = None
+    tables_top_k_ceil_compare_all: int | None = None
+    watcher_debounce_seconds: int | None = None
+    watcher_max_hold_seconds: int | None = None
+    watcher_lock_replan_seconds: int | None = None
+
+
+@router.patch("/rag/tuning")
+async def update_rag_tuning(req: RAGTuningUpdate, _admin: dict = Depends(require_admin)):
+    """Update retrieval + watcher knobs in memory AND persist to
+    runtime_overrides.json. Returns the new values plus a `changed` map so
+    the admin UI can show which fields actually moved."""
+    try:
+        result = rag_service.update_runtime_rag_tuning(
+            **{k: v for k, v in req.model_dump().items() if v is not None}
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

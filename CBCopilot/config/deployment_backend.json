@@ -11,7 +11,7 @@
   "rag_similarity_top_k": 5,
   "rag_embedding_model": "BAAI/bge-m3",
   "rag_watcher_enabled": true,
-  "rag_watcher_debounce_seconds": 5,
+  "rag_watcher_debounce_seconds": 30,
   "streaming_enabled": true,
   "stream_chunk_size": 1,
   "poll_interval_seconds": 2,

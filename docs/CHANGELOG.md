@@ -1,5 +1,47 @@
 # CBC — Changelog
 
+## Sprint 18 fase 4 — Top-K + watcher knobs admin-editables (2026-05-03)
+
+### Why
+
+Tras pushear Fases 1+2+3 con valores hardcoded, Daniel pidió poder tunear los 9 knobs desde el admin sin redeploy ("probar hasta dar con el sweet spot calidad/velocidad"). El patrón `runtime_overrides_store` de Sprint 15 ya cubría chunk_size + embedding_model + contextual_enabled — extendido para los nuevos.
+
+### Backend
+
+- `core/config.py`: 9 nuevos fields con defaults equivalentes a las constantes que vivían en `rag_service.py` y `rag_watcher.py` (`rag_top_k_floor=5`, `_ceil=40`, `_per_doc=2`, `rag_tables_top_k_floor=2`, `_ceil_single=6`, `_ceil_compare_all=12`, `rag_watcher_debounce_seconds=30`, `_max_hold_seconds=300`, `_lock_replan_seconds=30`).
+- `runtime_overrides_store._TRACKED_FIELDS` extendido con los 9 — persistencia en `runtime_overrides.json` y aplicación al boot vía `apply_startup_overrides()`.
+- `rag_service.compute_dynamic_top_k` y `compute_dynamic_tables_top_k` ahora leen de `backend_config.rag_top_k_*` en lugar de las constantes módulo (constantes eliminadas).
+- `rag_watcher`: las 3 constantes `DEBOUNCE_SECONDS / MAX_DEBOUNCE_HOLD_SECONDS / LOCK_BUSY_REPLAN_SECONDS` reemplazadas por helpers `_debounce_seconds() / _max_hold_seconds() / _lock_busy_replan_seconds()` que leen de `backend_config` en cada llamada — un cambio admin aplica en el siguiente tick del debouncer sin restart.
+- Endpoint nuevo `PATCH /admin/api/v1/rag/tuning` + `RAGTuningUpdate` Pydantic body. Wrapper en `rag_service.update_runtime_rag_tuning(**fields)` que valida rangos contra `_TUNING_RANGES` y la constraint cross-field `top_k_floor ≤ top_k_ceil` (también para tablas single + compare_all). Devuelve `{applied: <todos los valores efectivos>, changed: <campos que movieron>}`.
+- `GET /rag/settings` ahora incluye un sub-objeto `tuning` con los 9 valores actuales.
+- `deployment_backend.json`: `rag_watcher_debounce_seconds` 5 → 30 para que el JSON refleje el nuevo default consistente con Fase 2.
+
+### Admin UI
+
+- `api.ts`: nuevos types `RAGTuning`, `RAGTuningUpdateResult`. Función `updateRAGTuning(patch)` que hace PATCH /rag/tuning. `GlobalRAGSettings` extendido con `tuning?: RAGTuning`.
+- `sections/RAGPipelineSection.tsx`: sección `<details>` colapsable nueva "Tuning avanzado" debajo del bloque Contextual Retrieval (visible cuando se expande RAG Pipeline). 9 sliders con rangos desde `TUNING_BOUNDS` (mirror del backend `_TUNING_RANGES`), botón Save (deshabilitado si no hay diff vs settings.tuning), botón Reset to defaults, pill verde "Saved · N campos actualizados" tras guardar, error inline en rojo si la validación backend rechaza.
+- `i18n.ts`: 27 keys nuevas EN + ES (heading, subtitle, description, save, reset, saved, no_changes + un label + un hint por cada uno de los 9 sliders). Otros 13 idiomas caen a EN vía `useT` fallback.
+
+### Cost / impact
+
+- Coste de runtime: cero. Los reads de `backend_config` son atributo Python, sub-microsegundo.
+- Reindex: NO necesario — todos los knobs son query-path / watcher-path, no indexing.
+- UI: una nueva sección colapsable, default cerrada; admin que no la abre no ve diferencia.
+
+### Validación pendiente Daniel post-repull
+
+1. Admin → General → RAG Pipeline → expandir → ver nueva sección "Tuning avanzado / Top-K + parámetros del watcher".
+2. Abrirla → ver 9 sliders con los defaults (5 / 40 / 2 / 2 / 6 / 12 / 30 / 300 / 30).
+3. Mover algún slider, click Save → respuesta backend OK, pill verde "Guardado · N campos actualizados", reload muestra valor persistido.
+4. Restart contenedor (Portainer recreate stack) → los valores tuneados sobreviven (vienen de `runtime_overrides.json`).
+5. Validación cross-field: intentar `top_k_floor=10, top_k_ceil=5` debería rechazarse con error inline.
+
+### Architecture impact
+
+§5 ARCHITECTURE.md (Runtime control reference table) gana 9 filas nuevas. Pliego cuando Daniel valide.
+
+---
+
 ## Sprint 18 fase 3 — Chunking legal-aware (clause splits + clause_id metadata) (2026-05-01)
 
 ### Why

@@ -42,6 +42,16 @@ _TRACKED_FIELDS: tuple[str, ...] = (
     "rag_chunk_size",
     "rag_embedding_model",
     "rag_contextual_enabled",
+    # Sprint 18 Fase 4 — RAG retrieval + watcher tuning knobs.
+    "rag_top_k_floor",
+    "rag_top_k_ceil",
+    "rag_top_k_per_doc",
+    "rag_tables_top_k_floor",
+    "rag_tables_top_k_ceil_single",
+    "rag_tables_top_k_ceil_compare_all",
+    "rag_watcher_debounce_seconds",
+    "rag_watcher_max_hold_seconds",
+    "rag_watcher_lock_replan_seconds",
 )
 
 

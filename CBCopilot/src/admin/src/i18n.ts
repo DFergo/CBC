@@ -133,6 +133,18 @@ export type AdminTranslationKeys =
   | 'rag_pipeline_wipe_button' | 'rag_pipeline_wipe_confirm'
   | 'rag_pipeline_wiping' | 'rag_pipeline_wipe_done'
   | 'rag_pipeline_pending_apply_title' | 'rag_pipeline_pending_apply_body'
+  // Sprint 18 Fase 4 — Tuning avanzado (top-K + watcher knobs)
+  | 'rag_tuning_heading' | 'rag_tuning_subtitle' | 'rag_tuning_description'
+  | 'rag_tuning_save' | 'rag_tuning_reset' | 'rag_tuning_saved' | 'rag_tuning_no_changes'
+  | 'rag_tuning_top_k_floor' | 'rag_tuning_top_k_floor_hint'
+  | 'rag_tuning_top_k_ceil' | 'rag_tuning_top_k_ceil_hint'
+  | 'rag_tuning_top_k_per_doc' | 'rag_tuning_top_k_per_doc_hint'
+  | 'rag_tuning_tables_top_k_floor' | 'rag_tuning_tables_top_k_floor_hint'
+  | 'rag_tuning_tables_top_k_ceil_single' | 'rag_tuning_tables_top_k_ceil_single_hint'
+  | 'rag_tuning_tables_top_k_ceil_compare_all' | 'rag_tuning_tables_top_k_ceil_compare_all_hint'
+  | 'rag_tuning_watcher_debounce_seconds' | 'rag_tuning_watcher_debounce_seconds_hint'
+  | 'rag_tuning_watcher_max_hold_seconds' | 'rag_tuning_watcher_max_hold_seconds_hint'
+  | 'rag_tuning_watcher_lock_replan_seconds' | 'rag_tuning_watcher_lock_replan_seconds_hint'
   // Sessions tab
   | 'sessions_title' | 'sessions_filter_all' | 'sessions_filter_active'
   | 'sessions_filter_completed' | 'sessions_filter_flagged'
@@ -422,6 +434,32 @@ const EN: AdminTranslations = {
   rag_pipeline_wipe_done: 'Wiped. Reindexed {count} scopes.',
   rag_pipeline_pending_apply_title: 'Settings saved but NOT applied to the index',
   rag_pipeline_pending_apply_body: 'The new embedder / chunk size are in backend config, but live queries are still using the PREVIOUS settings. Click Wipe & Reindex All below to rebuild every scope against the new values. Until you do, retrieval quality will match the old configuration.',
+  // Sprint 18 Fase 4 — Tuning avanzado
+  rag_tuning_heading: 'Advanced tuning',
+  rag_tuning_subtitle: 'Top-K + watcher knobs',
+  rag_tuning_description: 'Live retrieval and file-watcher tuning. Changes apply on the next query / next watcher tick — no reindex needed. Persisted across container restarts.',
+  rag_tuning_save: 'Save tuning',
+  rag_tuning_reset: 'Reset to defaults',
+  rag_tuning_saved: 'Saved · {n} field(s) updated',
+  rag_tuning_no_changes: 'No changes to save',
+  rag_tuning_top_k_floor: 'Top-K floor (prose)',
+  rag_tuning_top_k_floor_hint: 'Minimum chunks per scope retrieved by the chat, even on a single-doc corpus.',
+  rag_tuning_top_k_ceil: 'Top-K ceiling (prose)',
+  rag_tuning_top_k_ceil_hint: 'Maximum chunks per scope. Bigger ceiling = better recall on big corpora, slower TTFT.',
+  rag_tuning_top_k_per_doc: 'Top-K per doc factor',
+  rag_tuning_top_k_per_doc_hint: 'Effective K = clamp(num_files × this, floor, ceiling). Default 2 → ~2 chunks per doc on average.',
+  rag_tuning_tables_top_k_floor: 'Tables Top-K floor',
+  rag_tuning_tables_top_k_floor_hint: 'Minimum table cards retrieved per turn.',
+  rag_tuning_tables_top_k_ceil_single: 'Tables Top-K ceiling (single)',
+  rag_tuning_tables_top_k_ceil_single_hint: 'Maximum tables retrieved when chatting against one company.',
+  rag_tuning_tables_top_k_ceil_compare_all: 'Tables Top-K ceiling (Compare All)',
+  rag_tuning_tables_top_k_ceil_compare_all_hint: 'Higher cap so each company contributes at least one table to the prompt.',
+  rag_tuning_watcher_debounce_seconds: 'Watcher debounce (s)',
+  rag_tuning_watcher_debounce_seconds_hint: 'Wait this long after the last file event before reindexing the scope. Higher = better coalescing of bulk uploads.',
+  rag_tuning_watcher_max_hold_seconds: 'Watcher max hold (s)',
+  rag_tuning_watcher_max_hold_seconds_hint: 'Force the reindex through after this long even if events keep arriving. Stops a slow continuous upload from parking the rebuild forever.',
+  rag_tuning_watcher_lock_replan_seconds: 'Watcher lock-busy replan (s)',
+  rag_tuning_watcher_lock_replan_seconds_hint: 'When the watcher would fire but a reindex is already running for the scope, defer this long instead of competing for the lock.',
   // Tables (Sprint 16)
   tables_heading: 'Extracted tables',
   tables_description: 'Tables auto-extracted from documents at ingest. Matching tables are injected verbatim into the chat context when users ask table-shaped questions (salaries, shift rates, etc.).',
@@ -848,6 +886,32 @@ const ES: AdminTranslations = {
   rag_pipeline_wipe_done: 'Borrado. {count} scopes re-indexados.',
   rag_pipeline_pending_apply_title: 'Configuración guardada pero NO aplicada al índice',
   rag_pipeline_pending_apply_body: 'El nuevo embedder / chunk size están en la configuración del backend, pero las consultas en vivo siguen usando la configuración ANTERIOR. Pulsa Wipe & Reindex All abajo para reconstruir todos los scopes con los nuevos valores. Hasta entonces, la calidad de retrieval será la de la configuración antigua.',
+  // Sprint 18 Fase 4 — Tuning avanzado
+  rag_tuning_heading: 'Tuning avanzado',
+  rag_tuning_subtitle: 'Top-K + parámetros del watcher',
+  rag_tuning_description: 'Tuning en vivo del retrieval y del file watcher. Los cambios aplican en la próxima query / próximo tick del watcher — sin reindex. Persistido entre reinicios del contenedor.',
+  rag_tuning_save: 'Guardar tuning',
+  rag_tuning_reset: 'Restaurar defaults',
+  rag_tuning_saved: 'Guardado · {n} campo(s) actualizado(s)',
+  rag_tuning_no_changes: 'No hay cambios que guardar',
+  rag_tuning_top_k_floor: 'Top-K mínimo (prosa)',
+  rag_tuning_top_k_floor_hint: 'Mínimo de chunks por scope que el chat recibe, incluso en un corpus de un solo documento.',
+  rag_tuning_top_k_ceil: 'Top-K máximo (prosa)',
+  rag_tuning_top_k_ceil_hint: 'Máximo de chunks por scope. Más alto = mejor recall en corpus grandes, TTFT más lento.',
+  rag_tuning_top_k_per_doc: 'Top-K por doc (factor)',
+  rag_tuning_top_k_per_doc_hint: 'K efectivo = clamp(num_files × este, mínimo, máximo). Default 2 → ~2 chunks por doc en promedio.',
+  rag_tuning_tables_top_k_floor: 'Top-K tablas mínimo',
+  rag_tuning_tables_top_k_floor_hint: 'Mínimo de cards de tabla recuperadas por turno.',
+  rag_tuning_tables_top_k_ceil_single: 'Top-K tablas máximo (compañía única)',
+  rag_tuning_tables_top_k_ceil_single_hint: 'Máximo de tablas recuperadas en chat contra una sola compañía.',
+  rag_tuning_tables_top_k_ceil_compare_all: 'Top-K tablas máximo (Compare All)',
+  rag_tuning_tables_top_k_ceil_compare_all_hint: 'Tope mayor para que cada compañía aporte al menos una tabla al prompt.',
+  rag_tuning_watcher_debounce_seconds: 'Watcher debounce (s)',
+  rag_tuning_watcher_debounce_seconds_hint: 'Espera este tiempo tras el último evento de archivo antes de reindexar el scope. Más alto = mejor agrupación de uploads en lote.',
+  rag_tuning_watcher_max_hold_seconds: 'Watcher max hold (s)',
+  rag_tuning_watcher_max_hold_seconds_hint: 'Fuerza el reindex tras este tiempo aunque sigan llegando eventos. Evita que un upload lento sin fin pare el reindex para siempre.',
+  rag_tuning_watcher_lock_replan_seconds: 'Watcher lock-busy replan (s)',
+  rag_tuning_watcher_lock_replan_seconds_hint: 'Cuando el watcher iría a disparar pero ya hay un reindex corriendo para el scope, espera este tiempo en vez de competir por el lock.',
   // Tables (Sprint 16)
   tables_heading: 'Tablas extraídas',
   tables_description: 'Tablas extraídas automáticamente al ingerir los documentos. Cuando el usuario hace preguntas sobre tablas (salarios, turnos…), las tablas relevantes se inyectan verbatim en el prompt.',

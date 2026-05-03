@@ -1,6 +1,6 @@
 # CBC — Project Status
 
-**Current Sprint:** 18 — **Fases 1+2+3 CODE DONE 2026-05-01**, pending Daniel validation post-repull + Wipe & Reindex All (Fase 3 cambia chunks → re-embed obligatorio). Fases 1-2 ya pusheadas (`57b2231`); Fase 3 pendiente push. Pipeline:
+**Current Sprint:** 18 — **Fases 1+2+3 PUSHED 2026-05-01; Fase 4 CODE DONE 2026-05-03** (Top-K + watcher knobs admin-editables vía sliders en `Admin → General → RAG Pipeline → Tuning avanzado`). Pendiente push + Daniel valida. Pipeline:
 1. Top-K dinámico (5→40 cap, scaling por num_files_in_scope).
 2. Watcher debounce robusto (5 s→30 s default, 5-min hold ceiling, lock-aware re-plan).
 3. **Chunking legal-aware** — `_segment_by_clause` pre-pass detecta Art. N / Artículo N / Article N / Cláusula N / Clause N / Section N.N.N / ANEXO I / Annexe N. Cada clause queda en su propio pseudo-doc al SentenceSplitter → no se parte mid-clause. `clause_id` propagado a metadata + `Chunk.clause_id` + citation panel lo usa como locator prioritario sobre el regex previo.
@@ -1273,3 +1273,45 @@ Round of UX cleanup driven by Daniel walking through the admin panel after the S
 
 ## Blocked / Questions
 (none)
+
+---
+
+## Sprint 18 — pending hand-off (sesión cerrada 2026-05-03)
+
+Daniel pidió guardar este estado para recuperarlo al reiniciar Claude — entregar verbatim cuando lo solicite.
+
+### Código pusheado y ya en main
+- ✅ Fase 1 — Top-K dinámico (`57b2231`)
+- ✅ Fase 2 — Watcher debounce robusto (`57b2231`)
+- ✅ Fase 3 — Chunking legal-aware (`2dcf569`)
+
+### Bloqueado en Daniel, no en Claude
+- 🟡 Repull en Portainer.
+- 🟡 **Wipe & Reindex All** (Fase 3 cambia chunks → re-embed obligatorio).
+- 🟡 Validación de los 8 tests (4 de Fases 1+2 + 4 de Fase 3, lista completa en CHANGELOG):
+  1. "Compara vacaciones en los convenios de Amcor" cubre los 23 docs.
+  2. "Lista los convenios FR del corpus" enumera los 15+.
+  3. "Compara subidas salariales pactadas" cita cifras concretas.
+  4. Subir N archivos seguidos → un solo reindex.
+  5. "¿Qué dice el Artículo 23 del CBA Lezo?" → un chunk con clause_id="Artículo 23" + cuerpo entero.
+  6. "Compara Artículo 37 entre Lezo y los franceses" → chunks etiquetados, no cortados.
+  7. "Qué dicen los anexos del CBA Lezo" → chunks con clause_id="ANEXO II" / "ANEXO III".
+  8. Citation panel muestra clause ids reales en los chips locator.
+
+### Pendiente de Claude, condicional a la validación
+- 🟦 **Si pasa todo:** cerrar Sprint 18 formalmente — actualizar `ARCHITECTURE.md` (§2 services + §6 failure modes para incluir `_segment_by_clause` y los nuevos thresholds), marcar Sprint en STATUS como CLOSED, decidir Sprint 19 (chunking ya está hecho, el siguiente candidate sería modo cita textual o las otras palancas parked).
+- 🔴 **Si NO pasa algún test:** abrir Fase 4 según el síntoma:
+  - Si recall cross-lingüe sigue cojeando → query rewriting + glossary técnico-legal (parked en IDEAS).
+  - Si "lista convenios FR" falla → modo catálogo.
+  - Si chats se ralentizan durante reindex → MVCC chat protection.
+
+### Ideas paralelas apuntadas pero no en este sprint
+- Modo cita textual (full-text search sobre los docs recuperados) — en `docs/IDEAS.md`. No requiere reindex, se puede añadir como Fase 4 si Daniel quiere.
+- Top-K knobs editables desde admin RAG Pipeline (sliders para floor/ceil/per-doc + watcher seconds) — en el ticket Sprint 18 de IDEAS como add-on. Habíamos quedado en validar primero los defaults.
+
+### Recomendación de orden al retomar
+1. Daniel: repull + Wipe & Reindex + corre los 8 tests.
+2. Reporta resultado.
+3. Si todo OK, Claude cierra Sprint 18 formal y abren Sprint 19 con modo cita textual (idea pendiente de confirmar) o las otras palancas parked.
+4. Si algo falla, Claude arregla en Fase 4 dentro del Sprint 18 antes de cerrar.
+

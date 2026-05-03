@@ -44,7 +44,29 @@ class BackendConfig(BaseModel):
     rag_contextual_enabled: bool = False
     rag_contextual_max_doc_chars: int = 12000  # truncate the doc passed to the contextualiser
     rag_watcher_enabled: bool = True
-    rag_watcher_debounce_seconds: int = 5
+    # Sprint 18 Fase 2/4 — debounce raised from 5 to 30 to tolerate browser
+    # uploads that pace > 5 s between files. Editable from
+    # `Admin → General → RAG Pipeline → Tuning avanzado`.
+    rag_watcher_debounce_seconds: int = 30
+    # Sprint 18 Fase 2/4 — hard ceiling on how long a single scope can stay
+    # debounced before forcing the reindex through. Stops a non-stop slow
+    # upload from parking the reindex forever.
+    rag_watcher_max_hold_seconds: int = 300
+    # Sprint 18 Fase 2/4 — when the debouncer wakes up but the per-scope
+    # build_lock is held by a still-running reindex, push the next attempt
+    # this far into the future instead of competing for the lock.
+    rag_watcher_lock_replan_seconds: int = 30
+    # Sprint 18 Fase 1/4 — dynamic top-K knobs. Top_k per scope at query
+    # time = min(max(floor, num_files * per_doc), ceil). Editable so admins
+    # can find the recall/latency sweet spot for their corpus.
+    rag_top_k_floor: int = 5
+    rag_top_k_ceil: int = 40
+    rag_top_k_per_doc: int = 2
+    # Tables top-K (cbc_tables collection). Lower than prose because table
+    # cards are dense metadata + a CSV.
+    rag_tables_top_k_floor: int = 2
+    rag_tables_top_k_ceil_single: int = 6
+    rag_tables_top_k_ceil_compare_all: int = 12
     streaming_enabled: bool = True
     stream_chunk_size: int = 1
     poll_interval_seconds: int = 2

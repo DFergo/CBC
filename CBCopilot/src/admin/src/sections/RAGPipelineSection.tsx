@@ -10,10 +10,38 @@ import {
   getRAGSettings,
   toggleContextualRetrieval,
   updateRAGSettings,
+  updateRAGTuning,
   wipeAndReindexAll,
 } from '../api'
-import type { GlobalRAGSettings } from '../api'
+import type { GlobalRAGSettings, RAGTuning } from '../api'
 import { useT } from '../i18n'
+
+// Sprint 18 Fase 4 — bounds for the tuning sliders. Mirror the backend's
+// _TUNING_RANGES in rag_service.py; UI re-validation is just a UX nicety,
+// the backend re-validates regardless.
+const TUNING_BOUNDS: Record<keyof RAGTuning, { min: number; max: number; step: number }> = {
+  top_k_floor: { min: 1, max: 40, step: 1 },
+  top_k_ceil: { min: 5, max: 100, step: 5 },
+  top_k_per_doc: { min: 1, max: 10, step: 1 },
+  tables_top_k_floor: { min: 1, max: 20, step: 1 },
+  tables_top_k_ceil_single: { min: 1, max: 30, step: 1 },
+  tables_top_k_ceil_compare_all: { min: 1, max: 50, step: 1 },
+  watcher_debounce_seconds: { min: 1, max: 600, step: 5 },
+  watcher_max_hold_seconds: { min: 10, max: 3600, step: 30 },
+  watcher_lock_replan_seconds: { min: 5, max: 600, step: 5 },
+}
+
+const DEFAULT_TUNING: RAGTuning = {
+  top_k_floor: 5,
+  top_k_ceil: 40,
+  top_k_per_doc: 2,
+  tables_top_k_floor: 2,
+  tables_top_k_ceil_single: 6,
+  tables_top_k_ceil_compare_all: 12,
+  watcher_debounce_seconds: 30,
+  watcher_max_hold_seconds: 300,
+  watcher_lock_replan_seconds: 30,
+}
 
 const CHUNK_SIZE_OPTIONS = [512, 1024, 1536, 2048] as const
 const EMBEDDING_MODEL_OPTIONS: { value: string; label: string }[] = [
@@ -42,6 +70,12 @@ export default function RAGPipelineSection() {
   // that their chunk_size / embedder change is written to backend config but
   // the corpus is still indexed at the previous values.
   const [pendingReindex, setPendingReindex] = useState(false)
+  // Sprint 18 Fase 4 — admin-tunable retrieval + watcher knobs. Synced from
+  // settings.tuning on load; applied via PATCH /admin/api/v1/rag/tuning.
+  const [tuningDraft, setTuningDraft] = useState<RAGTuning>(DEFAULT_TUNING)
+  const [tuningSaving, setTuningSaving] = useState(false)
+  const [tuningSaved, setTuningSaved] = useState('')
+  const [tuningError, setTuningError] = useState('')
   const { t } = useT()
 
   const reload = async () => {
@@ -51,6 +85,7 @@ export default function RAGPipelineSection() {
       setSettings(s)
       setDraftChunk(s.chunk_size)
       setDraftEmbed(s.embedding_model)
+      if (s.tuning) setTuningDraft(s.tuning)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -113,6 +148,40 @@ export default function RAGPipelineSection() {
       setSaving(false)
       setBusy(false)
     }
+  }
+
+  const tuningDirty = !!settings?.tuning && (Object.keys(tuningDraft) as (keyof RAGTuning)[]).some(
+    k => tuningDraft[k] !== settings.tuning?.[k],
+  )
+
+  const saveTuning = async () => {
+    if (!settings?.tuning) return
+    setTuningError('')
+    setTuningSaved('')
+    setTuningSaving(true)
+    try {
+      const patch: Partial<RAGTuning> = {}
+      ;(Object.keys(tuningDraft) as (keyof RAGTuning)[]).forEach(k => {
+        if (tuningDraft[k] !== settings.tuning?.[k]) patch[k] = tuningDraft[k]
+      })
+      const res = await updateRAGTuning(patch)
+      setTuningDraft(res.applied)
+      setTuningSaved(
+        res.changed.length
+          ? t('rag_tuning_saved').replace('{n}', String(res.changed.length))
+          : t('rag_tuning_no_changes'),
+      )
+      await reload()
+      setTimeout(() => setTuningSaved(''), 4000)
+    } catch (e) {
+      setTuningError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTuningSaving(false)
+    }
+  }
+
+  const resetTuning = () => {
+    setTuningDraft(DEFAULT_TUNING)
   }
 
   const wipeAndReindex = async () => {
@@ -312,6 +381,76 @@ export default function RAGPipelineSection() {
                   {t('rag_pipeline_contextual_warning')}
                 </p>
               </div>
+
+              {/* Sprint 18 Fase 4 — Tuning avanzado (colapsado por defecto). */}
+              <details className="border border-gray-200 rounded-md">
+                <summary className="cursor-pointer list-none select-none px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded-t-md flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-400 group-open:rotate-90 transition-transform">▸</span>
+                    <span className="text-sm font-semibold text-gray-800">{t('rag_tuning_heading')}</span>
+                  </div>
+                  <span className="text-xs text-gray-500">{t('rag_tuning_subtitle')}</span>
+                </summary>
+                <div className="p-3 space-y-4">
+                  <p className="text-xs text-gray-600">{t('rag_tuning_description')}</p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {(Object.keys(TUNING_BOUNDS) as (keyof RAGTuning)[]).map(key => {
+                      const bounds = TUNING_BOUNDS[key]
+                      const value = tuningDraft[key]
+                      const labelKey = `rag_tuning_${key}` as Parameters<typeof t>[0]
+                      const hintKey = `rag_tuning_${key}_hint` as Parameters<typeof t>[0]
+                      return (
+                        <div key={key} className="space-y-1">
+                          <div className="flex items-baseline justify-between">
+                            <label className="text-xs font-medium text-gray-700">{t(labelKey)}</label>
+                            <span className="text-xs font-mono text-gray-800">{value}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={bounds.min}
+                            max={bounds.max}
+                            step={bounds.step}
+                            value={value}
+                            onChange={e => setTuningDraft({ ...tuningDraft, [key]: parseInt(e.target.value, 10) })}
+                            disabled={tuningSaving}
+                            className="w-full"
+                          />
+                          <p className="text-[10px] text-gray-500">{t(hintKey)}</p>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {tuningError && (
+                    <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
+                      {tuningError}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2">
+                    {tuningSaved && (
+                      <span className="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-2 py-0.5">
+                        {tuningSaved}
+                      </span>
+                    )}
+                    <button
+                      onClick={resetTuning}
+                      disabled={tuningSaving}
+                      className="px-3 py-1.5 text-xs border border-gray-300 text-gray-700 rounded disabled:opacity-50 hover:bg-gray-50"
+                    >
+                      {t('rag_tuning_reset')}
+                    </button>
+                    <button
+                      onClick={saveTuning}
+                      disabled={tuningSaving || !tuningDirty}
+                      className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded disabled:opacity-50"
+                    >
+                      {tuningSaving ? t('generic_saving') : t('rag_tuning_save')}
+                    </button>
+                  </div>
+                </div>
+              </details>
             </>
           )}
         </div>
