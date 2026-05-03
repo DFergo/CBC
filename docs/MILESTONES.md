@@ -607,6 +607,75 @@ Brief note describing the drift-detection approach we're deferring: after N spri
 
 ---
 
+## Sprint 19 — Tooling de admin + palancas de retrieval parked desde Sprint 18 (planned 2026-05-03, partially in progress)
+
+**Goal:** absorber el resto de items que quedaron parked al cerrar Sprint 18 (Daniel los marcó como Sprint 19 candidates si la validación 1-3 mostraba síntoma persistente) + el cambio de UX de API keys que Daniel pidió justo después del cierre.
+
+**Decisión de orden:** Fase 1 (API keys) arranca primero porque desbloquea el uso productivo de MiniMax / Anthropic / cualquier API y es independiente del resto. Las demás se priorizan en función de qué falle de Sprint 18 cuando Daniel valide en producción.
+
+### Fase 1 — API keys inline en admin (Open WebUI pattern). IN PROGRESS.
+
+**Why:** tras Sprint 18 Fase 5 los providers API se listan en el panel y el dropdown popula con sus modelos. Pero la auth sigue requiriendo definir una env var en el container (`os.environ.get(slot.api_key_env)`). Daniel preguntó si se podía simplemente pegar la key en el admin. Sí — Open WebUI lo hace así desde hace tiempo y es el patrón estándar para deploys self-hosted.
+
+**Plan (~50 backend + ~60 frontend líneas):**
+
+- `SlotConfig` gana `api_key: str | None = None`. `api_key_env` se mantiene para backwards-compat con el deploy actual de Daniel.
+- Resolución en `check_slot_health` y `llm_provider`: `key = slot.api_key or os.environ.get(slot.api_key_env or '')`. Slot inline gana sobre env var; si ninguna, error igual que ahora.
+- `llm_config_store.redact_for_response`: cuando un slot api tiene `api_key` no-vacía, devolver el literal `"••••••••"` (sentinel) en el GET response. Nunca el valor real.
+- PUT handler: si el body trae un slot api con `api_key == "••••••••"`, NO sobrescribe (preserva el valor anterior). Cualquier otra cosa no vacía sobrescribe. String vacía borra.
+- SlotEditor admin: cuando provider=api, campo password con icono show/hide. Carga muestra `••••••••` si el backend dice que hay key set, vacío si no.
+- 5 keys i18n nuevas EN + ES.
+
+**Persistencia:** mismo `llm_config.json` que ya existe (Open WebUI no separa el archivo, no hay razón para hacerlo nosotros — el modelo de amenaza es idéntico). Sin cifrado: como Open WebUI, asumimos que el container es trusted boundary.
+
+**Git safety:** `data/` ya está en `.gitignore` blanket; el archivo nunca entra en el repo.
+
+**Validación pendiente Daniel post-repull:**
+1. Editar slot summariser: pegar API key MiniMax directamente (sin definir env var). Save.
+2. Reabrir el slot → campo muestra `••••••••` (set). Editar otros campos (model, temperature) y Save → key se preserva.
+3. Refresh providers → MiniMax queda online con sus modelos. Dropdown popula.
+4. Dejar `api_key` en blanco y configurar `api_key_env=ANTHROPIC_API_KEY` (con la env var definida) → debe funcionar igual (backwards compat). Slots con ambos campos: inline gana.
+
+### Fase 2 — Modo catálogo (parked desde Sprint 18)
+
+**Trigger condicional:** si la validación post-Sprint-18 muestra que "lista los convenios FR del corpus" sigue devolviendo subset incompleto pese al top-K dinámico (K=40 ya cubre 23 docs cómodamente, pero a 50+ docs se queda corto otra vez).
+
+**Plan:** detector heurístico por keywords ES + EN ("lista", "qué docs", "enumera", "list", "what documents", "inventory"). Cuando matchea, el `prompt_assembler` inyecta sección `## Documentos disponibles en esta sesión` con los filenames del scope agrupados por país (extraídos del filename via el detector country-from-filename de Sprint 16). Sin pasar por embedder. ~60 líneas.
+
+### Fase 3 — Query rewriting cross-lingüe + glossary técnico-legal (parked desde Sprint 18)
+
+**Trigger condicional:** si "compara vacaciones" sigue cubriendo solo 4-5 docs cuando hay 23 — síntoma de que el cross-lingüe del corpus (ES + FR + EN + términos sin traducción literal: `enveloppe individuelle`, `prévoyance`, `astreinte`, `CSE`, `NAO`, `cadres / non-cadres`) es la causa restante.
+
+**Plan:**
+- Detector de intención comparativa ("compara", "compare", "vs", "diferencias entre").
+- Pasar la query al compressor LLM con prompt que descomponga en N sub-queries traducidas al idioma nativo de cada sub-corpus (ES→ES España, ES→FR Francia, ES→EN Australia). Compressor recibe el listado de docs disponibles + sus filenames (codifican país) para saber qué idiomas usar.
+- Ejecutar retrieval con cada sub-query, unir chunks deduplicados, cap.
+- Glossary cross-lingüe hardcoded (~80 entries: `enveloppe individuelle ↔ subida individual / merit increase`, `prévoyance ↔ previsión social / superannuation`, `astreinte ↔ guardia / on-call`, etc.). El query rewriter consulta el dict antes de embebir y expande con equivalentes en otros idiomas.
+- ~200 líneas backend + 1 LLM call extra por query (compressor, ~2-4 s).
+
+### Fase 4 — MVCC chat protection durante reindex (parked desde Sprint 18)
+
+**Trigger condicional:** si Daniel observa que el chat sigue ralentizándose durante un reindex (Sprint 18 Fase 2 deferred el watcher pero un wipe-and-reindex-all manual sigue compitiendo por embedder + reranker).
+
+**Plan:** snapshot de la collection al inicio del turn. `query_scopes` lee del snapshot, no del live state mid-build. Implementación realista usando Chroma's read consistency: lock al inicio del turn, captura el `n_chunks`, lee solo si `current_n == captured_n`; si difiere, reusa cache previo.
+
+### Fase 5 — Modo cita textual (parked desde Sprint 18, originalmente capturado 2026-04-24)
+
+**Trigger condicional:** independiente de las anteriores — Daniel decidirá si incorporar cuando otros usuarios pidan citas verbatim. Detalles en `docs/IDEAS.md`.
+
+**Plan:** detección de intención "cita textual / verbatim" → full-text search sobre los docs ya recuperados en la sesión → inyección verbatim del fragmento en el prompt. ~150 líneas. No requiere reindex.
+
+### Fase 6 — `Top-K knobs editables` add-on (parked desde Sprint 18 Fase 4)
+
+**Status:** ✅ shipped en Sprint 18 Fase 4 (commit `76c3d11`). El add-on que Daniel pidió ya está en main. Esta entrada queda como historial.
+
+### Estimación combinada
+
+- Fase 1 (en marcha): ~110 líneas total. ~3 h.
+- Fases 2-5 (condicional): si todas, ~600 líneas backend + 100 frontend. 2-3 días.
+
+---
+
 ## Progress Tracking Rules
 
 1. **Never mark a task `[x]` unless the acceptance criterion actually passes**

@@ -47,18 +47,39 @@ class SlotConfig(BaseModel):
     # Endpoint for local providers (lm_studio / ollama)
     endpoint: str = Field(default_factory=_lm_studio_default)
 
-    # api provider — meaningful only when provider == "api"
+    # api provider — meaningful only when provider == "api". Two ways to
+    # supply the key (Sprint 19 Fase 1):
+    #   - `api_key`: pasted into the admin UI, persisted in llm_config.json.
+    #     Sentinel `••••••••` is shown in GET responses; PUT preserves the
+    #     stored value when it sees the sentinel back. Open WebUI pattern.
+    #   - `api_key_env`: name of an env var on the container; the key value
+    #     comes from `os.environ[<name>]` at request time. Pattern A from
+    #     Sprint 9 — kept for deployments that prefer Vault / external
+    #     secret stores. Either one is enough; if both are set, `api_key`
+    #     wins (more local + explicit).
     api_flavor: ApiFlavor | None = None
     api_endpoint: str | None = None
     api_key_env: str | None = None
+    api_key: str | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "SlotConfig":
         if self.provider == "api":
             if not self.api_flavor:
                 raise ValueError("api_flavor required when provider is 'api'")
-            if not self.api_key_env:
-                raise ValueError("api_key_env (env var NAME, not value) required when provider is 'api'")
+            # Sprint 19 Fase 1 — accept EITHER inline api_key OR api_key_env.
+            # The validator can't know about the redact sentinel "••••••••"
+            # (the loader resolves that before we get here), so this just
+            # checks "did the admin supply something". Empty strings count
+            # as not-supplied so a "key cleared" flow surfaces as a clean
+            # config error.
+            has_inline = bool((self.api_key or "").strip())
+            has_env = bool((self.api_key_env or "").strip())
+            if not has_inline and not has_env:
+                raise ValueError(
+                    "either api_key (paste in admin) or api_key_env (env var name) "
+                    "is required when provider is 'api'"
+                )
             if not self.api_endpoint:
                 self.api_endpoint = {
                     "anthropic": "https://api.anthropic.com/v1",
@@ -66,6 +87,31 @@ class SlotConfig(BaseModel):
                     "openai_compatible": "",
                 }[self.api_flavor]
         return self
+
+
+# Sprint 19 Fase 1 — sentinel string used to (a) tell the admin UI "this
+# slot has an api_key set, just don't tell me what it is" and (b) tell
+# the PUT handler "the user didn't retype the key, preserve the stored
+# one". 8 bullet chars; unlikely to collide with a real provider key.
+API_KEY_SENTINEL = "••••••••"
+
+
+def resolve_api_key(slot: SlotConfig) -> str | None:
+    """Return the actual api key for a slot, or None if neither source has
+    a value. Inline `api_key` wins over env var (admin had to explicitly
+    paste it, more recent + explicit). The env var path stays so deploys
+    that wire keys via Portainer / vault keep working."""
+    if slot.provider != "api":
+        return None
+    inline = (slot.api_key or "").strip()
+    if inline and inline != API_KEY_SENTINEL:
+        return inline
+    env_name = (slot.api_key_env or "").strip()
+    if env_name:
+        env_val = os.environ.get(env_name)
+        if env_val:
+            return env_val
+    return None
 
 
 class CompressionSettings(BaseModel):
@@ -155,13 +201,42 @@ def load_config() -> LLMConfig:
 
 
 def save_config(cfg: LLMConfig) -> None:
-    atomic_write_json(LLM_CONFIG_FILE, cfg.model_dump())
+    """Persist the LLM config. Sprint 19 Fase 1 — if any slot's `api_key`
+    arrived as the redact sentinel (admin opened the form, didn't retype the
+    key, hit Save), preserve the previously stored value. Otherwise the
+    sentinel would overwrite the real key with literal bullets and the next
+    health check would fail.
+
+    Loading the prior state to merge is one extra read; cheap.
+    """
+    incoming = cfg.model_dump()
+    prior = read_json(LLM_CONFIG_FILE)
+    if isinstance(prior, dict):
+        for slot_name in ("inference", "compressor", "summariser"):
+            slot_in = incoming.get(slot_name) or {}
+            slot_prev = (prior.get(slot_name) or {}) if isinstance(prior, dict) else {}
+            if (slot_in.get("api_key") or "") == API_KEY_SENTINEL:
+                # Preserve whatever was stored before (could be a real key,
+                # could be empty if env-var path is used).
+                slot_in["api_key"] = slot_prev.get("api_key") or None
+                incoming[slot_name] = slot_in
+    atomic_write_json(LLM_CONFIG_FILE, incoming)
     logger.info("LLM config saved")
 
 
 def redact_for_response(cfg: LLMConfig) -> dict[str, Any]:
-    """`api_key_env` is a variable NAME, not a secret — safe to return as-is."""
-    return cfg.model_dump()
+    """Sprint 19 Fase 1 — `api_key_env` is a variable NAME (safe), but
+    `api_key` is the literal secret pasted by the admin. Replace it with
+    the sentinel `••••••••` for any slot that has it set, so the admin UI
+    knows "key is configured" without ever receiving the value.
+    """
+    out = cfg.model_dump()
+    for slot_name in ("inference", "compressor", "summariser"):
+        slot = out.get(slot_name) or {}
+        if (slot.get("api_key") or "").strip():
+            slot["api_key"] = API_KEY_SENTINEL
+            out[slot_name] = slot
+    return out
 
 
 def _candidate_endpoints(provider: ProviderType) -> list[str]:
@@ -263,11 +338,17 @@ async def check_slot_health(slot: SlotConfig, timeout: float = 5.0) -> dict[str,
                 return _result(r.status_code == 200, r.status_code, None, models)
 
             # provider == "api"
-            if not slot.api_key_env:
-                return _result(False, 0, "api_key_env not set", [])
-            key = os.environ.get(slot.api_key_env)
+            # Sprint 19 Fase 1 — resolve via inline api_key first, then env var.
+            key = resolve_api_key(slot)
             if not key:
-                return _result(False, 0, f"env var {slot.api_key_env} is not set in the container", [])
+                if (slot.api_key or "").strip():
+                    # Inline path: stored value is empty / sentinel only — admin
+                    # never actually pasted a key. Surface that exact problem.
+                    return _result(False, 0, "api_key is empty (paste it in admin or set api_key_env)", [])
+                env_name = (slot.api_key_env or "").strip()
+                if env_name:
+                    return _result(False, 0, f"env var {env_name} is not set in the container", [])
+                return _result(False, 0, "no api_key (paste in admin) and no api_key_env set", [])
 
             headers: dict[str, str] = {}
             if slot.api_flavor == "anthropic":

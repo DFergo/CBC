@@ -329,7 +329,17 @@ export interface SlotConfig {
   api_flavor?: ApiFlavor | null
   api_endpoint?: string | null
   api_key_env?: string | null
+  // Sprint 19 Fase 1 — paste-once-persist API key. The backend redacts it
+  // to "••••••••" in GET responses; PUT preserves the stored value when
+  // it sees the sentinel back. Keep both fields available so the admin
+  // can pick paste-in-UI or env-var-on-container per slot.
+  api_key?: string | null
 }
+
+// Sprint 19 Fase 1 — sentinel literal mirrored from the backend. Used by
+// the admin UI to detect "key is set, don't show me the value" state and
+// to decide whether to send the value back to the backend on Save.
+export const API_KEY_SENTINEL = '••••••••'
 
 export interface CompressionSettings {
   enabled: boolean

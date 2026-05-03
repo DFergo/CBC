@@ -127,11 +127,18 @@ def _resolve_endpoint_and_headers(slot: SlotConfig) -> tuple[str, dict[str, str]
     if slot.provider == "api":
         if not slot.api_endpoint:
             raise ValueError("api slot has no api_endpoint")
-        if not slot.api_key_env:
-            raise ValueError("api slot has no api_key_env")
-        key = os.environ.get(slot.api_key_env)
+        # Sprint 19 Fase 1 — resolve via inline api_key (admin paste) first,
+        # then env var. Either path produces the same usable key string.
+        from src.services.llm_config_store import resolve_api_key
+        key = resolve_api_key(slot)
         if not key:
-            raise ValueError(f"env var {slot.api_key_env} not set in container")
+            inline_set = bool((slot.api_key or "").strip())
+            env_name = (slot.api_key_env or "").strip()
+            if inline_set:
+                raise ValueError("api_key is empty — paste it in the admin slot")
+            if env_name:
+                raise ValueError(f"env var {env_name} not set in container")
+            raise ValueError("api slot has neither api_key nor api_key_env")
         headers = {"Content-Type": "application/json"}
         if slot.api_flavor == "anthropic":
             # Anthropic's Messages API is NOT OpenAI-compatible — we'd need a

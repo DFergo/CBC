@@ -1,5 +1,68 @@
 # CBC — Changelog
 
+## Sprint 19 fase 1 — API keys inline (Open WebUI pattern) + ARCHITECTURE.md sync (2026-05-03)
+
+### Why
+
+Tras Sprint 18 Fase 5 (listing de modelos API), Daniel intentó usar MiniMax y vio el error `env var <NAME> is not set in the container`. La causa: `slot.api_key_env` solo guarda el nombre de la variable de entorno; el valor real tiene que estar en `os.environ`, montado al container vía Portainer / docker compose. Patrón heredado de Sprint 9 SPEC §4.7 que asumía despliegue estilo HRDD con keys pre-montadas.
+
+Daniel pidió poder pegar la key directamente en el admin como hace Open WebUI. Tras revisión del código de Open WebUI: lo hacen exactamente igual que aquí — JSON plano sin cifrado, pero con un sentinel `••••••••` que NUNCA expone la key real al frontend tras guardarla.
+
+### Backend
+
+- `SlotConfig`: nuevo campo `api_key: str | None = None`. Validator extendido para aceptar EITHER `api_key` (paste) OR `api_key_env` (env var name); rechaza si ambos vacíos.
+- Constante exportada `API_KEY_SENTINEL = "••••••••"` (8 bullets unicode, improbable colisión con key real).
+- Función nueva `resolve_api_key(slot)` — devuelve el key utilizable: inline gana sobre env var. Llamada desde `check_slot_health` y `llm_provider._resolve_endpoint_and_headers` reemplazando la lectura directa de `os.environ`.
+- `redact_for_response(cfg)` extendido — para cualquier slot api con `api_key` no-vacía, sustituye por el sentinel en el dict que se devuelve al admin UI. El valor real NUNCA viaja al frontend.
+- `save_config(cfg)` extendido — antes de escribir, lee el llm_config.json previo. Si el slot api entrante tiene `api_key == sentinel`, restaura el valor anterior (el admin abrió el form, editó otros campos, no retipeó la key, hit Save → key se preserva). Patrón Open WebUI exacto.
+- `check_slot_health` y `llm_provider`: errores diferenciados — "api_key is empty (paste it in admin or set api_key_env)" / "env var X is not set in the container" / "no api_key and no api_key_env set" según qué fuente intentó y falló.
+
+### Admin UI
+
+- `api.ts`: `SlotConfig.api_key?: string | null` añadido. Constante exportada `API_KEY_SENTINEL`.
+- `SlotEditor.tsx`: nuevo sub-componente `ApiKeyField` que reemplaza el input de api_key_env. Toggle visible "Paste / Env var" — paste mode default para slots nuevos, env mode default para slots con api_key_env ya configurado (backwards compat). Paste mode: input password con botón show/hide al lado, placeholder `sk-...`, hint inline `(set; type to replace)` cuando el backend devuelve sentinel. Env mode: input texto idéntico al original.
+
+### Pattern de seguridad (idéntico a Open WebUI)
+
+- API keys persisten plano en `/app/data/llm_config.json`. Volumen Docker, gitignored por el pattern `data/`. NUNCA entran en el repo.
+- Frontend NUNCA recibe la key real. GET responses substituyen por `••••••••`. PUT preserva si recibe `••••••••`.
+- Container = trusted boundary. Quien tiene shell ve el JSON con `cat`, igual que tendría acceso a `os.environ`. Sin cifrado at-rest porque cifrar con un secreto del mismo container es seguridad de cartón.
+- Backups del volumen: responsabilidad del operador (Daniel) — documentado.
+- Backwards compat total: el deploy actual con `api_key_env=ANTHROPIC_API_KEY` + variable definida en el container sigue funcionando sin cambios.
+
+### Validación pendiente Daniel post-repull
+
+1. Slot summariser → toggle "Paste" → pegar key MiniMax → Save.
+2. Refresh providers → tarjeta MiniMax verde, modelos pueblan dropdown.
+3. Reabrir slot → campo muestra `••••••••` con hint "set; type to replace".
+4. Editar otro campo (model, temperature) → Save → verificar que la key se preserva (Refresh providers sigue verde).
+5. Slot nuevo con env var: toggle "Env var" → escribir nombre var → Save (verifica que el path legacy sigue OK).
+
+### Sprint 18 — ARCHITECTURE.md sync (cierre formal del sprint)
+
+Aplicado el step 2 del Finalizing del `/sprint` skill (Sprint 17): la doc de arquitectura se actualiza cuando services / data flows / storage / runtime controls / dependencies / invariants cambian. Cambios concretos:
+
+- §2 (services): `rag_service` actualizado con `compute_dynamic_top_k`, `compute_dynamic_tables_top_k`, `_segment_by_clause`, `update_runtime_rag_tuning`. `rag_watcher` con los helpers dinámicos `_debounce_seconds()` / `_max_hold_seconds()` / `_lock_busy_replan_seconds()` y la lógica de `MAX_DEBOUNCE_HOLD_SECONDS` ceiling + lock-aware fire deferral. `runtime_overrides_store` con la lista extendida de `_TRACKED_FIELDS`.
+- §5 (Runtime control reference): 9 filas nuevas para los knobs de tuning + actualización del default de `rag_watcher_debounce_seconds` (5→30) + 2 filas para `<api_slot>.api_key_env` (legacy) y `<api_slot>.api_key` (Sprint 19 Fase 1).
+- §6 (failure modes): "watcher amplification (Sprint 18 prevented)" como modo nuevo prevenido. `Watcher debouncing under bulk copies` actualizado con la nueva ventana de 30 s.
+- §8 (invariants): tres invariantes nuevas — #12 Top-K scales with corpus size (never hardcoded per turn), #13 Clause integrity in chunks (clause_id propagation enforced), #14 API keys never leave the container in GET responses (sentinel pattern).
+
+### Sprint 18 closed — Sprint 19 plan en MILESTONES.md
+
+Sección nueva en `docs/MILESTONES.md` describe Sprint 19 con Fase 1 (API keys, en marcha) y Fases 2-5 (modo catálogo, query rewriting cross-lingüe + glossary, MVCC chat protection, modo cita textual) parked como condicionales. La decisión de cuáles ejecutar depende del resultado de la validación de Sprint 18 — si recall sigue cojeando en cross-lingüe, Fase 3 (query rewriting + glossary) sube prioridad; si "lista convenios FR" sigue fallando, Fase 2 (modo catálogo) sube; si chat se ralentiza durante reindex, Fase 4 (MVCC).
+
+### Files touched (Fase 1)
+
+- `CBCopilot/src/backend/services/llm_config_store.py` — SlotConfig+validator, resolve_api_key, save_config merge logic, redact_for_response sentinel.
+- `CBCopilot/src/backend/services/llm_provider.py` — `_resolve_endpoint_and_headers` usa `resolve_api_key` con error messages diferenciados.
+- `CBCopilot/src/admin/src/api.ts` — SlotConfig.api_key, API_KEY_SENTINEL export.
+- `CBCopilot/src/admin/src/components/llm/SlotEditor.tsx` — nuevo `ApiKeyField` con toggle Paste/Env, password input + show/hide.
+- `docs/architecture/ARCHITECTURE.md` — §2 + §5 + §6 + §8 sync.
+- `docs/MILESTONES.md` — sección Sprint 19.
+- `docs/STATUS.md`, `docs/CHANGELOG.md` — esta entrada.
+
+---
+
 ## Sprint 18 fase 5 — Listing de modelos para providers API + cierre sprint (2026-05-03)
 
 ### Why

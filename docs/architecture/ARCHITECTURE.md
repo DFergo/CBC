@@ -147,7 +147,7 @@ The big one. Owns:
 - `_bm25_cache` per scope (Sprint 15 H — avoid rebuilding the BM25 retriever every query).
 - Per-scope `_build_locks: dict[str, threading.RLock]` (Sprint 16 Fase 0.b + #38) — serialises `_build_index` and `get_index` to prevent duplicate ingest under concurrency.
 
-Public entry points: `query_scopes(scope_keys, query, top_k_per_scope)`, `query_tables(scope_keys, query, top_k)`, `reindex(scope_key)`, `reindex_all_scopes()`, `reindex_frontend_cascade(fid)`, `wipe_chroma_and_reindex_all()`, `update_runtime_rag_settings(chunk_size, embedding_model)`. Sprint 9 hybrid pipeline: BM25 + vector → fuse → cross-encoder rerank → top-N. Sprint 15 chunker fix pipes markdown header nodes through `SentenceSplitter` so big sections don't blow past BGE-M3's 8192-token window.
+Public entry points: `query_scopes(scope_keys, query, top_k_per_scope)`, `query_tables(scope_keys, query, top_k)`, `reindex(scope_key)`, `reindex_all_scopes()`, `reindex_frontend_cascade(fid)`, `wipe_chroma_and_reindex_all()`, `update_runtime_rag_settings(chunk_size, embedding_model)`, `update_runtime_rag_tuning(**fields)` (Sprint 18 Fase 4 — knobs editables), `compute_dynamic_top_k(scope_keys)` and `compute_dynamic_tables_top_k(scope_keys, is_compare_all)` (Sprint 18 Fase 1 — top-K scales with `num_files_in_scope`). Sprint 9 hybrid pipeline: BM25 + vector → fuse → cross-encoder rerank → top-N. Sprint 15 chunker fix pipes markdown header nodes through `SentenceSplitter` so big sections don't blow past BGE-M3's 8192-token window. Sprint 18 Fase 3 added `_segment_by_clause(text)`: regex-based pre-pass over markdown / pdf / txt that detects `Art. N` / `Article N` / `Cláusula N` / `Section N.N.N` / `ANEXO I` / `Annexe N` headers and feeds each clause as its own pseudo-doc to the SentenceSplitter — clause integrity preserved unless the clause body alone exceeds `chunk_size` (in which case all sub-chunks inherit the same `clause_id` metadata used by the citation panel).
 
 ### `rag_settings_store.py`
 Per-frontend `rag_settings.json` — currently a single toggle `combine_global_rag`.
@@ -158,11 +158,14 @@ Disk-backed CRUD for `documents/` directories at the three tiers. List, save, de
 **UI:** `Admin → General → RAG documents` (global), `Admin → Frontends → {frontend} → RAG documents`, `Admin → Frontends → {frontend} → Company → {company} → RAG documents`.
 
 ### `rag_watcher.py`
-watchdog-based file watcher rooted at `/app/data/`. On any `created/modified/deleted/moved` event inside a known `documents/` folder, schedules a debounced (`5 s`) callback that fires `rag_service.reindex(scope_key)` for the affected scope. Filters out `.icloud`, `.DS_Store`, `._*` artefacts (the iCloud-sync hazard documented in `lessons-learned.md` #1).
-**UI:** none — file watcher behaviour is implicit; reflects in the docs list refresh on the affected RAG section.
+watchdog-based file watcher rooted at `/app/data/`. On any `created/modified/deleted/moved` event inside a known `documents/` folder, schedules a debounced callback that fires `rag_service.reindex(scope_key)` for the affected scope. Filters out `.icloud`, `.DS_Store`, `._*` artefacts (lessons-learned #1).
+
+Sprint 18 Fase 2/4 made the timing knobs admin-editable + dynamic. Three helpers (`_debounce_seconds()`, `_max_hold_seconds()`, `_lock_busy_replan_seconds()`) read from `backend_config` on every call so a tuning change applies on the next watcher tick without restart. `_ScopeDebouncer` now also tracks `_first_event_at[scope]` and forces the fire after `MAX_DEBOUNCE_HOLD_SECONDS` (default 300) so a non-stop slow upload can't park reindex forever. Before firing, it probes `rag_service._build_locks[scope].acquire(blocking=False)`; if the build lock is held by an in-flight reindex, it defers `LOCK_BUSY_REPLAN_SECONDS` (default 30) instead of competing for the lock.
+
+**UI:** none directly — file watcher behaviour is implicit; reflects in the docs list refresh on the affected RAG section. Tuning knobs at `Admin → General → RAG Pipeline → Tuning avanzado`.
 
 ### `runtime_overrides_store.py`
-Persists admin-editable RAG settings (`rag_chunk_size`, `rag_embedding_model`, `rag_contextual_enabled`) to `/app/data/runtime_overrides.json`. Loaded by `apply_startup_overrides()` from the FastAPI lifespan BEFORE any service reads `backend_config`. Sprint 15 phase 4 fix for the "every restart silently reverted to deployment_backend.json" bug.
+Persists admin-editable backend_config fields to `/app/data/runtime_overrides.json`. Loaded by `apply_startup_overrides()` from the FastAPI lifespan BEFORE any service reads `backend_config`. Sprint 15 phase 4 introduced the pattern; Sprint 18 Fase 4 extended `_TRACKED_FIELDS` to cover the 9 retrieval / watcher tuning knobs (`rag_top_k_floor`, `rag_top_k_ceil`, `rag_top_k_per_doc`, `rag_tables_top_k_floor`, `rag_tables_top_k_ceil_single`, `rag_tables_top_k_ceil_compare_all`, `rag_watcher_debounce_seconds`, `rag_watcher_max_hold_seconds`, `rag_watcher_lock_replan_seconds`) plus the original three (`rag_chunk_size`, `rag_embedding_model`, `rag_contextual_enabled`).
 
 ### `session_lifecycle.py`
 Background scanner (interval 300 s). Per-frontend session settings drive auto-close (move from `active` → `closed` after `auto_close_hours`) and auto-destroy (privacy wipe — delete the session dir + uploads + indices after `auto_destroy_hours`).
@@ -389,6 +392,17 @@ Every admin-editable setting that affects runtime behaviour. Changes that need a
 | SMTP (host / port / user / password / tls / from / admin recipients / toggles) | `Admin → General → SMTP` | `smtp_config.json` | `smtp_service` | empty | None |
 | Frontend `enabled` | `Admin → Frontends → {frontend}` toggle | `campaigns/{fid}/frontend.json` | `polling.list_enabled` | `True` | None — disabled frontends are skipped on next tick |
 | Document metadata (country/language/document_type) | `Admin → Frontends → {frontend} → Company → {company} → RAG → metadata edit per file` | `campaigns/{fid}/companies/{slug}/metadata.json` | `document_metadata.derive_country_tags` (on reindex) | empty | Triggers `Company.country_tags` recompute on next reindex |
+| `rag_top_k_floor` | `Admin → General → RAG Pipeline → Tuning avanzado` slider | `runtime_overrides.json` | `rag_service.compute_dynamic_top_k` | `5` | None — applies on next query |
+| `rag_top_k_ceil` | same panel | `runtime_overrides.json` | same | `40` | None |
+| `rag_top_k_per_doc` | same panel | `runtime_overrides.json` | same | `2` | None — `K = clamp(num_files × this, floor, ceil)` |
+| `rag_tables_top_k_floor` | same panel | `runtime_overrides.json` | `rag_service.compute_dynamic_tables_top_k` | `2` | None |
+| `rag_tables_top_k_ceil_single` | same panel | `runtime_overrides.json` | same | `6` | None — used outside Compare All |
+| `rag_tables_top_k_ceil_compare_all` | same panel | `runtime_overrides.json` | same | `12` | None — used inside Compare All so each company contributes |
+| `rag_watcher_debounce_seconds` | same panel | `runtime_overrides.json` | `rag_watcher._debounce_seconds()` | `30` (was `5` pre-Sprint-18) | None — applies on next watcher tick |
+| `rag_watcher_max_hold_seconds` | same panel | `runtime_overrides.json` | `rag_watcher._max_hold_seconds()` | `300` | None — Sprint 18 ceiling so a non-stop upload can't park reindex forever |
+| `rag_watcher_lock_replan_seconds` | same panel | `runtime_overrides.json` | `rag_watcher._lock_busy_replan_seconds()` | `30` | None — Sprint 18 defer when `_build_locks[scope]` held |
+| `<api_slot>.api_key_env` (legacy) | `Admin → General → LLM → Inference/Compressor/Summariser → API key env var` | `llm_config.json` | `llm_provider`, `check_slot_health` | empty | None — pattern A: env var set on container |
+| `<api_slot>.api_key` (Sprint 19 Fase 1) | `Admin → General → LLM → Inference/Compressor/Summariser → API key (paste)` | `llm_config.json` (sentinel `••••••••` in GET responses) | `llm_provider`, `check_slot_health` (precedence over `api_key_env`) | empty | None — pattern B: paste once, persist on disk |
 
 ---
 
@@ -418,7 +432,11 @@ Every admin-editable setting that affects runtime behaviour. Changes that need a
 
 ### Watcher debouncing under bulk copies
 **Trigger:** an iCloud sync / bulk copy fires hundreds of `created`/`modified` events into `documents/`.
-**Recovery:** `_ScopeDebouncer` collapses events into a single fire per scope after a 5 s quiet window. The first event starts the timer; every subsequent event in the same scope resets it. `_is_ignored` filters out `.icloud`, `.DS_Store`, `._*` first.
+**Recovery:** `_ScopeDebouncer` collapses events into a single fire per scope after a 30 s quiet window (Sprint 18 raised from 5 s — admin-tunable). The first event starts the timer; every subsequent event in the same scope resets it. `_is_ignored` filters out `.icloud`, `.DS_Store`, `._*` first.
+
+### Watcher amplification (Sprint 18 prevented)
+**Trigger:** browser file picker uploads N files with > 5 s gaps between them. Pre-Sprint-18 the 5 s debounce was too short → each file fire after the previous reindex cycle, producing N reindex passes (observed: 3 full passes for a 20-file Amcor upload, ~150 s of redundant work).
+**Recovery:** Sprint 18 Fase 2 changes the debouncer in three ways: default debounce 30 s tolerates the typical browser pacing; `MAX_DEBOUNCE_HOLD_SECONDS = 300` ceiling forces the fire even if events keep arriving, so a slow continuous upload still reindexes every 5 min instead of being deferred forever; `_fire(scope)` probes `rag_service._build_locks[scope].acquire(blocking=False)` and reschedules itself 30 s later instead of competing for the lock when a build is already in flight. Effect: 20-file upload = one reindex at the end of the batch, not N.
 
 ### Prefix-cache cold spots
 Not really a failure mode but a measurable cost. Every `Wipe & Reindex All` invalidates Ollama's prefix cache for that prompt prefix; first chat afterwards has TTFT ~3-4× the warm steady-state. Daniel works around this by waiting a turn or two after a wipe before stress-testing latency.
@@ -504,6 +522,12 @@ Things that must remain true. If a sprint changes one, the change is an ADR-grad
 10. **Admin reindex endpoints don't block the FastAPI event loop.** Every reindex handler uses `await asyncio.to_thread(...)` to run the sync work in a worker thread. Enforced by: Sprint 16 Fase 0 + the 5 admin endpoints in `api/v1/admin/rag.py`.
 
 11. **Tables are CBC-internal, not user-facing.** The Sprint 16 table pipeline is a retrieval booster; the CitationsPanel shows source documents only, not table cards. Enforced by: `prompt_assembler` emits source rows for table-only docs (so users can still download the CBA), but no `kind: "table"` entries flow to the frontend.
+
+12. **Top-K scales with corpus size, never hardcoded per turn.** Sprint 18 Fase 1 replaced the static `RAG_TOP_K_PER_SCOPE = 5` with `rag_service.compute_dynamic_top_k(scope_keys)` and `compute_dynamic_tables_top_k(...)`. Every retrieval path computes K from `num_files_in_scope × per_doc`, clamped by floor / ceil read live from `backend_config.rag_top_k_*` (Fase 4 — admin-tunable). Enforced by: `prompt_assembler._resolve_rag` and `assemble`. Adding a new retrieval path that hardcodes K is a regression.
+
+13. **Clause integrity in chunks.** Sprint 18 Fase 3 — when a source document uses numbered clause headers (Art. N / Article N / Cláusula N / Section N.N.N / ANEXO I / Annexe N), no chunk crosses a clause boundary unless the clause body alone exceeds `chunk_size`. When it does, all sub-chunks of that clause inherit the same `clause_id` metadata, which `prompt_assembler._citation_label_for` prefers as the citation locator. Enforced by: `rag_service._segment_by_clause` + `_emit_clause_aware` in `_parse_nodes`, plus `Chunk.clause_id` propagation in `query()`.
+
+14. **API keys never leave the container in GET responses.** Sprint 19 Fase 1 introduces inline API key storage (paste-once-persist pattern, Open WebUI style). `llm_config_store.redact_for_response` substitutes the literal key with the sentinel `••••••••` so the admin UI never receives the value back even after Save. PUT logic preserves the existing key when it sees the sentinel as input (admin edited other fields without retyping the key). Enforced by: `redact_for_response` + the PUT handler in `api/v1/admin/llm.py`. Adding a debug endpoint that returns raw config is a regression.
 
 ---
 
