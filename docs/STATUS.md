@@ -1,8 +1,8 @@
 # CBC — Project Status
 
-**Current Sprint:** 19 — **Fase 1 CODE DONE 2026-05-03** (API keys inline, Open WebUI pattern). Fases 2-5 condicionales según resultado de validación Sprint 18. ARCHITECTURE.md actualizado al cierre Sprint 18 (§5 tuning rows, §2 services updates, §6 watcher amplification, §8 invariants 12-14).
+**Current Sprint:** 19 — **Fase 1 SHIPPED + Sprint 18 hotfix SHIPPED 2026-05-03**, sesión cerrada 2026-05-04 con validación parcial. Bloque "## Sprint 18+19 — pending hand-off (sesión 2026-05-04)" al final de este STATUS lista los tests pendientes y descubrimientos que hay que retomar. Daniel pidió guardar este estado para entregar al reabrir.
 
-Sprint 18 — **CLOSED 2026-05-03** tras 5 fases. Pipeline completo:
+Sprint 18 — **CLOSED 2026-05-03** tras 5 fases + hotfix crítico del reranker. Pipeline completo:
 1. Top-K dinámico (5→40 cap, scaling por num_files_in_scope).
 2. Watcher debounce robusto (5 s→30 s default, 5-min hold ceiling, lock-aware re-plan).
 3. **Chunking legal-aware** — `_segment_by_clause` pre-pass detecta Art. N / Artículo N / Article N / Cláusula N / Clause N / Section N.N.N / ANEXO I / Annexe N. Cada clause queda en su propio pseudo-doc al SentenceSplitter → no se parte mid-clause. `clause_id` propagado a metadata + `Chunk.clause_id` + citation panel lo usa como locator prioritario sobre el regex previo.
@@ -1275,6 +1275,76 @@ Round of UX cleanup driven by Daniel walking through the admin panel after the S
 
 ## Blocked / Questions
 (none)
+
+---
+
+## Sprint 18+19 — pending hand-off (sesión cerrada 2026-05-04)
+
+Daniel pidió guardar este estado para entregar al reabrir. Bloque previo "Sprint 18 — pending hand-off (sesión cerrada 2026-05-03)" más abajo es el del cierre original; este lo SUPERA con lo que pasó después.
+
+### Commits shipped en esta sesión (post Sprint 18 close)
+
+| SHA | Resumen |
+|-----|---------|
+| `9a7366b` | Sprint 19 Fase 1 — API keys inline (Open WebUI pattern) + ARCHITECTURE.md sync |
+| `0b9b621` | Sprint 18 hotfix — Reranker top_n era estático, anulaba el top-K dinámico |
+
+### Lo que SÍ se validó en vivo
+
+- **Sprint 19 Fase 1 paste-key con MiniMax-M2.7**: TTFT 9.25s, 119k chars de prompt, respuesta OK. La key inline + sentinel `••••••••` funciona end-to-end.
+- **Hotfix reranker**: `returned=60` confirmado (antes era 8). El top-K dinámico de Sprint 18 Fase 1 ahora SÍ llega al LLM. Verificado con dos queries reales en sesión PINE-5728.
+- **Continuidad de sesión** tras cambios de config LLM mid-session (MiniMax → LM Studio → fallback a Ollama). La cadena de fallback de Sprint 9 funciona correctamente.
+
+### Tests pendientes (8 de Sprint 18 + 1 de Sprint 19)
+
+De la batería original al cerrar Sprint 18, estos siguen sin verificar a fondo:
+
+1. **"Compara vacaciones en los convenios de Amcor"** — retrieval trae 60 chunks ahora (✓), pero la **cobertura real de la respuesta del LLM** no se midió. Mirar: ¿la respuesta cita >=10 docs FR distintos o sigue concentrada en ES + AU?
+2. **"Lista los convenios FR del corpus"** — sin probar tras hotfix. Esperar enumerar 15+ docs FR.
+3. **"Compara subidas salariales pactadas"** — sin probar tras hotfix. Esperar cifras concretas (4 PDFs AU + NAOs FR + tablas Lezo).
+4. **Subir N archivos seguidos → un solo reindex** — sin probar tras Sprint 18.
+5. **"¿Qué dice el Artículo 23 del CBA Lezo?"** — esperar un chunk único con `clause_id="Artículo 23"` y cuerpo entero (validación Fase 3).
+6. **"Compara Artículo 37 entre Lezo y los franceses"** — chunks etiquetados, no fragmentos a mitad de regla.
+7. **"Qué dicen los anexos del CBA Lezo"** — chunks con `clause_id="ANEXO II"` / `"ANEXO III"`.
+8. **Citation panel** muestra clause ids reales en los chips locator (Sprint 18 Fase 3).
+9. **Paste-key edit cycle** (Sprint 19 Fase 1) — abrir slot api con key configurada, editar OTRO campo (model, temperature) sin retipear key, Save → comprobar que la key se preserva (no se sobrescribe con `••••••••`).
+
+### Issues nuevos descubiertos en esta sesión (no parked, requieren decisión)
+
+**A. `INACTIVITY_TIMEOUT = 60s` corta inferencias legítimas con modelos grandes en LM Studio.**
+
+`CBCopilot/src/backend/services/llm_provider.py` tiene constante hardcoded `INACTIVITY_TIMEOUT = 60.0`. Se aplica a la espera entre chunks SSE consecutivos, incluyendo el primer token. Con prompts grandes (100-160k chars) y modelos grandes (27B en MLX, 480B en LM Studio), el prefill para producir el primer token tarda 30-90s en 27B y 60-300s en 480B. El guard mata el request antes de que arranque la generación. La cadena de fallback Sprint 9 cae al siguiente slot, que también timeoutea, hasta llegar al sumariser Ollama que finalmente responde tras 3-4 minutos para el usuario.
+
+Análisis técnico ya hecho con Daniel — tres opciones discutidas:
+- **A:** subir constante hardcoded a 180s (1 línea, riesgo bajo).
+- **B:** separar `FIRST_TOKEN_TIMEOUT = 240s` (tolerante con prefill) de `INTER_TOKEN_TIMEOUT = 60s` (estricto durante generación). ~10 líneas, sin UI.
+- **C:** hacer ambos admin-tunables (sliders en RAG Pipeline → Tuning avanzado, patrón Sprint 18 Fase 4). ~50 líneas backend + 20 frontend.
+
+Daniel preguntó "no hay manera de que respondan más rápido" antes de decidir entre A/B/C. Le di análisis de palancas para reducir TTFT (bajar top_k_per_doc, modelo más chico, MiniMax como inference, etc.). **Sin decisión aún sobre cuál implementar.**
+
+**B. Tunes admin actuales (persistidos en runtime_overrides.json al cerrar):**
+
+```
+rag_top_k_ceil = 60        (default 40)
+rag_top_k_per_doc = 6      (default 2) — agresivo, satura el ceil con 23 docs
+rag_tables_top_k_floor = 1 (default 2)
+rag_watcher_debounce_seconds = 91 (default 30) — probablemente quiso 90
+rag_contextual_enabled = False
+```
+
+**C. Modelos LM Studio configurados pero no consistentes:**
+
+- Slot inference: `qwen3.6-27b-mlx` — responde pero tarda 30-90s para primer token con prompt 100k+ chars.
+- Slot compressor: `qwen/qwen3-coder-480b` — necesita > 60s para arrancar.
+- Slot summariser: `ollama qwen3.5:9b` — fall-back final, responde en ~50s.
+
+Daniel cambió varias veces el slot inference durante la sesión (entre MiniMax-M2.7 y LM Studio). Estado al cerrar: probablemente LM Studio.
+
+### Recomendación de orden al retomar
+
+1. Daniel valida los 9 tests pendientes con la config actual. Si alguno revela problema persistente (ej. recall cross-lingüe), eso decide el Sprint 19 Fase 2.
+2. Decisión sobre el timeout (A/B/C) — preferiblemente B para no añadir UI hasta que sea necesario.
+3. Si los tests pasan: Sprint 19 cierra con solo Fase 1 + hotfix; las antiguas Fases 2-5 (modo catálogo, query rewriting cross-lingüe, glossary, MVCC, modo cita textual) siguen como ideas en `docs/IDEAS.md` para sprints futuros.
 
 ---
 
