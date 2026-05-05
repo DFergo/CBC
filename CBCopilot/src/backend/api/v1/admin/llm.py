@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 
 from src.api.v1.admin.auth import require_admin
 from src.services import llm_config_store
-from src.services.llm_config_store import LLMConfig
+from src.services.llm_config_store import LLMConfig, SlotConfig
 
 router = APIRouter(prefix="/admin/api/v1/llm", tags=["admin-llm"])
 
@@ -62,3 +62,36 @@ async def health(_admin: dict = Depends(require_admin)) -> dict[str, Any]:
         "compressor": {"provider": cfg.compressor.provider, **compressor},
         "summariser": {"provider": cfg.summariser.provider, **summariser},
     }
+
+
+@router.post("/providers/probe")
+async def probe_slot(slot: SlotConfig,
+                     _admin: dict = Depends(require_admin)) -> dict[str, Any]:
+    """Sprint 19 followup — probe an in-progress slot config (NOT yet saved)
+    so the admin UI can show the model catalogue before persisting.
+
+    The admin types endpoint + flavor + api_key into the form, clicks
+    "Test connection". The frontend POSTs the current values here. We
+    instantiate a transient SlotConfig and run the same `check_slot_health`
+    that the regular /health endpoint uses — but without touching the
+    persisted llm_config.json. Result is purely a UX hint: status + model
+    list to populate the dropdown.
+
+    Sprint 19 Fase 1 sentinel rule: if `api_key` arrives as the redact
+    sentinel, the admin opened the form for an EXISTING saved slot and
+    didn't retype the key. Resolve from the persisted config instead.
+    """
+    # Sentinel resolution — if the admin pasted the sentinel back, look up
+    # the real key from the saved config (matching by api_endpoint).
+    if slot.provider == "api" and (slot.api_key or "") == llm_config_store.API_KEY_SENTINEL:
+        saved = llm_config_store.load_config()
+        for saved_slot in (saved.inference, saved.compressor, saved.summariser):
+            if (
+                saved_slot.provider == "api"
+                and saved_slot.api_endpoint == slot.api_endpoint
+                and saved_slot.api_flavor == slot.api_flavor
+                and (saved_slot.api_key or "")
+            ):
+                slot.api_key = saved_slot.api_key
+                break
+    return await llm_config_store.check_slot_health(slot)

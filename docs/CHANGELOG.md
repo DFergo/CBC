@@ -1,5 +1,80 @@
 # CBC — Changelog
 
+## Sprint 19 followup — SlotEditor: reset modelo al cambiar provider + Test connection en API (2026-05-05)
+
+### Why
+
+Daniel hit el mismo bug dos veces durante validación: cambia el `provider` del slot Inference (e.g. de Ollama a `api`/MiniMax) en el admin UI, el dropdown de modelos no se refresca con el catálogo del nuevo provider, **el campo `model` queda con el valor del provider anterior**, y el Save persiste una combinación inválida (`provider=api, model=qwen3.6:27b`) que MiniMax rechaza con 400. La cadena de fallback Sprint 9 cubre el daño (cae al siguiente slot) pero la respuesta tarda minutos por cada timeout intermedio.
+
+Causa: `SlotEditor.onProviderChange` solo cambiaba `provider` y `endpoint`, dejaba el `model` antiguo, y NO disparaba `getProvidersStatus()`. El `availableModels` que consume el dropdown se calcula en el padre (`LLMSection.tsx` o `PerFrontendLLMPanel.tsx`) usando el state `providers` que solo se refresca al mount o cada 15 s en el polling. Si la tarjeta del nuevo provider aún no estaba poblada, el dropdown queda vacío y el admin acaba viendo el modelo viejo.
+
+### Fix
+
+**`CBCopilot/src/admin/src/components/llm/SlotEditor.tsx`**
+
+`onProviderChange` reescrito para:
+- **Resetear `model: ""`** en cualquier cambio de provider. Force al admin a elegir un model id válido para el nuevo provider antes de Save.
+- **Limpiar campos del provider opuesto**: si pasa a `lm_studio`/`ollama`, set `api_flavor=null`, `api_endpoint=null`, `api_key=null`, `api_key_env=null`. Si pasa a `api`, deja en paz `endpoint` (no afecta) y rellena `api_flavor`/`api_endpoint` con defaults razonables si están vacíos.
+- **Llamar a `onProviderSwitched?.()`** — nueva prop opcional que el padre usa para forzar un refresh inmediato del catálogo de providers.
+
+Nueva prop `onProviderSwitched?: () => void` en `Props`.
+
+**`CBCopilot/src/admin/src/sections/LLMSection.tsx`** y **`CBCopilot/src/admin/src/panels/PerFrontendLLMPanel.tsx`**
+
+Pasan `onProviderSwitched={async () => setProviders(await getProvidersStatus())}` al `SlotEditor`. Best-effort: si el fetch falla, deja la data stale tal cual.
+
+### Test connection para slots API (segundo bug que Daniel detectó)
+
+El refresh de `getProvidersStatus()` solo lista providers **ya guardados**. Para un slot api nuevo (admin acaba de escribir endpoint + flavor + key pero NO Save todavía), el catálogo viene vacío porque el backend `fetch_provider_status` solo prueba slots persistidos. Daniel pidió que se detecten los modelos **al introducir los datos** sin tener que pasar por un Save con modelo erróneo.
+
+Solución: probe en vivo del slot sin persistir.
+
+**Backend** — `CBCopilot/src/backend/api/v1/admin/llm.py` nuevo endpoint:
+
+```
+POST /admin/api/v1/llm/providers/probe
+body: SlotConfig (parcial)
+→ { ok, status_code, error, models }
+```
+
+Implementación: instancia un `SlotConfig` transient con los valores recibidos y llama al mismo `check_slot_health` que el endpoint regular `/health`. NO toca `llm_config.json`. Si el body trae `api_key == API_KEY_SENTINEL`, resuelve la key real desde el config persistido matchando por endpoint + flavor (caso "admin abre form de slot ya guardado, edita otros campos sin retipear key, clica Test"). Backwards compat completo con el flow Sprint 19 Fase 1.
+
+**Frontend** — `SlotEditor.tsx`:
+
+- Nuevos states locales: `probeStatus` (idle/probing/ok/error), `probeMessage`, `probedModels`. `useEffect` los resetea cuando el slot cambia provider/flavor/endpoint/key (resultados viejos dejan de ser válidos).
+- Nuevo handler `runProbe()` llama `probeSlot(slot)`. Si OK: pinta pill verde "OK · N models" y guarda los modelos en `probedModels`. Si KO: pill rojo con el error.
+- Nuevo botón "Test connection" visible solo cuando `provider==='api'`, debajo de los campos endpoint/flavor/key.
+- El dropdown de Model ahora usa `dropdownModels = availableModels ∪ probedModels` (dedup, parent first). Esto significa que un slot api nuevo puede mostrar el catálogo completo del provider antes del primer Save.
+- Auto-correct effect (HRDD-style "si el modelo guardado no está en availableModels, escoge el primero") sigue usando `availableModels` solo, no `dropdownModels`. No queremos auto-resetear el model si el admin acaba de elegir uno de los probed (volátil). Persiste con Save.
+
+`api.ts` gana `probeSlot(slot)` + `SlotProbeResult` interface.
+
+UX flow nuevo:
+
+1. Admin selecciona provider=api en el slot.
+2. SlotEditor reset (de la otra parte del fix): model=`""`, provider switched → fetch global de providers (sin efecto si el slot era nuevo).
+3. Admin teclea/pega flavor + endpoint + api_key.
+4. Click "Test connection". Backend valida y devuelve catálogo.
+5. Pill verde + dropdown popula con los modelos.
+6. Admin selecciona el modelo correcto del dropdown. Save.
+7. Cero combinaciones inválidas guardadas → cero 400 inesperados en runtime.
+
+### Coste
+
+Sin reindex, sin schema changes, sin migración. Cero efecto en deploys con configs ya correctos. Los slots persistidos con `provider=api` + valores residuales (caso de Daniel ahora mismo) seguirán mostrando los residuales hasta que el admin los toque — pero al hacerlo, el reset cubre el caso. Para limpiar configs ya guardados que tengan campos cruzados, basta con hacer Save manual una vez tras el repull (cambio provider, vuelvo, Save).
+
+### Validación pendiente Daniel post-repull
+
+1. Slot Inference: cambiar provider de Ollama a `api`/MiniMax → el dropdown de Model debe quedar vacío y luego repoblar con los modelos de MiniMax (sin esperar 15 s).
+2. Misma operación a la inversa (api → Ollama) → dropdown muestra modelos de Ollama de inmediato.
+3. Tras Save, comprobar `/admin/api/v1/llm` → los campos `api_*` están a `null` cuando el provider final es lm_studio/ollama.
+
+### Bug latente NO arreglado en este commit
+
+El campo `api_key_env` NO se redacta en `redact_for_response`. Si el admin pega la key real allí (en lugar del nombre de la env var), el GET response la devuelve en plano. Daniel tropezó con esto durante la sesión actual: su `api_key_env` tenía el valor de la key real de MiniMax. El fix es trivial — extender `redact_for_response` para detectar valores que parecen keys (empiezan por `sk-` u otros patrones) en `api_key_env` y sustituirlos por sentinel. Lo apunto al hand-off para que vaya en el próximo commit. Mientras tanto, **rota la key de MiniMax** porque está expuesta en el JSON visible al admin GET.
+
+---
+
 ## Sprint 18 hotfix — Reranker top_n era estático, anulaba el top-K dinámico (2026-05-03)
 
 ### Why

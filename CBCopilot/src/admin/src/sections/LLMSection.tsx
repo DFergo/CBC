@@ -158,6 +158,10 @@ export default function LLMSection() {
             health={health?.[key]}
             defaults={defaults}
             availableModels={modelsForSlot(cfg[key], key)}
+            onProviderSwitched={async () => {
+              try { setProviders(await getProvidersStatus()) }
+              catch { /* best-effort refresh — leave stale data if it fails */ }
+            }}
           />
         ))}
       </div>

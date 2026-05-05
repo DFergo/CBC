@@ -167,6 +167,10 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
               defaults={defaults}
               availableModels={modelsForSlot(effective)}
               disabled={!isOverridden}
+              onProviderSwitched={async () => {
+                try { setProviders(await getProvidersStatus()) }
+                catch { /* best-effort refresh */ }
+              }}
               headerRight={
                 <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                   <input

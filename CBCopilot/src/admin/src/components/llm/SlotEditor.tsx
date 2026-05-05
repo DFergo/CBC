@@ -6,7 +6,7 @@
 // (read-only) global value.
 import { useEffect, useState } from 'react'
 import type { SlotConfig, SlotHealth, ProviderType, ApiFlavor } from '../../api'
-import { API_KEY_SENTINEL } from '../../api'
+import { API_KEY_SENTINEL, probeSlot } from '../../api'
 
 const API_FLAVOR_DEFAULTS: Record<ApiFlavor, { endpoint: string; envHint: string }> = {
   anthropic: { endpoint: 'https://api.anthropic.com/v1', envHint: 'ANTHROPIC_API_KEY' },
@@ -26,11 +26,73 @@ interface Props {
   // Right-aligned slot in the header (e.g. an Override checkbox at the
   // per-frontend tier). When set, replaces the health badge in that position.
   headerRight?: React.ReactNode
+  // Sprint 19 followup — fired when the admin picks a different provider
+  // for this slot. Parent uses it to refetch `providers/` so the model
+  // dropdown repopulates with the new provider's catalogue immediately
+  // (otherwise the admin has to wait for the next 15-s polling cycle).
+  onProviderSwitched?: () => void
 }
 
 export default function SlotEditor({
   label, hint, slot, onChange, health, defaults, availableModels, disabled = false, headerRight,
+  onProviderSwitched,
 }: Props) {
+  // Sprint 19 followup — local state for the "Test connection" probe of
+  // in-progress API configs. Models discovered via probe merge with the
+  // padre's `availableModels` so the dropdown shows them immediately, even
+  // before Save. Probe status drives a small pill next to the button.
+  const [probeStatus, setProbeStatus] = useState<'idle' | 'probing' | 'ok' | 'error'>('idle')
+  const [probeMessage, setProbeMessage] = useState<string>('')
+  const [probedModels, setProbedModels] = useState<string[]>([])
+
+  // Reset probe state whenever the slot's identity changes (provider /
+  // flavor / endpoint / key_env). Old results stop being valid the moment
+  // any of those fields move.
+  useEffect(() => {
+    setProbeStatus('idle')
+    setProbeMessage('')
+    setProbedModels([])
+  }, [slot.provider, slot.api_flavor, slot.api_endpoint, slot.api_key_env])
+
+  const runProbe = async () => {
+    setProbeStatus('probing')
+    setProbeMessage('')
+    try {
+      const r = await probeSlot({
+        provider: slot.provider,
+        // Don't send `model: ""` — backend validator might trip on empty.
+        // Send everything else so check_slot_health can do its work.
+        api_flavor: slot.api_flavor || null,
+        api_endpoint: slot.api_endpoint || null,
+        api_key: slot.api_key || null,
+        api_key_env: slot.api_key_env || null,
+        endpoint: slot.endpoint,
+      } as Partial<SlotConfig>)
+      if (r.ok) {
+        setProbeStatus('ok')
+        setProbeMessage(`${r.models.length} model${r.models.length === 1 ? '' : 's'}`)
+        setProbedModels(r.models)
+      } else {
+        setProbeStatus('error')
+        setProbeMessage(r.error?.slice(0, 80) || `HTTP ${r.status_code}`)
+      }
+    } catch (e) {
+      setProbeStatus('error')
+      setProbeMessage(e instanceof Error ? e.message.slice(0, 80) : 'probe failed')
+    }
+  }
+
+  // Merge availableModels (from parent's providers state) with probedModels
+  // (from this component's transient Test). Dedup, preserve order — parent
+  // first because if a config is already saved, parent has the authoritative
+  // list. Probed models extend it for unsaved drafts.
+  const dropdownModels = (() => {
+    if (probedModels.length === 0) return availableModels
+    const seen = new Set(availableModels)
+    const merged = [...availableModels]
+    for (const m of probedModels) if (!seen.has(m)) { seen.add(m); merged.push(m) }
+    return merged
+  })()
   // HRDD-style: if the saved model isn't in the fetched list, auto-correct to
   // the first available. Skipped when disabled — we don't mutate inherited
   // values from another tier.
@@ -43,20 +105,51 @@ export default function SlotEditor({
   }, [availableModels, slot.model, onChange, disabled])
 
   const onProviderChange = (provider: ProviderType) => {
+    // Sprint 19 followup — when the admin switches provider, reset the
+    // `model` field and any provider-specific fields. The previous behaviour
+    // left `model` set to whatever it was for the OLD provider (e.g.
+    // "qwen3.6:27b" from Ollama), so saving against a different provider
+    // (api/MiniMax) produced a config the API rejects with 400. Daniel hit
+    // this twice. Now: model="" forces the admin to pick a value valid for
+    // the NEW provider before Save, and the parent re-fetches
+    // `providers/` so the dropdown repopulates with the right model list.
     if (provider === 'lm_studio') {
-      onChange({ provider, endpoint: defaults.lm_studio })
-    } else if (provider === 'ollama') {
-      onChange({ provider, endpoint: defaults.ollama })
-    } else if (!slot.api_flavor) {
       onChange({
         provider,
-        api_flavor: 'anthropic',
-        api_endpoint: API_FLAVOR_DEFAULTS.anthropic.endpoint,
-        api_key_env: slot.api_key_env || '',
+        model: '',
+        endpoint: defaults.lm_studio,
+        // Wipe API-only fields so the persisted config is clean.
+        api_flavor: null,
+        api_endpoint: null,
+        api_key: null,
+        api_key_env: null,
+      })
+    } else if (provider === 'ollama') {
+      onChange({
+        provider,
+        model: '',
+        endpoint: defaults.ollama,
+        api_flavor: null,
+        api_endpoint: null,
+        api_key: null,
+        api_key_env: null,
       })
     } else {
-      onChange({ provider })
+      // provider === 'api'. Default to anthropic flavor + its endpoint when
+      // we don't have one yet. Always reset model — the previous local-
+      // provider model id won't exist in any cloud catalogue.
+      onChange({
+        provider,
+        model: '',
+        api_flavor: slot.api_flavor || 'anthropic',
+        api_endpoint: slot.api_endpoint || API_FLAVOR_DEFAULTS[slot.api_flavor || 'anthropic'].endpoint,
+        api_key_env: slot.api_key_env || '',
+      })
     }
+    // Tell the parent to refresh the providers status so the dropdown
+    // populates with the new provider's models without waiting for the
+    // 15-s polling cycle.
+    onProviderSwitched?.()
   }
 
   const onFlavorChange = (flavor: ApiFlavor) => {
@@ -112,6 +205,29 @@ export default function SlotEditor({
             className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100 disabled:text-gray-500" />
 
           <ApiKeyField slot={slot} onChange={onChange} disabled={disabled} />
+
+          {/* Sprint 19 followup — Test connection. Probes endpoint+flavor+key
+              live without needing Save first. Populates the dropdown below. */}
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="button"
+              onClick={runProbe}
+              disabled={disabled || probeStatus === 'probing'}
+              className="px-2 py-1 text-xs border border-gray-300 text-gray-700 rounded disabled:opacity-50 hover:bg-gray-50"
+            >
+              {probeStatus === 'probing' ? 'Testing…' : 'Test connection'}
+            </button>
+            {probeStatus === 'ok' && (
+              <span className="text-[11px] px-2 py-0.5 rounded bg-green-100 text-green-700">
+                OK · {probeMessage}
+              </span>
+            )}
+            {probeStatus === 'error' && (
+              <span className="text-[11px] px-2 py-0.5 rounded bg-red-100 text-red-700">
+                {probeMessage}
+              </span>
+            )}
+          </div>
         </>
       ) : (
         <>
@@ -124,21 +240,21 @@ export default function SlotEditor({
 
       <label className="block text-xs text-gray-500">
         Model
-        {availableModels.length > 0 && (
-          <span className="text-gray-400 ml-1">({availableModels.length} available)</span>
+        {dropdownModels.length > 0 && (
+          <span className="text-gray-400 ml-1">({dropdownModels.length} available)</span>
         )}
-        {availableModels.length === 0 && slot.provider === 'api' && (
-          <span className="text-gray-400 ml-1">(click "Check health" once the API key env var is set to populate the list)</span>
+        {dropdownModels.length === 0 && slot.provider === 'api' && (
+          <span className="text-gray-400 ml-1">(fill endpoint + flavor + API key, click "Test connection" to populate)</span>
         )}
       </label>
-      {availableModels.length > 0 ? (
+      {dropdownModels.length > 0 ? (
         <select
-          value={availableModels.includes(slot.model) ? slot.model : availableModels[0]}
+          value={dropdownModels.includes(slot.model) ? slot.model : (slot.model || dropdownModels[0])}
           onChange={e => onChange({ model: e.target.value })}
           disabled={disabled}
           className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
         >
-          {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+          {dropdownModels.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       ) : (
         <input

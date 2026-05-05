@@ -433,6 +433,24 @@ export async function getProvidersStatus(): Promise<ProvidersStatus> {
   return request('/admin/api/v1/llm/providers')
 }
 
+// Sprint 19 followup — probe an in-progress slot config without saving.
+// Used by the SlotEditor "Test connection" button so the admin can validate
+// the API endpoint + flavor + key BEFORE Save (otherwise the model dropdown
+// would stay empty until a save+health-cycle, and a wrong combination only
+// surfaces when a real chat turn fails with 400).
+export interface SlotProbeResult {
+  ok: boolean
+  status_code: number
+  error: string | null
+  models: string[]
+}
+export async function probeSlot(slot: Partial<SlotConfig>): Promise<SlotProbeResult> {
+  return request('/admin/api/v1/llm/providers/probe', {
+    method: 'POST',
+    body: JSON.stringify(slot),
+  })
+}
+
 export async function checkLLMHealth(): Promise<LLMHealth> {
   return request('/admin/api/v1/llm/health', { method: 'POST' })
 }
