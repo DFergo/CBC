@@ -1,5 +1,54 @@
 # CBC — Changelog
 
+## Sprint 19 followup — Editar URL de frontend por API preservando id (2026-08-05)
+
+### Why
+
+El frontend vive en DHCP de oficina sin reserva; su IP de LAN rota (p.ej. `10.210.66.130` → `.127`). El registro de frontends quedaba apuntando a la IP vieja y el backend dejaba de verlo. La única forma de reapuntar era editar `frontends.json` a mano y reiniciar el contenedor: el PATCH de update no exponía una vía segura para cambiar `url`. Reapuntar borrando + re-registrando NO vale — genera un `frontend_id` nuevo y huérfana toda la config de campaña (prompts, branding, RAG, auth, LLM, traducciones) keyed a ese id.
+
+Descubrimiento durante el mapeo: a diferencia de HRDD (donde el update solo admitía `enabled`/`name`), en CBC el modelo `UpdateRequest` **ya** tenía `url` y `registry.update()` ya la normalizaba — pero SIN guardarraíles (ni colisión, ni alcance, ni `verify`). El trabajo fue blindar lo existente, no crearlo.
+
+### Fix
+
+**`CBCopilot/src/backend/api/v1/admin/frontends.py`** — `PATCH /admin/api/v1/frontends/{id}` reescrito:
+
+- Check de existencia primero → **404** si el id no existe.
+- Si viene `url`: normaliza (`rstrip('/')`) → **409** si otro frontend distinto ya la tiene (comprobado SIEMPRE, aun con `verify=false`) → **400** si no responde `GET {url}/internal/config` (~10 s, nuevo helper `_probe_reachable`), saltable con `?verify=false`.
+- `registry.update(url=...)` in-place: el `frontend_id` **no cambia** → config de campaña intacta. Nada de borrar + re-registrar.
+- URLs genéricas: IP / hostname / `.local` / MagicDNS de Tailscale. Se decide por **alcance, no por formato** — sin regex IPv4.
+- El poller lee `registry.list_enabled()` cada tick, así que el cambio surte efecto sin reiniciar (a diferencia de editar el fichero a mano).
+
+**Caveat mDNS (no resuelto aquí, a propósito):** el contenedor del backend normalmente no resuelve nombres `.local` (multicast filtrado). El soporte mDNS real (nss-mdns/avahi o host networking) es tarea aparte y mayor. Con un reconciliador launchd que resuelve la IP en el host y empuja una URL-con-IP usando `?verify=false`, no hace falta.
+
+### Contrato para el reconciliador launchd
+
+```
+PATCH /admin/api/v1/frontends/{id}?verify=true|false   (Authorization: Bearer <token>)
+  Body: {"url": "http://host:port"[, "name": "...", "enabled": true]}
+  200 → {"frontend": {...}}   url normalizada, id preservado
+  400 → URL no alcanzable     (solo si verify=true)
+  409 → url ya en uso por otro frontend   (SIEMPRE, aun con verify=false)
+  404 → id inexistente
+```
+
+### Admin UI
+
+**`CBCopilot/src/admin/src/FrontendsTab.tsx`** — botón **Edit** por fila con inputs nombre + URL (Save/Cancel inline). Manda `url` en el PATCH **solo si cambió** respecto al valor actual: un rename-only no dispara la reachability (que fallaría con 400 si el frontend está momentáneamente caído). Errores 400/409 mostrados inline.
+
+**`api.ts`** — `updateFrontend()` acepta `opts.verify` y añade `?verify=false` a la query (lo usa el reconciliador, no el panel).
+
+**`i18n.ts`** — 1 clave nueva `frontends_edit` en los 15 idiomas; reutiliza `generic_save/cancel/saving/saved/required` y las labels de registro.
+
+### Tests (harness nuevo — el proyecto no tenía ninguno)
+
+`CBCopilot/requirements-dev.txt` (`pytest==8.3.4`) + `CBCopilot/tests/conftest.py` (aliasea `src`→`backend` y aísla `CBC_DATA_DIR` en tmp). 8 tests en `test_frontend_url_update.py`, todos verdes: éxito (id + campos conservados, url normalizada), host genérico aceptado, 400 no-alcanzable, `verify=false` salta reachability, 409 colisión (con y sin `verify`, con normalización de barra), rename-only sin sonda, 404.
+
+### Deploy
+
+Solo **backend** (`docker-compose.backend.yml` / `cbcopilot-cbc-backend`). La UI admin se recompila dentro de esa imagen (`Dockerfile.backend`, etapa `admin-builder`). Frontend sin cambios.
+
+Commit `fb9ea44`.
+
 ## Sprint 19 followup — SlotEditor: reset modelo al cambiar provider + Test connection en API (2026-05-05)
 
 ### Why

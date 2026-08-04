@@ -10,7 +10,17 @@ Sprint 18 — **CLOSED 2026-05-03** tras 5 fases + hotfix crítico del reranker.
 Probado en vivo: CBA Lezo → 75 clause segments (Art. 1 a 72 + ANEXO II + III). FR docs con numeración → detectados; FR docs sin numeración → fall-through OK. AU sample SECTION 13.4.1 → detectado.
 
 Antiguas fases 4-5 (modo catálogo, query rewriting cross-lingüe, glossary técnico-legal, MVCC chat protection) parked en IDEAS.md — decidiremos tras validar 1+2+3. Sprint 17 CLOSED 2026-04-24.
-**Last Updated:** 2026-05-01
+**Last Updated:** 2026-08-05
+
+## Sprint 19 followup — Editar URL de frontend por API (SHIPPED 2026-08-05, commit fb9ea44)
+
+**Problema:** frontend en DHCP de oficina sin reserva → su IP de LAN rota y el registro queda apuntando a la vieja; reapuntar exigía editar `frontends.json` a mano + reiniciar. Borrar + re-registrar no vale (id nuevo → huérfana la config de campaña).
+
+**Entregado:** `PATCH /admin/api/v1/frontends/{id}` ahora valida cambios de `url` — normaliza, **409** si otro frontend ya la tiene (siempre), **400** si no responde `GET {url}/internal/config` (~10 s) saltable con `?verify=false`, **404** si el id no existe. El id se preserva → config de campaña intacta. URLs genéricas (IP/hostname/.local/MagicDNS), sin regex IPv4. Cambio surte efecto sin reiniciar (poller lee `list_enabled()` cada tick). Admin UI: botón Edit por fila (nombre + URL), manda `url` solo si cambió. Harness pytest nuevo (antes cero) + 8 tests verdes.
+
+**Caveat mDNS:** el backend en contenedor no resuelve `.local` (multicast filtrado); soporte real (nss-mdns/avahi/host-net) es tarea aparte. El plan es reconciliador launchd que resuelve la IP en el host y empuja URL-con-IP vía `?verify=false`.
+
+**Deploy:** solo backend (`docker-compose.backend.yml`, admin embebido). **Validación pendiente Daniel tras repull Portainer:** editar URL desde el panel; probar `?verify=false` desde el reconciliador.
 
 ## Sprint 16 — Structured Table Pipeline + concurrency fixes
 
