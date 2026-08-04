@@ -36,6 +36,30 @@ logger = logging.getLogger("admin.frontends")
 router = APIRouter(prefix="/admin/api/v1/frontends", tags=["admin-frontends"])
 
 PUSH_TIMEOUT = 5.0
+# Reachability probe for a URL change: the sidecar must answer GET
+# /internal/config. Generous timeout — a frontend that just came up over a
+# slow office LAN shouldn't be rejected as unreachable.
+CONFIG_PROBE_TIMEOUT = 10.0
+
+
+async def _probe_reachable(url: str) -> None:
+    """Confirm a frontend URL is reachable before we point the registry at it.
+
+    Probes the sidecar's `GET /internal/config` (the endpoint the frontend
+    always serves). Raises HTTPException(400) with the underlying error if it
+    doesn't answer. Host-agnostic: works for an IP, a hostname, a `.local`
+    name or a Tailscale MagicDNS name — we decide on reachability, never on
+    the shape of the string. (Caveat: the backend container may not resolve
+    `.local` names even if the host can — that's why the reconciler can pass
+    `?verify=false` and push a pre-resolved IP.)
+    """
+    probe = f"{url.rstrip('/')}/internal/config"
+    try:
+        async with httpx.AsyncClient(timeout=CONFIG_PROBE_TIMEOUT) as client:
+            r = await client.get(probe)
+            r.raise_for_status()
+    except httpx.HTTPError as e:
+        raise HTTPException(400, f"URL not reachable ({probe}): {e}")
 
 
 async def _push(frontend_id: str, path: str, body: dict[str, Any]) -> None:
@@ -109,11 +133,47 @@ async def get_frontend(frontend_id: str, _admin: dict = Depends(require_admin)):
 
 
 @router.patch("/{frontend_id}")
-async def update_frontend(frontend_id: str, req: UpdateRequest, _admin: dict = Depends(require_admin)):
-    patch = {k: v for k, v in req.model_dump().items() if v is not None}
-    updated = registry.update(frontend_id, **patch)
-    if not updated:
+async def update_frontend(
+    frontend_id: str,
+    req: UpdateRequest,
+    verify: bool = True,
+    _admin: dict = Depends(require_admin),
+):
+    """Update a frontend in place. The `frontend_id` never changes, so all
+    campaign config keyed to it (prompts, branding, RAG, auth, LLM overrides,
+    translations) is preserved — we update, we do NOT delete + re-register.
+
+    `enabled` / `name` / `metadata` behave as before. `url` is validated:
+      - normalised (rstrip '/') to match register/registry behaviour;
+      - rejected with 409 if another frontend already owns it (ALWAYS checked,
+        even when verify=false);
+      - reachability-checked with 400 if unreachable, UNLESS `?verify=false`
+        (the launchd reconciler pushes a host-resolved IP the backend
+        container might not otherwise reach the same way).
+
+    The poller reads `registry.list_enabled()` every tick, so a URL change
+    takes effect on the next poll without a restart.
+    """
+    existing = registry.get(frontend_id)
+    if not existing:
         raise HTTPException(404, f"Frontend {frontend_id!r} not found")
+
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+
+    if "url" in patch:
+        new_url = patch["url"].rstrip("/")
+        patch["url"] = new_url
+        # Collision: never let two ids point at the same sidecar. Checked
+        # regardless of verify so the reconciler can't create a duplicate.
+        for other in registry.list_all():
+            if other.get("frontend_id") == frontend_id:
+                continue
+            if (other.get("url") or "").rstrip("/") == new_url:
+                raise HTTPException(409, f"URL {new_url} already used by frontend {other.get('frontend_id')!r}")
+        if verify:
+            await _probe_reachable(new_url)
+
+    updated = registry.update(frontend_id, **patch)
     return {"frontend": _serialise(updated)}
 
 

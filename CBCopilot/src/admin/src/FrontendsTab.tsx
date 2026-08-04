@@ -22,6 +22,11 @@ export default function FrontendsTab() {
   const [newName, setNewName] = useState('')
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
+  // Inline edit of a single frontend's name + URL (id is preserved server-side).
+  const [editingId, setEditingId] = useState('')
+  const [editName, setEditName] = useState('')
+  const [editUrl, setEditUrl] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
   const { t } = useT()
 
   const reload = async () => {
@@ -66,6 +71,51 @@ export default function FrontendsTab() {
       await reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const startEdit = (fe: FrontendInfo) => {
+    setError('')
+    setEditingId(fe.frontend_id)
+    setEditName(fe.name)
+    setEditUrl(fe.url)
+  }
+
+  const cancelEdit = () => {
+    setEditingId('')
+    setEditName('')
+    setEditUrl('')
+  }
+
+  const saveEdit = async (fe: FrontendInfo) => {
+    const nextName = editName.trim()
+    const nextUrl = editUrl.trim()
+    if (!nextName || !nextUrl) {
+      setError(t('generic_required'))
+      return
+    }
+    // Only send fields that actually changed. Critically, omit `url` on a
+    // rename-only edit: sending it would trigger the backend reachability
+    // probe and fail with 400 if the frontend is momentarily down.
+    const patch: { name?: string; url?: string } = {}
+    if (nextName !== fe.name) patch.name = nextName
+    if (nextUrl !== fe.url) patch.url = nextUrl
+    if (!patch.name && !patch.url) {
+      cancelEdit()
+      return
+    }
+    setError('')
+    setSavingEdit(true)
+    try {
+      await updateFrontend(fe.frontend_id, patch)
+      cancelEdit()
+      await reload()
+      setInfo(t('generic_saved'))
+      setTimeout(() => setInfo(''), 2500)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingEdit(false)
     }
   }
 
@@ -131,30 +181,64 @@ export default function FrontendsTab() {
             {frontends.map(fe => (
               <li
                 key={fe.frontend_id}
-                onClick={() => setSelected(fe.frontend_id)}
-                className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${selected === fe.frontend_id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                onClick={() => editingId !== fe.frontend_id && setSelected(fe.frontend_id)}
+                className={`flex items-center gap-3 px-3 py-2 ${editingId === fe.frontend_id ? '' : 'cursor-pointer'} ${selected === fe.frontend_id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
               >
                 <StatusDot status={fe.status} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-gray-800 truncate">{fe.name}</div>
-                  <div className="text-xs text-gray-500 truncate">{fe.url}</div>
-                </div>
-                <div className="text-xs text-gray-400 whitespace-nowrap">
-                  {fe.last_seen
-                    ? t('frontends_last_seen', { time: new Date(fe.last_seen).toLocaleTimeString() })
-                    : t('frontends_last_seen_never')}
-                </div>
-                <label onClick={e => e.stopPropagation()} className="flex items-center gap-1 text-xs">
-                  <input type="checkbox" checked={fe.enabled}
-                    onChange={e => toggleEnabled(fe.frontend_id, e.target.checked)} />
-                  {t('frontends_enabled_toggle')}
-                </label>
-                <button
-                  onClick={e => { e.stopPropagation(); removeFrontend(fe.frontend_id, fe.name) }}
-                  className="text-xs text-uni-red hover:underline"
-                >
-                  {t('frontends_unregister')}
-                </button>
+                {editingId === fe.frontend_id ? (
+                  <>
+                    <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-2 gap-2" onClick={e => e.stopPropagation()}>
+                      <input value={editName} onChange={e => setEditName(e.target.value)}
+                        placeholder={t('frontends_register_name_label')}
+                        className="w-full border border-gray-300 rounded-lg px-2 py-1 text-sm" />
+                      <input value={editUrl} onChange={e => setEditUrl(e.target.value)}
+                        placeholder={t('frontends_register_url_label')}
+                        className="w-full border border-gray-300 rounded-lg px-2 py-1 text-sm font-mono" />
+                    </div>
+                    <button
+                      onClick={e => { e.stopPropagation(); saveEdit(fe) }}
+                      disabled={savingEdit}
+                      className="text-xs bg-uni-blue text-white rounded-lg px-2.5 py-1 hover:opacity-90 disabled:opacity-50"
+                    >
+                      {savingEdit ? t('generic_saving') : t('generic_save')}
+                    </button>
+                    <button
+                      onClick={e => { e.stopPropagation(); cancelEdit() }}
+                      className="text-xs text-gray-500 hover:underline"
+                    >
+                      {t('generic_cancel')}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-800 truncate">{fe.name}</div>
+                      <div className="text-xs text-gray-500 truncate">{fe.url}</div>
+                    </div>
+                    <div className="text-xs text-gray-400 whitespace-nowrap">
+                      {fe.last_seen
+                        ? t('frontends_last_seen', { time: new Date(fe.last_seen).toLocaleTimeString() })
+                        : t('frontends_last_seen_never')}
+                    </div>
+                    <label onClick={e => e.stopPropagation()} className="flex items-center gap-1 text-xs">
+                      <input type="checkbox" checked={fe.enabled}
+                        onChange={e => toggleEnabled(fe.frontend_id, e.target.checked)} />
+                      {t('frontends_enabled_toggle')}
+                    </label>
+                    <button
+                      onClick={e => { e.stopPropagation(); startEdit(fe) }}
+                      className="text-xs text-uni-blue hover:underline"
+                    >
+                      {t('frontends_edit')}
+                    </button>
+                    <button
+                      onClick={e => { e.stopPropagation(); removeFrontend(fe.frontend_id, fe.name) }}
+                      className="text-xs text-uni-red hover:underline"
+                    >
+                      {t('frontends_unregister')}
+                    </button>
+                  </>
+                )}
               </li>
             ))}
           </ul>

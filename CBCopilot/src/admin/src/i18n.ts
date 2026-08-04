@@ -217,7 +217,7 @@ export type AdminTranslationKeys =
   | 'frontends_register_helper'
   | 'frontends_register_name_placeholder' | 'frontends_register_url_placeholder'
   | 'frontends_last_seen' | 'frontends_last_seen_never'
-  | 'frontends_enabled_toggle' | 'frontends_unregister'
+  | 'frontends_enabled_toggle' | 'frontends_unregister' | 'frontends_edit'
   | 'frontends_registered_info' | 'frontends_unregister_confirm'
   // Translation bundle controls (12B additions)
   | 'translations_coverage_disclaimer' | 'translations_coverage_instructions'
@@ -620,6 +620,7 @@ const EN: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'enabled',
   frontends_unregister: 'Unregister',
+  frontends_edit: 'Edit',
   frontends_registered_info: 'Registered as "{name}"',
   frontends_unregister_confirm: 'Unregister "{name}"? Backend will stop polling it. Per-frontend config (companies, branding, prompts, RAG) is NOT deleted from disk and will be reclaimed if you re-register a frontend with the same name.',
   // Translation bundle controls
@@ -1070,6 +1071,7 @@ const ES: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'habilitado',
   frontends_unregister: 'Dar de baja',
+  frontends_edit: 'Editar',
   frontends_registered_info: 'Registrado como "{name}"',
   frontends_unregister_confirm: '¿Dar de baja "{name}"? El backend dejará de hacer polling. La configuración por frontend (empresas, identidad visual, prompts, RAG) NO se elimina del disco y se recuperará si vuelve a registrar un frontend con el mismo nombre.',
 
@@ -1460,6 +1462,7 @@ const DE: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'aktiviert',
   frontends_unregister: 'Abmelden',
+  frontends_edit: 'Bearbeiten',
   frontends_registered_info: 'Registriert als "{name}"',
   frontends_unregister_confirm: '"{name}" abmelden? Das Backend stellt das Polling ein. Die frontend-spezifische Konfiguration (Unternehmen, Branding, Prompts, RAG) wird NICHT vom Datenträger gelöscht und wird wiederhergestellt, wenn Sie ein Frontend mit demselben Namen erneut registrieren.',
 
@@ -1850,6 +1853,7 @@ const FR: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'activé',
   frontends_unregister: 'Désenregistrer',
+  frontends_edit: 'Modifier',
   frontends_registered_info: 'Enregistré sous le nom "{name}"',
   frontends_unregister_confirm: 'Désenregistrer "{name}" ? Le backend cessera de l\'interroger. La configuration par frontend (entreprises, identité visuelle, prompts, RAG) n\'est PAS supprimée du disque et sera récupérée si vous réenregistrez un frontend portant le même nom.',
 
@@ -2240,6 +2244,7 @@ const IT: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'abilitato',
   frontends_unregister: 'Annulla registrazione',
+  frontends_edit: 'Modifica',
   frontends_registered_info: 'Registrato come "{name}"',
   frontends_unregister_confirm: 'Annullare la registrazione di "{name}"? Il backend interromperà il polling. La configurazione per frontend (aziende, branding, prompt, RAG) NON viene eliminata dal disco e sarà recuperata se si registra di nuovo un frontend con lo stesso nome.',
 
@@ -2630,6 +2635,7 @@ const PT: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'ativado',
   frontends_unregister: 'Cancelar registo',
+  frontends_edit: 'Editar',
   frontends_registered_info: 'Registado como "{name}"',
   frontends_unregister_confirm: 'Cancelar o registo de "{name}"? O backend deixará de fazer polling. A configuração por frontend (empresas, branding, prompts, RAG) NÃO é eliminada do disco e será recuperada se voltar a registar um frontend com o mesmo nome.',
 
@@ -3020,6 +3026,7 @@ const NL: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'ingeschakeld',
   frontends_unregister: 'Uitschrijven',
+  frontends_edit: 'Bewerken',
   frontends_registered_info: 'Geregistreerd als "{name}"',
   frontends_unregister_confirm: '"{name}" uitschrijven? De backend stopt met polling. De frontend-specifieke configuratie (bedrijven, huisstijl, prompts, RAG) wordt NIET van schijf verwijderd en wordt hersteld als u een frontend met dezelfde naam opnieuw registreert.',
 
@@ -3410,6 +3417,7 @@ const PL: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'włączony',
   frontends_unregister: 'Wyrejestruj',
+  frontends_edit: 'Edytuj',
   frontends_registered_info: 'Zarejestrowany jako "{name}"',
   frontends_unregister_confirm: 'Wyrejestrować "{name}"? Backend przestanie go odpytywać. Konfiguracja per frontend (firmy, branding, prompty, RAG) NIE jest usuwana z dysku i zostanie przywrócona po ponownym zarejestrowaniu frontendu o tej samej nazwie.',
 
@@ -3801,6 +3809,7 @@ const HR: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'omogućeno',
   frontends_unregister: 'Odjavi',
+  frontends_edit: 'Uredi',
   frontends_registered_info: 'Registriran kao "{name}"',
   frontends_unregister_confirm: 'Odjaviti "{name}"? Backend će prestati s pollingom. Konfiguracija po frontendu (tvrtke, branding, promptovi, RAG) se NE briše s diska i bit će obnovljena ako ponovo registrirate frontend s istim nazivom.',
 
@@ -4191,6 +4200,7 @@ const SV: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'aktiverad',
   frontends_unregister: 'Avregistrera',
+  frontends_edit: 'Redigera',
   frontends_registered_info: 'Registrerat som "{name}"',
   frontends_unregister_confirm: 'Avregistrera "{name}"? Backendsystemet slutar att polla det. Frontend-specifik konfiguration (företag, grafisk profil, prompts, RAG) RADERAS INTE från disk och återhämtas om du registrerar ett frontend med samma namn igen.',
 
@@ -4581,6 +4591,7 @@ const TR: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'etkin',
   frontends_unregister: 'Kaydı kaldır',
+  frontends_edit: 'Düzenle',
   frontends_registered_info: '"{name}" olarak kayıtlı',
   frontends_unregister_confirm: '"{name}" kaydı kaldırılsın mı? Backend polling\'i durduracak. Frontend başına yapılandırma (şirketler, marka kimliği, promptlar, RAG) diskten SİLİNMEZ; aynı adla yeniden kayıt yapılırsa geri yüklenir.',
 
@@ -4975,6 +4986,7 @@ const AR: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'مفعَّل',
   frontends_unregister: 'إلغاء التسجيل',
+  frontends_edit: 'تعديل',
   frontends_registered_info: 'مسجَّل باسم "{name}"',
   frontends_unregister_confirm: 'إلغاء تسجيل "{name}"؟ سيتوقف backend عن استطلاعه. إعداد الواجهة الخاصة (الشركات، الهوية البصرية، الـ prompts، RAG) لن يُحذَف من القرص، وسيُستعاد عند إعادة تسجيل واجهة بالاسم ذاته.',
 
@@ -5365,6 +5377,7 @@ const JA: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: '有効',
   frontends_unregister: '登録解除',
+  frontends_edit: '編集',
   frontends_registered_info: '"{name}" として登録済み',
   frontends_unregister_confirm: '"{name}" の登録を解除しますか？ backendはpollingを停止します。フロントエンドごとの設定（企業、ブランディング、prompt、RAG）はディスクから削除されず、同じ名前で再登録すれば復元されます。',
 
@@ -5756,6 +5769,7 @@ const TH: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'เปิดใช้งาน',
   frontends_unregister: 'ยกเลิกการลงทะเบียน',
+  frontends_edit: 'แก้ไข',
   frontends_registered_info: 'ลงทะเบียนเป็น "{name}"',
   frontends_unregister_confirm: 'ยกเลิกการลงทะเบียน "{name}" หรือไม่? backend จะหยุด polling ข้อมูลการตั้งค่าต่อ frontend (บริษัท, การสร้างแบรนด์, prompts, RAG) จะไม่ถูกลบออกจากดิสก์ และจะถูกกู้คืนหากลงทะเบียน frontend ที่มีชื่อเดียวกันใหม่',
 
@@ -6147,6 +6161,7 @@ const ID: AdminTranslations = {
   frontends_last_seen_never: '—',
   frontends_enabled_toggle: 'aktif',
   frontends_unregister: 'Batalkan pendaftaran',
+  frontends_edit: 'Edit',
   frontends_registered_info: 'Terdaftar sebagai "{name}"',
   frontends_unregister_confirm: 'Batalkan pendaftaran "{name}"? Backend akan berhenti melakukan polling. Konfigurasi per-frontend (perusahaan, branding, prompt, RAG) TIDAK dihapus dari disk dan akan dipulihkan jika Anda mendaftarkan kembali frontend dengan nama yang sama.',
 

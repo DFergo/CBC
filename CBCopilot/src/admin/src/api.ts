@@ -534,8 +534,16 @@ export async function registerFrontend(data: { url: string; name: string }): Pro
   })
 }
 
-export async function updateFrontend(frontendId: string, patch: { url?: string; name?: string; enabled?: boolean; metadata?: Record<string, unknown> }): Promise<{ frontend: FrontendInfo }> {
-  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}`, {
+export async function updateFrontend(
+  frontendId: string,
+  patch: { url?: string; name?: string; enabled?: boolean; metadata?: Record<string, unknown> },
+  // verify=false skips ONLY the reachability probe (the 409 URL-collision
+  // check still runs). Used by an external reconciler pushing a pre-resolved
+  // IP; the admin panel always leaves it at the default (verify).
+  opts?: { verify?: boolean },
+): Promise<{ frontend: FrontendInfo }> {
+  const query = opts?.verify === false ? '?verify=false' : ''
+  return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}${query}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   })
