@@ -1,0 +1,44 @@
+[
+  {
+    "name": "UNI Global Union",
+    "type": "global union federation",
+    "country": "international",
+    "description": "Global union federation representing 20+ million workers in services and skills sectors, including graphical, packaging, commerce, finance, and post & logistics."
+  },
+  {
+    "name": "UNI Global Union — Graphical & Packaging",
+    "type": "sectoral global union",
+    "country": "international",
+    "description": "UNI's sector covering workers in printing, packaging, paper products, and related industries worldwide. Coordinates multinational bargaining and EWC work in the sector."
+  },
+  {
+    "name": "International Labour Organization (ILO)",
+    "type": "UN specialised agency",
+    "country": "international",
+    "description": "Tripartite UN agency setting international labour standards. Key conventions for CBC context: C087, C098, C135, C154 (freedom of association, bargaining, workers' representatives)."
+  },
+  {
+    "name": "International Trade Union Confederation (ITUC)",
+    "type": "international union confederation",
+    "country": "international",
+    "description": "Peak international union body representing national union centres; coordinates global policy and solidarity work."
+  },
+  {
+    "name": "IndustriALL Global Union",
+    "type": "global union federation",
+    "country": "international",
+    "description": "Global federation for workers in mining, energy, and manufacturing industries; partners with UNI on cross-sector coordination where relevant."
+  },
+  {
+    "name": "Building and Wood Workers' International (BWI)",
+    "type": "global union federation",
+    "country": "international",
+    "description": "Global federation for construction, building materials, wood and forestry workers; relevant when pulp/paper upstream supply chains are involved."
+  },
+  {
+    "name": "European Trade Union Confederation (ETUC)",
+    "type": "regional union confederation",
+    "country": "Europe",
+    "description": "European-level union confederation representing national unions across the EU/EEA; social partner in EU-level sectoral and cross-industry social dialogue."
+  }
+]

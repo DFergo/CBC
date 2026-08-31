@@ -1,0 +1,340 @@
+"""Admin RAG management (SPEC §4.2)."""
+import asyncio
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
+
+from src.api.v1.admin.auth import require_admin
+from src.core.config import config
+from src.services import document_metadata, rag_service, rag_store
+
+router = APIRouter(prefix="/admin/api/v1", tags=["admin-rag"])
+
+
+MAX_UPLOAD_BYTES = config.file_max_size_mb * 1024 * 1024
+
+
+def _qs(frontend_id: str | None, company_slug: str | None) -> tuple[str | None, str | None]:
+    if company_slug and not frontend_id:
+        raise HTTPException(status_code=400, detail="company_slug requires frontend_id")
+    return frontend_id, company_slug
+
+
+def _serialize(docs: list[rag_store.RAGDocument]) -> list[dict]:
+    return [{"name": d.name, "size": d.size, "modified": d.modified} for d in docs]
+
+
+@router.get("/rag/documents")
+async def list_documents(frontend_id: str | None = None, company_slug: str | None = None, _admin: dict = Depends(require_admin)):
+    fid, slug = _qs(frontend_id, company_slug)
+    return {"documents": _serialize(rag_store.list_documents(fid, slug))}
+
+
+@router.post("/rag/upload", status_code=201)
+async def upload_document(
+    file: UploadFile = File(...),
+    frontend_id: str | None = None,
+    company_slug: str | None = None,
+    _admin: dict = Depends(require_admin),
+):
+    fid, slug = _qs(frontend_id, company_slug)
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename")
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max {config.file_max_size_mb} MB.",
+        )
+    try:
+        doc = rag_store.save_document(file.filename, content, fid, slug)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"document": {"name": doc.name, "size": doc.size, "modified": doc.modified}}
+
+
+@router.delete("/rag/documents/{name}")
+async def delete_document(name: str, frontend_id: str | None = None, company_slug: str | None = None, _admin: dict = Depends(require_admin)):
+    fid, slug = _qs(frontend_id, company_slug)
+    try:
+        ok = rag_store.delete_document(name, fid, slug)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Document {name!r} not found")
+    return {"status": "deleted", "name": name}
+
+
+@router.get("/rag/stats")
+async def get_stats(frontend_id: str | None = None, company_slug: str | None = None, _admin: dict = Depends(require_admin)):
+    fid, slug = _qs(frontend_id, company_slug)
+    s = rag_store.stats(fid, slug)
+    return {
+        "document_count": s.document_count,
+        "total_size_bytes": s.total_size_bytes,
+        "indexed": s.indexed,
+        "node_count": s.node_count,
+        "note": s.note,
+    }
+
+
+@router.post("/rag/reindex")
+async def reindex(frontend_id: str | None = None, company_slug: str | None = None, _admin: dict = Depends(require_admin)):
+    fid, slug = _qs(frontend_id, company_slug)
+    # Sprint 16 Fase 0: offload to worker thread so the FastAPI event loop
+    # stays responsive (admin UI + polling_loop keep ticking) during the
+    # minutes-long reindex.
+    s = await asyncio.to_thread(rag_store.reindex, fid, slug)
+    return {
+        "status": "ok",
+        "document_count": s.document_count,
+        "total_size_bytes": s.total_size_bytes,
+        "indexed": s.indexed,
+        "node_count": s.node_count,
+        "note": s.note,
+    }
+
+
+@router.post("/rag/reindex-all")
+async def reindex_all(_admin: dict = Depends(require_admin)):
+    """Cascade reindex: rebuild global + every frontend + every company.
+    Intended for the "Reindex entire corpus" button on the global RAG
+    section. Offloaded to a worker thread (Sprint 16 Fase 0) so admin UI
+    + polling_loop remain responsive during the long-running rebuild."""
+    stats = await asyncio.to_thread(rag_service.reindex_all_scopes)
+    return {"status": "ok", "scopes_reindexed": len(stats), "stats": stats}
+
+
+@router.post("/rag/reindex-frontend-cascade/{frontend_id}")
+async def reindex_frontend_cascade(frontend_id: str, _admin: dict = Depends(require_admin)):
+    """Cascade reindex for one frontend: the frontend-tier index + every
+    company under it. Global is not touched. Used by the frontend-tier
+    "Reindex frontend + its companies" button.
+
+    Offloaded to a worker thread (Sprint 16 Fase 0) so the event loop stays
+    free while the cascade runs."""
+    stats = await asyncio.to_thread(rag_service.reindex_frontend_cascade, frontend_id)
+    return {
+        "status": "ok",
+        "frontend_id": frontend_id,
+        "scopes_reindexed": len(stats),
+        "stats": stats,
+    }
+
+
+# --- Document metadata (per-directory metadata.json) ---
+
+class DocMetadataPatch(BaseModel):
+    country: str = ""
+    language: str = ""
+    document_type: str = ""
+
+
+@router.get("/rag/metadata")
+async def get_metadata(frontend_id: str | None = None, company_slug: str | None = None, _admin: dict = Depends(require_admin)):
+    fid, slug = _qs(frontend_id, company_slug)
+    sk = rag_service.scope_key_for(fid, slug)
+    return {"scope_key": sk, "metadata": document_metadata.load(sk)}
+
+
+@router.put("/rag/metadata/{filename}")
+async def put_metadata(
+    filename: str,
+    patch: DocMetadataPatch,
+    frontend_id: str | None = None,
+    company_slug: str | None = None,
+    _admin: dict = Depends(require_admin),
+):
+    fid, slug = _qs(frontend_id, company_slug)
+    sk = rag_service.scope_key_for(fid, slug)
+    merged = document_metadata.update_one(sk, filename, patch.model_dump())
+    # Refresh derived country_tags immediately so the admin sees the company chips update.
+    rag_service._sync_derived_country_tags(sk)
+    return {"scope_key": sk, "filename": filename, "metadata": merged}
+
+
+@router.delete("/rag/metadata/{filename}")
+async def delete_metadata(
+    filename: str,
+    frontend_id: str | None = None,
+    company_slug: str | None = None,
+    _admin: dict = Depends(require_admin),
+):
+    fid, slug = _qs(frontend_id, company_slug)
+    sk = rag_service.scope_key_for(fid, slug)
+    removed = document_metadata.remove_one(sk, filename)
+    rag_service._sync_derived_country_tags(sk)
+    return {"scope_key": sk, "filename": filename, "removed": removed}
+
+
+# --- RAG settings (Sprint 9) ---
+#
+# Admin-editable knobs that change how the index is built. The embedder /
+# reranker models are surfaced read-only — changing them means rebuilding the
+# Docker image so the weights are pre-downloaded; admins who want to
+# experiment should edit deployment_backend.json + rebuild.
+#
+# Contextual Retrieval IS runtime-togglable but triggers a full reindex of
+# every scope because existing vectors were computed without the prepended
+# context line. The endpoint returns stats for the reindex.
+
+class ContextualToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/rag/settings")
+async def get_rag_settings(_admin: dict = Depends(require_admin)):
+    """Snapshot of the active RAG configuration + index stats across every
+    scope. Frontend shows this on the admin General tab so the operator can
+    see at a glance what the pipeline looks like and what toggling CR costs."""
+    return {
+        "embedding_model": config.rag_embedding_model,
+        "chunk_size": config.rag_chunk_size,
+        "reranker_enabled": config.rag_reranker_enabled,
+        "reranker_model": config.rag_reranker_model,
+        "reranker_fetch_k": config.rag_reranker_fetch_k,
+        "reranker_top_n": config.rag_reranker_top_n,
+        "contextual_enabled": config.rag_contextual_enabled,
+        # Sprint 18 Fase 4 — admin-tunable retrieval + watcher knobs.
+        "tuning": {
+            "top_k_floor": config.rag_top_k_floor,
+            "top_k_ceil": config.rag_top_k_ceil,
+            "top_k_per_doc": config.rag_top_k_per_doc,
+            "tables_top_k_floor": config.rag_tables_top_k_floor,
+            "tables_top_k_ceil_single": config.rag_tables_top_k_ceil_single,
+            "tables_top_k_ceil_compare_all": config.rag_tables_top_k_ceil_compare_all,
+            "watcher_debounce_seconds": config.rag_watcher_debounce_seconds,
+            "watcher_max_hold_seconds": config.rag_watcher_max_hold_seconds,
+            "watcher_lock_replan_seconds": config.rag_watcher_lock_replan_seconds,
+        },
+    }
+
+
+class RAGSettingsUpdate(BaseModel):
+    """Sprint 15 phase 3 — partial update of the editable RAG settings.
+    Both fields optional; pass only what you want to change."""
+    chunk_size: int | None = None
+    embedding_model: str | None = None
+
+
+@router.patch("/rag/settings")
+async def update_rag_settings(req: RAGSettingsUpdate, _admin: dict = Depends(require_admin)):
+    """Update the in-memory RAG config (chunk_size + embedding_model).
+    Returns whether a wipe-and-reindex is needed to apply the change.
+
+    Changing either field does NOT automatically rebuild the index — the admin
+    must separately POST /rag/wipe-and-reindex-all. This two-step flow lets
+    the admin change both values in one save before paying the reindex cost.
+
+    Persistence: values are in-memory only (survives until container restart).
+    Matches the Sprint 9 contextual-toggle pattern. For permanent changes,
+    edit deployment_backend.json and redeploy."""
+    try:
+        result = rag_service.update_runtime_rag_settings(
+            chunk_size=req.chunk_size,
+            embedding_model=req.embedding_model,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+class RAGTuningUpdate(BaseModel):
+    """Sprint 18 Fase 4 — partial update of admin-tunable retrieval and watcher
+    knobs. All fields optional; pass only what you want to change. Validated
+    against sane ranges in `rag_service.update_runtime_rag_tuning`.
+
+    Effect is immediate (next query / next watcher fire reads the new value)
+    AND persisted to runtime_overrides.json so it survives container restart.
+    No reindex needed — these are query-path / watcher-path settings, not
+    indexing settings."""
+    top_k_floor: int | None = None
+    top_k_ceil: int | None = None
+    top_k_per_doc: int | None = None
+    tables_top_k_floor: int | None = None
+    tables_top_k_ceil_single: int | None = None
+    tables_top_k_ceil_compare_all: int | None = None
+    watcher_debounce_seconds: int | None = None
+    watcher_max_hold_seconds: int | None = None
+    watcher_lock_replan_seconds: int | None = None
+
+
+@router.patch("/rag/tuning")
+async def update_rag_tuning(req: RAGTuningUpdate, _admin: dict = Depends(require_admin)):
+    """Update retrieval + watcher knobs in memory AND persist to
+    runtime_overrides.json. Returns the new values plus a `changed` map so
+    the admin UI can show which fields actually moved."""
+    try:
+        result = rag_service.update_runtime_rag_tuning(
+            **{k: v for k, v in req.model_dump().items() if v is not None}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@router.post("/rag/wipe-and-reindex-all")
+async def wipe_and_reindex_all(_admin: dict = Depends(require_admin)):
+    """Nuclear reindex. Wipes /app/data/chroma entirely + every in-memory
+    cache (LlamaIndex wrappers, BM25 retrievers, embedder, reranker), then
+    re-ingests every registered scope with the current
+    `rag_embedding_model` + `rag_chunk_size`.
+
+    Required after changing embedding model (dim change breaks the
+    collection) or chunk_size (new splits needed). Offloaded to a worker
+    thread via asyncio.to_thread so it doesn't block the FastAPI event
+    loop (otherwise polling_loop and other admin requests starve for the
+    reindex's ~minutes duration, Sprint 15 phase 6 fix)."""
+    try:
+        result = await asyncio.to_thread(rag_service.wipe_chroma_and_reindex_all)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Wipe & reindex failed: {e}")
+    return result
+
+
+@router.post("/rag/settings/contextual")
+async def toggle_contextual_retrieval(req: ContextualToggleRequest, _admin: dict = Depends(require_admin)):
+    """Flip the Contextual Retrieval toggle. When it changes, reindex every
+    scope — existing chunks were embedded without the context line (or with
+    it, if we're turning it off) and their vectors are stale.
+
+    Returns per-scope reindex counts so the admin can see what happened.
+    Since CR calls the summariser LLM per chunk, the whole reindex can take
+    minutes to hours on big corpora. The endpoint is synchronous — the admin
+    UI should show a progress spinner + note the expected delay.
+    """
+    if req.enabled == config.rag_contextual_enabled:
+        return {
+            "enabled": req.enabled,
+            "changed": False,
+            "scopes_reindexed": 0,
+            "note": "Already in requested state; no reindex triggered.",
+        }
+    # Flip the in-memory config AND persist to runtime_overrides.json so the
+    # next container restart picks it up (Sprint 15 phase 4). Before this, a
+    # restart silently reverted to the deployment_backend.json default.
+    from src.services import runtime_overrides_store
+    config.rag_contextual_enabled = req.enabled
+    runtime_overrides_store.save_override("rag_contextual_enabled", req.enabled)
+    try:
+        # Sprint 16 Fase 0: CR-wide reindex can take minutes-to-hours. Must
+        # run in a worker thread so the admin UI + polling_loop keep working
+        # while it churns.
+        stats = await asyncio.to_thread(rag_service.reindex_all_scopes)
+    except Exception as e:
+        # Roll back the toggle if the reindex blows up mid-way — otherwise
+        # we'd be in a half-indexed state with config saying "on".
+        config.rag_contextual_enabled = not req.enabled
+        runtime_overrides_store.save_override("rag_contextual_enabled", not req.enabled)
+        raise HTTPException(status_code=500, detail=f"Reindex failed, toggle rolled back: {e}")
+    return {
+        "enabled": req.enabled,
+        "changed": True,
+        "scopes_reindexed": len(stats),
+        "stats": stats,
+        "note": (
+            "Contextual Retrieval is a runtime toggle; edit deployment_backend.json "
+            "and redeploy if you want it to persist across container restarts."
+        ),
+    }

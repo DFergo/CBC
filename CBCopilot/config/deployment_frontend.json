@@ -1,0 +1,12 @@
+{
+  "role": "frontend",
+  "frontend_id": "packaging-eu",
+  "auth_required": true,
+  "disclaimer_enabled": true,
+  "instructions_enabled": true,
+  "compare_all_enabled": true,
+  "session_resume_hours": 48,
+  "auto_close_hours": 72,
+  "auto_destroy_hours": 0,
+  "output_user_summary": true
+}

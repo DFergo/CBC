@@ -1,0 +1,3 @@
+# Dev/test-only deps. Runtime deps live in src/backend/requirements.txt.
+# Install with:  pip install -r src/backend/requirements.txt -r requirements-dev.txt
+pytest==8.3.4

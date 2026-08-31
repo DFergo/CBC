@@ -1,0 +1,112 @@
+[
+  {
+    "term": "collective bargaining agreement",
+    "definition": "A written contract between an employer (or group of employers) and a union that sets wages, working conditions, and other employment terms for a defined group of workers, usually for a fixed period.",
+    "translations": {
+      "en": "collective bargaining agreement",
+      "es": "convenio colectivo",
+      "fr": "convention collective",
+      "de": "Tarifvertrag",
+      "pt": "acordo coletivo de trabalho"
+    }
+  },
+  {
+    "term": "sectoral bargaining",
+    "definition": "Collective bargaining conducted at industry or sector level rather than at a single company, typically producing agreements that apply to all employers in that sector (or those signatories).",
+    "translations": {
+      "en": "sectoral bargaining",
+      "es": "negociación sectorial",
+      "fr": "négociation de branche",
+      "de": "Branchentarifvertrag",
+      "pt": "negociação setorial"
+    }
+  },
+  {
+    "term": "works council",
+    "definition": "A workplace-level body of elected worker representatives with information, consultation, and in some jurisdictions co-determination rights, distinct from but often coordinated with the union.",
+    "translations": {
+      "en": "works council",
+      "es": "comité de empresa",
+      "fr": "comité d'entreprise",
+      "de": "Betriebsrat",
+      "pt": "comissão de trabalhadores"
+    }
+  },
+  {
+    "term": "European Works Council",
+    "definition": "Transnational body representing employees of large multinational companies operating in the EU/EEA, with information and consultation rights on cross-border issues (EU Directive 2009/38/EC).",
+    "translations": {
+      "en": "European Works Council",
+      "es": "Comité de Empresa Europeo",
+      "fr": "Comité d'entreprise européen",
+      "de": "Europäischer Betriebsrat",
+      "pt": "Conselho de Empresa Europeu"
+    }
+  },
+  {
+    "term": "minimum wage",
+    "definition": "The lowest legal hourly or monthly wage an employer may pay a worker, set by statute or by a binding CBA.",
+    "translations": {
+      "en": "minimum wage",
+      "es": "salario mínimo",
+      "fr": "salaire minimum",
+      "de": "Mindestlohn",
+      "pt": "salário mínimo"
+    }
+  },
+  {
+    "term": "working time",
+    "definition": "The period during which a worker is at the employer's disposal and carrying out their duties. CBAs commonly set weekly maximums, break rules, and overtime thresholds.",
+    "translations": {
+      "en": "working time",
+      "es": "jornada laboral",
+      "fr": "temps de travail",
+      "de": "Arbeitszeit",
+      "pt": "tempo de trabalho"
+    }
+  },
+  {
+    "term": "seniority",
+    "definition": "Length of service with an employer, typically used as a basis for entitlements such as pay scale progression, leave accrual, and severance.",
+    "translations": {
+      "en": "seniority",
+      "es": "antigüedad",
+      "fr": "ancienneté",
+      "de": "Betriebszugehörigkeit",
+      "pt": "antiguidade"
+    }
+  },
+  {
+    "term": "severance pay",
+    "definition": "Compensation owed to a worker on termination of employment, typically calculated from seniority, salary, and the cause of termination.",
+    "translations": {
+      "en": "severance pay",
+      "es": "indemnización por despido",
+      "fr": "indemnité de licenciement",
+      "de": "Abfindung",
+      "pt": "indemnização por despedimento"
+    }
+  },
+  {
+    "term": "union recognition",
+    "definition": "An employer's formal acknowledgement of a union as the bargaining representative of a specified group of workers, a prerequisite for enforceable collective bargaining.",
+    "translations": {
+      "en": "union recognition",
+      "es": "reconocimiento sindical",
+      "fr": "reconnaissance syndicale",
+      "de": "Gewerkschaftsanerkennung",
+      "pt": "reconhecimento sindical"
+    }
+  },
+  {
+    "term": "right to strike",
+    "definition": "Workers' legally protected ability to collectively withhold labour to press demands, subject to national law and often to CBA-level procedural rules (notice, ballots, peace obligations).",
+    "translations": {
+      "en": "right to strike",
+      "es": "derecho de huelga",
+      "fr": "droit de grève",
+      "de": "Streikrecht",
+      "pt": "direito à greve"
+    }
+  }
+]
