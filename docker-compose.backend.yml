@@ -12,6 +12,7 @@
 # name, so multiple stacks can coexist on one host without colliding.
 services:
   cbc-backend:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.backend

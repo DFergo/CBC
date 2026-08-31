@@ -15,6 +15,7 @@
 # so each stack gets its own isolated `/app/data` — no shared state.
 services:
   cbc-frontend:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.frontend
