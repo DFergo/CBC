@@ -3,6 +3,17 @@
 // with the same paste-or-env-var + sentinel dance + "Test connection"),
 // adapted for the two-provider-type-only shape of the RAG pipeline slots.
 //
+// Sprint 20 followup (Daniel's feedback, 2026-09-07): no vendor gets baked
+// in as its own named provider — "api" is generic (works with oMLX, vLLM,
+// HF TEI, OpenAI, or anything else speaking the same protocol) and the
+// model list is always auto-detected from `GET {endpoint}/models` rather
+// than typed against a fixed name. This also fixed a real bug: the probe
+// used to discard the detected model list whenever the (optional) deep
+// round-trip check failed — e.g. because no model was picked yet — forcing
+// the admin to guess an exact model string by hand even though the server
+// had already told us what it has loaded. `runProbe` below always keeps
+// `r.models` regardless of `r.ok`.
+//
 // Reused twice by RAGPipelineSection: once for `embedding`, once for
 // `reranker` (which additionally shows enabled/top_n fields via `kind`).
 import { useEffect, useState } from 'react'
@@ -21,7 +32,23 @@ interface Props {
   disabled?: boolean
 }
 
-const OMLX_ENDPOINT_PLACEHOLDER = 'http://host.docker.internal:1245/v1'
+// Models we've actually tested end-to-end (live, against a real oMLX
+// instance) and can vouch for — surfaced as a "(recommended)" hint in the
+// dropdown when the provider happens to expose one of these, never as a
+// restriction. Matched by substring so naming variants (e.g.
+// "bge-m3-mlx-fp16", "BAAI/bge-m3") still get flagged. Both are
+// multilingual: BGE-M3 covers 100+ languages; the same recommendation logic
+// applies to any future validated model — extend this list, don't replace
+// the auto-detection.
+const RECOMMENDED_SUBSTRINGS: Record<'embedding' | 'reranker', string[]> = {
+  embedding: ['bge-m3'],
+  reranker: ['bge-reranker-v2-m3'],
+}
+
+function isRecommended(kind: 'embedding' | 'reranker', modelId: string): boolean {
+  const needle = modelId.toLowerCase()
+  return RECOMMENDED_SUBSTRINGS[kind].some(s => needle.includes(s))
+}
 
 export default function EmbeddingSlotEditor({
   kind, label, hint, slot, onChange, localModelOptions, disabled = false,
@@ -47,13 +74,22 @@ export default function EmbeddingSlotEditor({
         api_key: slot.api_key || null,
         api_key_env: slot.api_key_env || null,
       })
+      // Always keep the detected model list, even on failure — the backend
+      // already returns it whenever `GET /models` succeeded, regardless of
+      // whether the (optional) deep round-trip against the CURRENTLY
+      // SELECTED model also succeeded. Discarding it here was the bug that
+      // forced admins to type an exact model name blind.
+      setProbedModels(r.models)
       if (r.ok) {
         setProbeStatus('ok')
         setProbeMessage(`OK · ${r.models.length} model${r.models.length === 1 ? '' : 's'}`)
-        setProbedModels(r.models)
       } else {
         setProbeStatus('error')
-        setProbeMessage(r.error?.slice(0, 100) || `HTTP ${r.status_code}`)
+        setProbeMessage(
+          r.models.length > 0
+            ? `${r.models.length} model${r.models.length === 1 ? '' : 's'} found, but: ${(r.error || `HTTP ${r.status_code}`).slice(0, 90)}`
+            : (r.error?.slice(0, 100) || `HTTP ${r.status_code}`),
+        )
       }
     } catch (e) {
       setProbeStatus('error')
@@ -70,24 +106,20 @@ export default function EmbeddingSlotEditor({
         api_key: null,
         api_key_env: null,
       } as Partial<AnySlot>)
-    } else if (provider === 'omlx') {
-      onChange({
-        provider,
-        model: '',
-        api_endpoint: slot.api_endpoint || OMLX_ENDPOINT_PLACEHOLDER,
-      } as Partial<AnySlot>)
     } else {
-      onChange({
-        provider,
-        model: '',
-        api_endpoint: slot.provider === 'omlx' ? slot.api_endpoint : '',
-      } as Partial<AnySlot>)
+      onChange({ provider, model: '' } as Partial<AnySlot>)
     }
   }
 
   const dropdownModels = (() => {
     if (slot.provider === 'local') return localModelOptions
-    if (probedModels.length > 0) return probedModels
+    if (probedModels.length > 0) {
+      // Recommended (validated) models float to the top; rest stay in
+      // whatever order the server reported them.
+      const recommended = probedModels.filter(m => isRecommended(kind, m))
+      const rest = probedModels.filter(m => !isRecommended(kind, m))
+      return [...recommended, ...rest]
+    }
     return []
   })()
 
@@ -118,8 +150,7 @@ export default function EmbeddingSlotEditor({
         className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100 disabled:text-gray-500"
       >
         <option value="local">Local (baked into image)</option>
-        <option value="omlx">oMLX (self-hosted, OpenAI-compatible)</option>
-        <option value="openai_compatible">OpenAI-compatible (generic)</option>
+        <option value="api">API (self-hosted or commercial — oMLX, vLLM, OpenAI, ...)</option>
       </select>
 
       {slot.provider !== 'local' && (
@@ -129,18 +160,18 @@ export default function EmbeddingSlotEditor({
             type="text"
             value={slot.api_endpoint || ''}
             onChange={e => onChange({ api_endpoint: e.target.value } as Partial<AnySlot>)}
-            placeholder={slot.provider === 'omlx' ? OMLX_ENDPOINT_PLACEHOLDER : 'https://api.example.com/v1'}
+            placeholder="http://<host>:<port>/v1 — e.g. your oMLX/vLLM server, or https://api.openai.com/v1"
             disabled={disabled}
             className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
           />
 
           <ApiKeyField slot={slot} onChange={onChange} disabled={disabled} />
 
-          {kind === 'reranker' && slot.provider === 'openai_compatible' && (
+          {kind === 'reranker' && (
             <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5">
               Reranking uses a de-facto <code>/rerank</code> endpoint (shared by oMLX, HF TEI, vLLM,
               Infinity) that is NOT part of the official OpenAI API. It may not work against every
-              "OpenAI-compatible" provider.
+              API provider — click "Test connection" to confirm before saving.
             </p>
           )}
 
@@ -177,7 +208,9 @@ export default function EmbeddingSlotEditor({
           disabled={disabled}
           className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
         >
-          {dropdownModels.map(m => <option key={m} value={m}>{m}</option>)}
+          {dropdownModels.map(m => (
+            <option key={m} value={m}>{m}{isRecommended(kind, m) ? ' — recomendado (probado por nosotros)' : ''}</option>
+          ))}
         </select>
       ) : (
         <input

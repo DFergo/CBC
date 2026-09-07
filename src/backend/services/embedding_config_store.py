@@ -8,34 +8,35 @@ Two independent slots, same provider type:
 - `embedding`: what turns chunk/query text into vectors.
 - `reranker`:  what re-scores retrieved candidates (optional — `enabled`).
 
-Three providers:
-- "local"            — HuggingFace weights baked into the Docker image
-                        (unchanged Sprint <20 behaviour). `model` is
-                        restricted to the same pre-downloaded whitelist
-                        as before (see rag_service.SUPPORTED_EMBEDDING_MODELS
-                        / SUPPORTED_RERANKER_MODELS_LOCAL below).
-                        IMPORTANT — for this provider `rag_service` ignores
-                        this slot's `model` field entirely and instead uses
-                        `backend_config.rag_embedding_model` /
-                        `.rag_reranker_model` (the existing, already
-                        runtime-overridable settings from Sprint 9/15).
-                        This is a deliberate decision (see ARCHITECTURE.md
-                        Sprint 20 section) to keep the "local" zero-config
-                        default 100% unchanged and avoid two sources of
-                        truth for the same setting. This slot's `model`
-                        field is kept for schema symmetry / UI display only
-                        when provider="local".
-- "omlx"             — Daniel's self-hosted MLX inference server
-                        (OpenAI-compatible /v1/embeddings + a de-facto
-                        /v1/rerank endpoint shared by oMLX, HF TEI, vLLM,
-                        Infinity). Suggested placeholder endpoint shown by
-                        the admin UI, not hardcoded here.
-- "openai_compatible" — any other OpenAI-compatible endpoint (real OpenAI,
-                        another self-hosted server, etc). Same field shape
-                        as "omlx", no suggested defaults. Reranking via
-                        `/rerank` is NOT part of the OpenAI standard, so it
-                        may not work against arbitrary "OpenAI-compatible"
-                        providers — that caveat is surfaced in the admin UI.
+Two providers (Sprint 20 followup — collapsed from an earlier 3-provider
+design that had a distinct "omlx" option; CBC is deployed for orgs other
+than the one that happens to run oMLX, so no specific self-hosted product
+gets baked in as a named choice — "api" covers oMLX, vLLM, HF TEI, OpenAI,
+or any other OpenAI-compatible-ish server via plain config fields):
+- "local" — HuggingFace weights baked into the Docker image (unchanged
+            Sprint <20 behaviour). `model` is restricted to the same
+            pre-downloaded whitelist as before (see
+            rag_service.SUPPORTED_EMBEDDING_MODELS /
+            SUPPORTED_RERANKER_MODELS_LOCAL below).
+            IMPORTANT — for this provider `rag_service` ignores this
+            slot's `model` field entirely and instead uses
+            `backend_config.rag_embedding_model` / `.rag_reranker_model`
+            (the existing, already runtime-overridable settings from
+            Sprint 9/15). This is a deliberate decision (see
+            ARCHITECTURE.md Sprint 20 section) to keep the "local"
+            zero-config default 100% unchanged and avoid two sources of
+            truth for the same setting. This slot's `model` field is kept
+            for schema symmetry / UI display only when provider="local".
+- "api"   — any OpenAI-compatible endpoint: self-hosted (oMLX, vLLM, HF
+            TEI, Infinity, ...) or commercial. `model` is NOT a fixed
+            whitelist here — the admin UI auto-detects and lists whatever
+            models the configured server actually exposes via
+            `GET {endpoint}/models`, so it works regardless of how the
+            admin happened to name their own loaded weights. Reranking via
+            `POST {endpoint}/rerank` is a de-facto format (oMLX/TEI/vLLM/
+            Infinity), NOT part of the official OpenAI API, so it may not
+            work against every "api" provider — that caveat is surfaced in
+            the admin UI, not hidden.
 
 API key handling reuses the exact sentinel/resolve pattern from
 `llm_config_store` (imported, not duplicated) so the security properties
@@ -54,7 +55,7 @@ from src.services.llm_config_store import API_KEY_SENTINEL
 
 logger = logging.getLogger("embedding_config")
 
-EmbeddingProviderType = Literal["local", "omlx", "openai_compatible"]
+EmbeddingProviderType = Literal["local", "api"]
 
 # Mirrors rag_service.SUPPORTED_EMBEDDING_MODELS. Duplicated (not imported)
 # to avoid a module-level import of rag_service, which would create a
@@ -135,11 +136,26 @@ class EmbeddingConfig(BaseModel):
     reranker: RerankerSlotConfig = Field(default_factory=RerankerSlotConfig)
 
 
+def _migrate_legacy_provider_names(data: dict[str, Any]) -> dict[str, Any]:
+    """Sprint 20 followup — collapsed the original 3-provider design
+    ("local" / "omlx" / "openai_compatible") down to 2 ("local" / "api").
+    Any config saved during that brief window (this shipped and got
+    deployed the same day it was replaced) would otherwise fail Pydantic
+    validation and silently reset to defaults on the next load. Normalise
+    in place rather than let that happen."""
+    for slot_name in ("embedding", "reranker"):
+        slot = data.get(slot_name)
+        if isinstance(slot, dict) and slot.get("provider") in ("omlx", "openai_compatible"):
+            slot["provider"] = "api"
+    return data
+
+
 def load_config() -> EmbeddingConfig:
     data = read_json(EMBEDDING_CONFIG_FILE)
     if not isinstance(data, dict):
         return EmbeddingConfig()
     try:
+        data = _migrate_legacy_provider_names(data)
         return EmbeddingConfig(**data)
     except Exception as e:
         logger.warning(f"Invalid embedding_config.json ({e}); returning defaults")
@@ -202,7 +218,7 @@ async def check_embedding_slot_health(
       blocking call on every "Test connection" click. Report ok=True with
       the whitelist as the "models" list so the admin UI's dropdown has
       something to show.
-    - omlx / openai_compatible: GET {endpoint}/models (OpenAI-style) to
+    - api: GET {endpoint}/models (OpenAI-style) to
       populate the model dropdown, then (deep=True, the default) actually
       POST one short string to {endpoint}/embeddings to prove the round
       trip works end-to-end — a 200 on /models doesn't guarantee /embeddings
@@ -250,8 +266,8 @@ async def check_reranker_slot_health(
     """Health check for the reranker slot. Same shape as the embedding one;
     the deep probe POSTs a 1-query/1-document /rerank request (the de-facto
     format shared by oMLX/TEI/vLLM/Infinity — NOT an official OpenAI
-    endpoint, so this may legitimately fail against a generic
-    "openai_compatible" provider that doesn't implement it)."""
+    endpoint, so this may legitimately fail against a generic "api"
+    provider that doesn't implement it)."""
     if slot.provider == "local":
         return _result(True, 200, None, list(SUPPORTED_RERANKER_MODELS_LOCAL))
 
@@ -282,7 +298,7 @@ async def check_reranker_slot_health(
             if rr.status_code != 200:
                 return _result(
                     False, rr.status_code,
-                    f"/rerank failed (not all OpenAI-compatible providers implement this de-facto "
+                    f"/rerank failed (not all API providers implement this de-facto "
                     f"endpoint): {rr.text[:200]}",
                     models,
                 )

@@ -1,8 +1,10 @@
 // Sprint 9: global RAG pipeline knobs.
 // Sprint 15 phase 3: chunk_size is editable from the admin (slider).
 // Sprint 20: embedding + reranker model selection now goes through a
-// provider picker (local baked-in HuggingFace / oMLX / generic
-// OpenAI-compatible) instead of a plain model dropdown. This used to be a
+// provider picker (local baked-in HuggingFace, or a generic OpenAI-
+// compatible API — no specific vendor like oMLX is baked in as its own
+// option; the model list is auto-detected from whatever the configured
+// endpoint serves) instead of a plain model dropdown. This used to be a
 // separate "Embedding & reranker provider" section — folded back in here
 // per Daniel's feedback ("no tiene sentido meter una sección nueva", the
 // admin expects ONE place for the embedder, not two). Local model choice
@@ -204,9 +206,9 @@ export default function RAGPipelineSection() {
   // second place to configure the same value). We route that leg through
   // the pre-existing `updateRAGSettings` call FIRST, then always persist
   // `embedding_config_store` too (even for local) so its `provider` field
-  // stays in sync — otherwise switching an admin from "omlx" back to
+  // stays in sync — otherwise switching an admin from "api" back to
   // "local" here would update the model but leave the store still pointed
-  // at "omlx", and `_resolve_active_embedding_slot` would keep routing
+  // at "api", and `_resolve_active_embedding_slot` would keep routing
   // queries through the old remote provider.
   const saveEmbedding = async () => {
     if (!embedDraft) return
@@ -372,7 +374,8 @@ export default function RAGPipelineSection() {
             <>
               {/* Sprint 20 — embedding + reranker, provider-first. Local
                   keeps the pre-Sprint-20 in-container HuggingFace weights;
-                  oMLX / OpenAI-compatible route to a remote server instead. */}
+                  "api" routes to any remote OpenAI-compatible server instead
+                  (self-hosted or commercial — nothing vendor-specific baked in). */}
               {embedDraft && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
@@ -388,8 +391,8 @@ export default function RAGPipelineSection() {
                     {embedDraft.embedding.provider === 'local' && (
                       <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5 mt-1.5">
                         Se ejecuta dentro del contenedor sin aceleración GPU/Metal — la opción más lenta.
-                        Si tienes un servidor de inferencia propio (p.ej. oMLX), usa uno de los proveedores
-                        API de arriba para acelerar embeddings y reranking.
+                        Si tienes un servidor de inferencia propio (self-hosted, p.ej. oMLX o vLLM) o una
+                        API comercial, elige "API" arriba para acelerar embeddings y reranking.
                       </p>
                     )}
                   </div>

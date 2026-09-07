@@ -1067,9 +1067,11 @@ export async function getGuardrailsInfo(language = 'en'): Promise<GuardrailsInfo
 // with the same paste-or-env-var + sentinel dance) but for the two RAG
 // pipeline slots that turn text into vectors and rescore candidates.
 // "local" keeps the pre-Sprint-20 HuggingFace-baked-in behaviour untouched;
-// "omlx" / "openai_compatible" call a remote OpenAI-compatible server.
+// "api" calls a remote OpenAI-compatible server (self-hosted or commercial —
+// no specific vendor is baked in as its own option; the model list is
+// auto-detected from whatever the configured endpoint actually serves).
 
-export type EmbeddingProviderType = 'local' | 'omlx' | 'openai_compatible'
+export type EmbeddingProviderType = 'local' | 'api'
 
 export interface EmbeddingSlotConfig {
   provider: EmbeddingProviderType
