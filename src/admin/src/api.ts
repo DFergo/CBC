@@ -1,6 +1,23 @@
 // Admin API client. Sprint 3 expands with companies, prompts, rag, knowledge, llm, smtp.
 const API_BASE = ''
 
+// FastAPI/Pydantic 422 responses put `detail` as an ARRAY of
+// {loc, msg, type} objects (one per invalid field), not a string. Passing
+// that straight to `new Error(...)` stringifies it via Array.toString(),
+// which joins elements with `,` and calls the default Object.toString() on
+// each one — producing the literal text "[object Object],[object Object]"
+// instead of anything useful. Extract `.msg` from each entry instead.
+function errorDetailToMessage(detail: unknown): string {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map(d => (d && typeof d === 'object' && 'msg' in d) ? String((d as { msg: unknown }).msg) : JSON.stringify(d))
+      .join('; ')
+  }
+  if (detail && typeof detail === 'object') return JSON.stringify(detail)
+  return ''
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = localStorage.getItem('cbc_admin_token')
   const headers: Record<string, string> = {
@@ -12,7 +29,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: 'Request failed' }))
-    throw new Error(body.detail || `HTTP ${res.status}`)
+    throw new Error(errorDetailToMessage(body.detail) || `HTTP ${res.status}`)
   }
   if (res.status === 204) return undefined as T
   return res.json()

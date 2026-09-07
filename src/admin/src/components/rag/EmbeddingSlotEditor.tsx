@@ -168,6 +168,23 @@ export default function EmbeddingSlotEditor({
     ? probedModels.length - dropdownModels.length
     : 0
 
+  // Bugfix: the <select> below falls back to `dropdownModels[0]` for its
+  // DISPLAYED value when `slot.model` is empty, so a freshly-populated
+  // dropdown visually shows the first (usually recommended) model as
+  // selected — but that's a rendering fallback only, `onChange` never
+  // fires for it, so the actual `slot.model` in state stays "". An admin
+  // who doesn't happen to click the dropdown (because it already LOOKS
+  // right) then hits Save with an empty model, which fails backend
+  // validation for `provider != "local"`. Commit the visual default into
+  // real state as soon as the list appears, so what's displayed is always
+  // what actually gets saved.
+  useEffect(() => {
+    if (!slot.model && dropdownModels.length > 0) {
+      onChange({ model: dropdownModels[0] } as Partial<AnySlot>)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dropdownModels.join('|'), slot.model])
+
   return (
     <div className={`border border-gray-200 rounded-lg p-3 space-y-2 ${disabled ? 'bg-gray-50' : ''}`}>
       <div className="flex items-center justify-between gap-2">
