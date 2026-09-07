@@ -777,12 +777,12 @@ function injectCitationLinks(text: string): string {
 function buildMarkdownComponents(onCitationClick?: (filename: string) => void): Components {
   return {
     table: ({ children, ...props }) => (
-      <div className="overflow-x-auto my-2 -mx-1 max-w-full">
+      <div className="chat-hscroll overflow-x-auto my-2 -mx-1 max-w-full">
         <table className="text-xs border-collapse" {...props}>{children}</table>
       </div>
     ),
     pre: ({ children, ...props }) => (
-      <pre className="overflow-x-auto max-w-full" {...props}>{children}</pre>
+      <pre className="chat-hscroll overflow-x-auto max-w-full" {...props}>{children}</pre>
     ),
     // Intercept #cite: pseudo-links. Everything else is rendered as a normal
     // external link that opens in a new tab.

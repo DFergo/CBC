@@ -1,3 +1,32 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Sprint 20 followup 11 — chat message tables/code blocks scroll
+   horizontally on overflow, but default OS/browser scrollbars are
+   "overlay" style: invisible until a touch/trackpad scroll gesture
+   triggers them. A mouse with vertical-only scroll has no way to trigger
+   that gesture, so the content was reachable but the affordance to reach
+   it was invisible. Styling the scrollbar explicitly switches WebKit/
+   Blink to a classic (always-rendered, draggable) scrollbar instead of
+   the auto-hiding overlay one, and gives Firefox a persistent thin one.
+   Applied per-element (each table/code wrapper has its own overflow-x
+   container), so each independently scrollable block gets its own bar
+   directly under it — never a single bar shared across a message. */
+.chat-hscroll {
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 transparent;
+}
+.chat-hscroll::-webkit-scrollbar {
+  height: 8px;
+}
+.chat-hscroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-hscroll::-webkit-scrollbar-thumb {
+  background-color: #94a3b8;
+  border-radius: 9999px;
+}
+.chat-hscroll::-webkit-scrollbar-thumb:hover {
+  background-color: #64748b;
+}
