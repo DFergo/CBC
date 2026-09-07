@@ -1,12 +1,12 @@
 # Pure pull-inverse (HRDD parity, locked-in by Sprint 10B): the sidecar
 # makes ZERO outbound HTTP. Backend polls this frontend over the LAN /
 # Tailscale / hostname URL the admin registered in the Frontends tab. The
-# frontend just has to be reachable on CBC_FRONTEND_PORT from the backend's
+# frontend just has to be reachable on FRONTEND_PORT from the backend's
 # host. No CBC_BACKEND_URL is needed any more — it used to feed the
 # auth / recovery / upload sidecar→backend calls that have all been
 # refactored to queue + poll + push-back.
 #
-# Host port is configurable via CBC_FRONTEND_PORT (default 8190). The
+# Host port is configurable via FRONTEND_PORT (default 8190). The
 # container port stays 80 (Nginx).
 #
 # No explicit container_name: Portainer prefixes containers with the stack
@@ -20,7 +20,7 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - "${CBC_FRONTEND_PORT:-8190}:80"
+      - "${FRONTEND_PORT:-8190}:80"
     volumes:
       - cbc-frontend-data:/app/data
     environment:

@@ -4,7 +4,7 @@
 # them over the LAN / Tailscale / hostname URL that the admin registered
 # in the Frontends tab. No shared networks, no service-name DNS needed.
 #
-# Host port is configurable via CBC_BACKEND_PORT (default 8100). Override
+# Host port is configurable via BACKEND_PORT (default 8100). Override
 # via Portainer's Environment variables without editing the compose.
 # Container port stays 8000 internally.
 #
@@ -17,7 +17,7 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     ports:
-      - "${CBC_BACKEND_PORT:-8100}:8000"
+      - "${BACKEND_PORT:-8100}:8000"
     volumes:
       - cbc-data:/app/data
     environment:
