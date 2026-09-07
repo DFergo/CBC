@@ -845,7 +845,18 @@ function Bubble({
             </button>
           )}
         </div>
-        <div className="prose prose-sm max-w-none text-gray-800 overflow-x-auto break-words">
+        {/* Sprint 20 followup 10 — do NOT put overflow-x-auto here. Confirmed
+            live (production repro + DOM inspection): giving this ancestor its
+            own horizontal scroll context, on top of the table wrapper's
+            already-independent `overflow-x-auto` + `-mx-1` (see `table:` in
+            buildMarkdownComponents below), clips ~1 leading character off
+            every first-column cell whenever a cell wraps to multiple lines —
+            the DOM's actual textContent is correct ("Concepto"), only the
+            paint is clipped. Removing overflow-x-auto here (visible/default)
+            fixes it with no loss of function: the table keeps scrolling fine
+            on its own, and `break-words` below still prevents unbroken long
+            tokens from overflowing the bubble. */}
+        <div className="prose prose-sm max-w-none text-gray-800 break-words">
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
             {mdText}
           </ReactMarkdown>
@@ -874,7 +885,7 @@ function Bubble({
         {isUser ? (
           <div className="whitespace-pre-wrap">{message.content}</div>
         ) : (
-          <div className="prose prose-sm max-w-none text-gray-800 overflow-x-auto break-words">
+          <div className="prose prose-sm max-w-none text-gray-800 break-words">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
               {mdText}
             </ReactMarkdown>
