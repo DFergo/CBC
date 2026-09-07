@@ -774,19 +774,6 @@ function injectCitationLinks(text: string): string {
   ).join('')
 }
 
-// A GFM table's header-separator row ("| --- | --- |", "--- | ---", with or
-// without a leading/trailing pipe) is a reliable, cheap signal that the
-// message contains a table — cheaper and more robust than trying to detect
-// "is this row too wide" after render. Assistant bubbles with a table get
-// the full-width treatment below instead of the normal 85% cap, since a
-// capped-width bubble forced most tables into horizontal scroll even when
-// the viewport had plenty of room to spare.
-const GFM_TABLE_SEPARATOR_RE = /^\s*\|?(?:\s*:?-{2,}:?\s*\|)+\s*:?-{2,}:?\s*\|?\s*$/m
-
-function hasTable(content: string): boolean {
-  return GFM_TABLE_SEPARATOR_RE.test(content)
-}
-
 function buildMarkdownComponents(onCitationClick?: (filename: string) => void): Components {
   return {
     table: ({ children, ...props }) => (
@@ -858,7 +845,7 @@ function Bubble({
             </button>
           )}
         </div>
-        <div className="prose prose-sm max-w-none text-gray-800 overflow-x-hidden">
+        <div className="prose prose-sm max-w-none text-gray-800 overflow-x-auto break-words">
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
             {mdText}
           </ReactMarkdown>
@@ -867,20 +854,16 @@ function Bubble({
     )
   }
 
-  // Tables need real width to be readable — an 85%-capped bubble forced
-  // horizontal scrolling even on tables that would have fit comfortably at
-  // full width. Assistant messages containing a table get `max-w-full`
-  // instead; everything else keeps the normal 85% cap. `overflow-x-auto` on
-  // the table wrapper (see `buildMarkdownComponents` above) remains the
-  // fallback for tables too wide even at full bubble width.
-  const wide = !isUser && hasTable(message.content)
-
+  // Sprint 20 followup 7 (Daniel's feedback): dropped the table-detection
+  // branch — simpler and less brittle to just always give assistant bubbles
+  // 95% instead of trying to guess when a table needs more room. User
+  // bubbles keep the tighter 85% cap (short plain-text messages).
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {/* `min-w-0` lets the flex child shrink below its content's intrinsic
           min-width, which is what allows tables inside the bubble to scroll
           horizontally instead of stretching the bubble past its max width. */}
-      <div className={`min-w-0 ${wide ? 'max-w-full' : 'max-w-[85%]'} rounded-2xl px-4 py-2.5 text-sm ${isUser ? 'bg-uni-blue text-white' : 'bg-white border border-gray-200 text-gray-800'}`}>
+      <div className={`min-w-0 ${isUser ? 'max-w-[85%]' : 'max-w-[95%]'} rounded-2xl px-4 py-2.5 text-sm ${isUser ? 'bg-uni-blue text-white' : 'bg-white border border-gray-200 text-gray-800'}`}>
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-2">
             {message.attachments.map(f => (
@@ -891,7 +874,7 @@ function Bubble({
         {isUser ? (
           <div className="whitespace-pre-wrap">{message.content}</div>
         ) : (
-          <div className="prose prose-sm max-w-none text-gray-800 overflow-x-hidden">
+          <div className="prose prose-sm max-w-none text-gray-800 overflow-x-auto break-words">
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
               {mdText}
             </ReactMarkdown>
