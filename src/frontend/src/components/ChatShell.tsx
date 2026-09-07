@@ -744,7 +744,21 @@ export default function ChatShell({
 // clickable pills. The backend doesn't emit link syntax; we regex-wrap the
 // patterns here just before handing the text to ReactMarkdown. The href
 // uses a `#cite:` pseudo-scheme we intercept in the `a` component below.
-const CITATION_TEXT_RE = /\[([A-Za-z0-9_.\- ]+\.(?:md|pdf|txt|docx))\s*,\s*([^[\]]+?)\]/g
+//
+// Widened after real-world misses (filename group used to be an ASCII-only
+// allowlist `[A-Za-z0-9_.\- ]`, which silently left plain text instead of a
+// pill for any accented filename — "Convenio_Metalúrgico.pdf" — or one with
+// parentheses; the extension alternation was also case-sensitive, missing
+// ".PDF"). Now: exclude only the characters that would actually break the
+// bracket syntax (`[`, `]`, `,`, newline) instead of allow-listing "safe"
+// ones, and match extensions case-insensitively. The locator group is now
+// optional because `prompt_assembler.py`'s own citation instructions tell
+// the LLM to emit bare `[filename]` (no comma) when an excerpt has no page/
+// article locator — the old regex required a comma and so never matched
+// that documented, expected format. Optional straight/curly quotes around
+// the filename are also tolerated (`["CBA.pdf", p. 3]`) and stripped from
+// the match, in case the model decides to quote it.
+const CITATION_TEXT_RE = /\[["'“”‘’]?([^[\]\n,"'“”‘’]+?\.(?:md|pdf|txt|docx))["'“”‘’]?(?:\s*,\s*([^[\]\n]+?))?\]/gi
 
 function injectCitationLinks(text: string): string {
   // Skip the substitution inside fenced code blocks (``` … ```) so we don't
@@ -752,11 +766,25 @@ function injectCitationLinks(text: string): string {
   const parts = text.split(/(```[\s\S]*?```)/g)
   return parts.map(p => p.startsWith('```')
     ? p
-    : p.replace(CITATION_TEXT_RE, (_m, file: string, loc: string) => {
+    : p.replace(CITATION_TEXT_RE, (_m, file: string, loc?: string) => {
       const f = file.trim()
-      return `[${f}, ${loc.trim()}](#cite:${encodeURIComponent(f)})`
+      const label = loc ? `${f}, ${loc.trim()}` : f
+      return `[${label}](#cite:${encodeURIComponent(f)})`
     }),
   ).join('')
+}
+
+// A GFM table's header-separator row ("| --- | --- |", "--- | ---", with or
+// without a leading/trailing pipe) is a reliable, cheap signal that the
+// message contains a table — cheaper and more robust than trying to detect
+// "is this row too wide" after render. Assistant bubbles with a table get
+// the full-width treatment below instead of the normal 85% cap, since a
+// capped-width bubble forced most tables into horizontal scroll even when
+// the viewport had plenty of room to spare.
+const GFM_TABLE_SEPARATOR_RE = /^\s*\|?(?:\s*:?-{2,}:?\s*\|)+\s*:?-{2,}:?\s*\|?\s*$/m
+
+function hasTable(content: string): boolean {
+  return GFM_TABLE_SEPARATOR_RE.test(content)
 }
 
 function buildMarkdownComponents(onCitationClick?: (filename: string) => void): Components {
@@ -839,12 +867,20 @@ function Bubble({
     )
   }
 
+  // Tables need real width to be readable — an 85%-capped bubble forced
+  // horizontal scrolling even on tables that would have fit comfortably at
+  // full width. Assistant messages containing a table get `max-w-full`
+  // instead; everything else keeps the normal 85% cap. `overflow-x-auto` on
+  // the table wrapper (see `buildMarkdownComponents` above) remains the
+  // fallback for tables too wide even at full bubble width.
+  const wide = !isUser && hasTable(message.content)
+
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {/* `min-w-0` lets the flex child shrink below its content's intrinsic
           min-width, which is what allows tables inside the bubble to scroll
-          horizontally instead of stretching the bubble past 85% viewport. */}
-      <div className={`min-w-0 max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${isUser ? 'bg-uni-blue text-white' : 'bg-white border border-gray-200 text-gray-800'}`}>
+          horizontally instead of stretching the bubble past its max width. */}
+      <div className={`min-w-0 ${wide ? 'max-w-full' : 'max-w-[85%]'} rounded-2xl px-4 py-2.5 text-sm ${isUser ? 'bg-uni-blue text-white' : 'bg-white border border-gray-200 text-gray-800'}`}>
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-2">
             {message.attachments.map(f => (
