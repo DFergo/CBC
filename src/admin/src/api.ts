@@ -1060,3 +1060,100 @@ export interface GuardrailsInfo {
 export async function getGuardrailsInfo(language = 'en'): Promise<GuardrailsInfo> {
   return request(`/admin/api/v1/guardrails?language=${encodeURIComponent(language)}`)
 }
+
+// --- Embedding / reranker provider config (Sprint 20) ---
+//
+// Mirrors the LLM slot pattern above (provider / endpoint / model / API key
+// with the same paste-or-env-var + sentinel dance) but for the two RAG
+// pipeline slots that turn text into vectors and rescore candidates.
+// "local" keeps the pre-Sprint-20 HuggingFace-baked-in behaviour untouched;
+// "omlx" / "openai_compatible" call a remote OpenAI-compatible server.
+
+export type EmbeddingProviderType = 'local' | 'omlx' | 'openai_compatible'
+
+export interface EmbeddingSlotConfig {
+  provider: EmbeddingProviderType
+  model: string
+  api_endpoint?: string | null
+  api_key_env?: string | null
+  api_key?: string | null
+}
+
+export interface RerankerSlotConfig {
+  provider: EmbeddingProviderType
+  model: string
+  enabled: boolean
+  top_n: number
+  api_endpoint?: string | null
+  api_key_env?: string | null
+  api_key?: string | null
+}
+
+export interface EmbeddingConfig {
+  embedding: EmbeddingSlotConfig
+  reranker: RerankerSlotConfig
+}
+
+export interface ActiveCollectionPointer {
+  chunks_collection: string
+  tables_collection: string
+  provider: string
+  model: string
+}
+
+export interface EmbeddingConfigResponse extends EmbeddingConfig {
+  pending_reindex: boolean
+  active_collection: ActiveCollectionPointer
+}
+
+export async function getEmbeddingConfig(): Promise<EmbeddingConfigResponse> {
+  return request('/admin/api/v1/embedding-config')
+}
+
+export async function saveEmbeddingConfig(cfg: EmbeddingConfig): Promise<EmbeddingConfigResponse> {
+  return request('/admin/api/v1/embedding-config', { method: 'PUT', body: JSON.stringify(cfg) })
+}
+
+export interface EmbeddingProbeResult {
+  ok: boolean
+  status_code: number
+  error: string | null
+  models: string[]
+}
+
+export async function testEmbeddingConnection(
+  kind: 'embedding' | 'reranker',
+  slot: Partial<EmbeddingSlotConfig> | Partial<RerankerSlotConfig>,
+): Promise<EmbeddingProbeResult> {
+  return request('/admin/api/v1/embedding-config/test-connection', {
+    method: 'POST',
+    body: JSON.stringify({ kind, slot }),
+  })
+}
+
+export interface CollectionReindexResult {
+  swapped: boolean
+  collection: string
+  old_collection: string
+  scopes_reindexed: number
+  stats: { scope_key: string; document_count?: number; node_count?: number; error?: string }[]
+}
+
+export async function reindexToNewProvider(): Promise<CollectionReindexResult> {
+  return request('/admin/api/v1/embedding-config/reindex-to-new-provider', { method: 'POST' })
+}
+
+export interface ChromaCollectionInfo {
+  name: string
+  chunk_count: number
+  is_active_chunks: boolean
+  is_active_tables: boolean
+}
+
+export async function listChromaCollections(): Promise<{ collections: ChromaCollectionInfo[] }> {
+  return request('/admin/api/v1/embedding-config/collections')
+}
+
+export async function deleteChromaCollection(name: string): Promise<{ deleted: string }> {
+  return request(`/admin/api/v1/embedding-config/collections/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}

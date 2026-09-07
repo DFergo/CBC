@@ -73,8 +73,25 @@ _chroma_collection: Any = None
 _tables_collection: Any = None
 _chroma_lock = threading.Lock()
 CHROMA_DIR = DATA_DIR / "chroma"
+# Legacy / default collection names — used whenever no admin-driven provider
+# swap has ever happened (no active_rag_collection.json on disk). Sprint 20
+# introduced additional versioned collection names
+# (`_collection_name_for`); these two constants stay as the zero-config
+# fallback so existing deployments keep working without any admin action.
 CHROMA_COLLECTION_NAME = "cbc_chunks"
 TABLES_COLLECTION_NAME = "cbc_tables"
+
+# Sprint 20 — thread-local override used ONLY during a blue-green reindex
+# (`reindex_all_scopes_into_new_collection`). While the admin's background
+# thread is building the NEW collection with the NEW embedder, any OTHER
+# thread (e.g. the FastAPI event loop serving a live chat query) must keep
+# hitting the OLD collection/embedder — which is exactly what happens if we
+# leave the global singletons (`_chroma_collection`, `_embed_model`, etc.)
+# untouched and only override resolution on the building thread via
+# threading.local(). This is what makes the swap "no downtime, fully
+# reversible until the atomic pointer write at the end".
+_build_override = threading.local()
+_NO_OVERRIDE = object()
 
 # Per-scope cached LlamaIndex wrappers. Wrapping is cheap, but keeping the
 # index objects around avoids reconstructing the StorageContext per query.
@@ -168,45 +185,159 @@ def _tier_for(scope_key: str) -> str:
 
 # --- LlamaIndex wiring (lazy) ---
 
-def _get_embed_model() -> Any:
-    """Load the embedding model on first use. The Dockerfile pre-downloads the
-    weights so this only does the local-disk load, not a network call.
-    Model name is admin-configurable via `rag_embedding_model` in
-    deployment_backend.json (default: BAAI/bge-m3).
+def _resolve_active_embedding_slot() -> tuple[str, str]:
+    """Returns (provider, model) for the embedder that should be live RIGHT
+    NOW for querying.
+
+    Sprint 20 design note (deliberate, see docs/SPEC.md + ARCHITECTURE.md):
+    provider="local" ALWAYS defers to `backend_config.rag_embedding_model`
+    (the pre-existing Sprint 9/15 runtime-overridable setting) rather than
+    whatever `embedding_config_store`'s slot.model says. This keeps the
+    zero-config default behaviour byte-for-byte unchanged and avoids two
+    competing sources of truth for the same value — the existing
+    `update_runtime_rag_settings` / "Wipe & Reindex All" flow continues to
+    own local-model changes exactly as before Sprint 20.
+
+    For non-local providers, `embedding_config_store` IS the source of
+    truth for the model name.
     """
+    from src.services import embedding_config_store
+
+    try:
+        slot = embedding_config_store.load_config().embedding
+    except Exception:
+        return ("local", backend_config.rag_embedding_model)
+    if slot.provider == "local":
+        return ("local", backend_config.rag_embedding_model)
+    return (slot.provider, slot.model)
+
+
+def _resolve_active_reranker_slot() -> tuple[str, str, bool, int]:
+    """Returns (provider, model, enabled, top_n) for the reranker. Same
+    local-defers-to-backend_config rule as embeddings above. Unlike the
+    embedder, changing the reranker slot does NOT require a reindex — it's
+    a pure query-time swap — so there's no blue-green dance here, just
+    cache invalidation (see `invalidate_reranker_cache`)."""
+    from src.services import embedding_config_store
+
+    try:
+        slot = embedding_config_store.load_config().reranker
+    except Exception:
+        return (
+            "local", backend_config.rag_reranker_model,
+            backend_config.rag_reranker_enabled, backend_config.rag_reranker_top_n,
+        )
+    if slot.provider == "local":
+        return (
+            "local", backend_config.rag_reranker_model,
+            backend_config.rag_reranker_enabled, backend_config.rag_reranker_top_n,
+        )
+    return (slot.provider, slot.model, slot.enabled, slot.top_n)
+
+
+def _construct_embed_model(provider: str, model: str) -> Any:
+    """Build a fresh embedder instance for the given (provider, model) —
+    no caching here, callers own the cache (global singleton or thread-local
+    build override)."""
+    if provider == "local":
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+        m = HuggingFaceEmbedding(model_name=model)
+        logger.info(f"Loaded local embedding model {model}")
+        return m
+    from src.services import embedding_config_store
+    from src.services.embedding_providers import ApiEmbedding
+    slot = embedding_config_store.load_config().embedding
+    key = embedding_config_store.resolve_api_key(slot)
+    m = ApiEmbedding(model_name=model, api_endpoint=slot.api_endpoint or "", api_key=key)
+    logger.info(f"Loaded API embedding model {model!r} via provider={provider} endpoint={slot.api_endpoint}")
+    return m
+
+
+def _construct_reranker(provider: str, model: str, enabled: bool, top_n: int) -> Any | None:
+    """Build a fresh reranker instance, or None if disabled / unavailable."""
+    if not enabled:
+        return None
+    if provider == "local":
+        try:
+            from llama_index.core.postprocessor import SentenceTransformerRerank
+            rr = SentenceTransformerRerank(model=model, top_n=top_n)
+            logger.info(f"Loaded local reranker {model}")
+            return rr
+        except Exception as e:
+            logger.warning(f"Local reranker unavailable ({e}); falling back to no rerank")
+            return None
+    from src.services import embedding_config_store
+    from src.services.embedding_providers import ApiRerank
+    slot = embedding_config_store.load_config().reranker
+    key = embedding_config_store.resolve_api_key(slot)
+    rr = ApiRerank(api_endpoint=slot.api_endpoint or "", api_key=key, model=model, top_n=top_n)
+    logger.info(f"Loaded API reranker {model!r} via provider={provider} endpoint={slot.api_endpoint}")
+    return rr
+
+
+def _get_embed_model() -> Any:
+    """Return the embedder that should serve THIS thread's calls.
+
+    - If this thread is running a blue-green reindex build
+      (`reindex_all_scopes_into_new_collection`), return the override
+      instance for the NEW provider/model — never touches the shared
+      singleton, so concurrent queries on other threads are unaffected.
+    - Otherwise, return (lazily building + caching) the singleton for the
+      currently ACTIVE provider/model, resolved via
+      `_resolve_active_embedding_slot`.
+    """
+    override = getattr(_build_override, "embed_model", _NO_OVERRIDE)
+    if override is not _NO_OVERRIDE:
+        return override
     global _embed_model
     if _embed_model is not None:
         return _embed_model
     with _embed_lock:
         if _embed_model is None:
-            from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-            model_name = backend_config.rag_embedding_model
-            _embed_model = HuggingFaceEmbedding(model_name=model_name)
-            logger.info(f"Loaded embedding model {model_name}")
+            provider, model = _resolve_active_embedding_slot()
+            _embed_model = _construct_embed_model(provider, model)
     return _embed_model
 
 
 def _get_reranker() -> Any | None:
-    """Lazy-load the cross-encoder reranker. Returns None if disabled in
-    config or if the package isn't available."""
-    if not backend_config.rag_reranker_enabled:
+    """Return the reranker that should serve THIS thread's calls. Same
+    override rule as `_get_embed_model`, though in practice the reranker is
+    never part of a blue-green build (ingest never reranks)."""
+    override = getattr(_build_override, "reranker", _NO_OVERRIDE)
+    if override is not _NO_OVERRIDE:
+        return override
+    provider, model, enabled, top_n = _resolve_active_reranker_slot()
+    if not enabled:
         return None
     global _reranker
     if _reranker is not None:
         return _reranker
     with _reranker_lock:
         if _reranker is None:
-            try:
-                from llama_index.core.postprocessor import SentenceTransformerRerank
-                _reranker = SentenceTransformerRerank(
-                    model=backend_config.rag_reranker_model,
-                    top_n=backend_config.rag_reranker_top_n,
-                )
-                logger.info(f"Loaded reranker {backend_config.rag_reranker_model}")
-            except Exception as e:
-                logger.warning(f"Reranker unavailable ({e}); falling back to no rerank")
-                return None
+            _reranker = _construct_reranker(provider, model, enabled, top_n)
     return _reranker
+
+
+def invalidate_embed_model_cache() -> None:
+    """Drop the cached embedder singleton so the next call re-resolves via
+    `_resolve_active_embedding_slot`. Callers must be sure the ACTIVE
+    collection's provider/model actually matches whatever it will
+    re-resolve to — this is safe to call after a successful blue-green
+    swap (pointer already updated) but NOT safe to call right after saving
+    embedding_config.json for a provider that hasn't been reindexed yet
+    (that would desync embedder vs the still-old active collection)."""
+    global _embed_model
+    with _embed_lock:
+        _embed_model = None
+
+
+def invalidate_reranker_cache() -> None:
+    """Drop the cached reranker singleton. Safe to call any time — the
+    reranker never needs to match a Chroma collection's dimensionality,
+    it's a pure query-time rescore step."""
+    global _reranker
+    with _reranker_lock:
+        _reranker = None
 
 
 def _setup_settings() -> None:
@@ -218,22 +349,25 @@ def _setup_settings() -> None:
     Settings.chunk_overlap = CHUNK_OVERLAP
 
 
-def _get_chroma_collection() -> Any:
-    """Lazy-init the persistent Chroma client + the single shared collection
-    that holds every scope's chunks. Returned object is a ``chromadb`` Collection.
+def _ensure_chroma_client() -> Any:
+    """Lazy-init just the persistent Chroma client (no collection). Split out
+    from `_get_chroma_collection` (Sprint 20) so collection-management
+    functions (`list_chroma_collections_with_stats`,
+    `delete_chroma_collection`, the blue-green builder) can get a client
+    handle without forcing the default collection to exist.
 
-    `allow_reset=True` in Settings lets `wipe_chroma_and_reindex_all()` call
+    `allow_reset=True` lets `wipe_chroma_and_reindex_all()` call
     `client.reset()` to fully clear in-memory state AND on-disk data in one
     atomic step — without this, reset() silently no-ops (chromadb's default
     safeguard) and a subsequent rmtree leaves the client's cached collection
     schema in a broken state (e.g. a 384-dim collection trying to accept
     1024-dim embeddings from a swapped embedder).
     """
-    global _chroma_client, _chroma_collection
-    if _chroma_collection is not None:
-        return _chroma_collection
+    global _chroma_client
+    if _chroma_client is not None:
+        return _chroma_client
     with _chroma_lock:
-        if _chroma_collection is None:
+        if _chroma_client is None:
             import chromadb
             from chromadb.config import Settings as ChromaSettings
             CHROMA_DIR.mkdir(parents=True, exist_ok=True)
@@ -241,12 +375,157 @@ def _get_chroma_collection() -> Any:
                 path=str(CHROMA_DIR),
                 settings=ChromaSettings(allow_reset=True),
             )
-            _chroma_collection = _chroma_client.get_or_create_collection(
-                name=CHROMA_COLLECTION_NAME,
+    return _chroma_client
+
+
+# --- Sprint 20 — versioned collection naming + active pointer -----------
+#
+# Motivation: swapping the embedding provider/model changes the vector
+# dimensionality (and semantics), so the old and new vectors can never
+# coexist in one Chroma collection. Instead of wiping in place (downtime +
+# no rollback), each distinct (provider, model) pair gets its OWN Chroma
+# collection, named deterministically so it's trivially reproducible. An
+# explicit pointer file (`active_rag_collection.json`) records which
+# collection is CURRENTLY serving queries — decoupled from whatever the
+# admin has saved as their *target* provider in embedding_config.json, so a
+# config Save never silently redirects live queries at an empty collection.
+# The pointer only moves at the end of a successful
+# `reindex_all_scopes_into_new_collection()` (blue-green swap).
+
+CHROMA_NAME_MAX_LEN = 63  # chromadb collection name hard limit
+
+
+def _slugify_for_chroma(s: str) -> str:
+    """Alnum + underscore/hyphen slug, safe for a Chroma collection name
+    fragment. Never returns an empty string."""
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (s or "").strip().lower()).strip("_-")
+    return slug or "x"
+
+
+def _collection_name_for(provider: str, model: str, kind: str = "chunks") -> str:
+    """Deterministic Chroma collection name for a given (provider, model,
+    kind). `kind` is "chunks" (prose) or "tables". Truncates + hashes if the
+    naive concatenation would exceed Chroma's 63-char limit, and guarantees
+    the name starts/ends with an alphanumeric character (another Chroma
+    constraint)."""
+    prefix = "cbc_chunks" if kind == "chunks" else "cbc_tables"
+    name = f"{prefix}__{_slugify_for_chroma(provider)}__{_slugify_for_chroma(model)}"
+    if len(name) > CHROMA_NAME_MAX_LEN:
+        import hashlib
+        digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+        name = f"{name[: CHROMA_NAME_MAX_LEN - len(digest) - 1]}_{digest}"
+    if not name[0].isalnum():
+        name = "c" + name
+    if not name[-1].isalnum():
+        name = name + "0"
+    return name[:CHROMA_NAME_MAX_LEN]
+
+
+def _default_active_pointer() -> dict[str, str]:
+    return {
+        "chunks_collection": CHROMA_COLLECTION_NAME,
+        "tables_collection": TABLES_COLLECTION_NAME,
+        "provider": "local",
+        "model": backend_config.rag_embedding_model,
+    }
+
+
+def _read_active_collection_pointer() -> dict[str, str]:
+    """What's LIVE right now — never derived from embedding_config_store
+    directly (see module docstring above). Missing file = legacy defaults,
+    so pre-Sprint-20 deployments keep working with zero admin action."""
+    from src.services._paths import ACTIVE_COLLECTION_FILE, read_json
+    data = read_json(ACTIVE_COLLECTION_FILE, default=None)
+    if not isinstance(data, dict) or not data.get("chunks_collection"):
+        return _default_active_pointer()
+    defaults = _default_active_pointer()
+    return {
+        "chunks_collection": data.get("chunks_collection") or defaults["chunks_collection"],
+        "tables_collection": data.get("tables_collection") or defaults["tables_collection"],
+        "provider": data.get("provider") or defaults["provider"],
+        "model": data.get("model") or defaults["model"],
+    }
+
+
+def _write_active_collection_pointer(chunks_collection: str, tables_collection: str, provider: str, model: str) -> None:
+    from src.services._paths import ACTIVE_COLLECTION_FILE, atomic_write_json
+    atomic_write_json(
+        ACTIVE_COLLECTION_FILE,
+        {
+            "chunks_collection": chunks_collection,
+            "tables_collection": tables_collection,
+            "provider": provider,
+            "model": model,
+        },
+    )
+    logger.warning(
+        f"Active RAG collection pointer swapped -> chunks={chunks_collection!r} "
+        f"tables={tables_collection!r} provider={provider!r} model={model!r}"
+    )
+
+
+def list_chroma_collections_with_stats() -> list[dict[str, Any]]:
+    """Every Chroma collection on disk (old provider snapshots included),
+    with chunk count + whether it's the currently active chunks/tables
+    collection. Feeds the admin "Collections" panel so old snapshots can be
+    manually purged once the admin trusts the new provider."""
+    client = _ensure_chroma_client()
+    active = _read_active_collection_pointer()
+    out: list[dict[str, Any]] = []
+    try:
+        cols = client.list_collections()
+    except Exception as e:
+        logger.warning(f"Could not list chroma collections: {e}")
+        return out
+    for c in cols:
+        name = getattr(c, "name", None) or str(c)
+        try:
+            count = client.get_collection(name=name).count()
+        except Exception:
+            count = -1
+        out.append({
+            "name": name,
+            "chunk_count": count,
+            "is_active_chunks": name == active["chunks_collection"],
+            "is_active_tables": name == active["tables_collection"],
+        })
+    return out
+
+
+def delete_chroma_collection(name: str) -> dict[str, Any]:
+    """Admin-triggered purge of an old (inactive) collection. Refuses to
+    delete whichever collection is currently active for queries — the admin
+    must swap away from it first via a blue-green reindex."""
+    active = _read_active_collection_pointer()
+    if name in (active["chunks_collection"], active["tables_collection"]):
+        raise ValueError(f"Cannot delete {name!r} — it is the currently active collection.")
+    client = _ensure_chroma_client()
+    client.delete_collection(name=name)
+    logger.warning(f"Deleted Chroma collection {name!r} (admin-requested purge)")
+    return {"deleted": name}
+
+
+def _get_chroma_collection() -> Any:
+    """Lazy-init the shared prose-chunks collection this thread should use:
+    the blue-green build override if this thread is running one, otherwise
+    the cached singleton for the currently ACTIVE collection (per the
+    pointer file)."""
+    override = getattr(_build_override, "chunks", _NO_OVERRIDE)
+    if override is not _NO_OVERRIDE:
+        return override
+    global _chroma_collection
+    if _chroma_collection is not None:
+        return _chroma_collection
+    with _chroma_lock:
+        if _chroma_collection is None:
+            client = _ensure_chroma_client()
+            name = _read_active_collection_pointer()["chunks_collection"]
+            _chroma_collection = client.get_or_create_collection(
+                name=name,
                 metadata={"hnsw:space": "cosine"},
             )
             logger.info(
-                f"Chroma collection {CHROMA_COLLECTION_NAME!r} ready at {CHROMA_DIR} "
+                f"Chroma collection {name!r} ready at {CHROMA_DIR} "
                 f"({_chroma_collection.count()} chunks total)"
             )
     return _chroma_collection
@@ -269,21 +548,26 @@ def _get_tables_collection() -> Any:
     at query time.
 
     Uses the same `_chroma_client` as prose chunks so `client.reset()` in
-    `wipe_chroma_and_reindex_all` clears both collections atomically."""
-    global _chroma_client, _tables_collection
+    `wipe_chroma_and_reindex_all` clears both collections atomically.
+
+    Sprint 20: same override/active-pointer resolution as
+    `_get_chroma_collection` — see that function's docstring."""
+    override = getattr(_build_override, "tables", _NO_OVERRIDE)
+    if override is not _NO_OVERRIDE:
+        return override
+    global _tables_collection
     if _tables_collection is not None:
         return _tables_collection
     with _chroma_lock:
         if _tables_collection is None:
-            # Force the prose collection path to run first — it initialises
-            # `_chroma_client` on the same settings. We just piggyback.
-            _get_chroma_collection()
-            _tables_collection = _chroma_client.get_or_create_collection(
-                name=TABLES_COLLECTION_NAME,
+            client = _ensure_chroma_client()
+            name = _read_active_collection_pointer()["tables_collection"]
+            _tables_collection = client.get_or_create_collection(
+                name=name,
                 metadata={"hnsw:space": "cosine"},
             )
             logger.info(
-                f"Chroma collection {TABLES_COLLECTION_NAME!r} ready at {CHROMA_DIR} "
+                f"Chroma collection {name!r} ready at {CHROMA_DIR} "
                 f"({_tables_collection.count()} table cards total)"
             )
     return _tables_collection
@@ -1081,6 +1365,17 @@ def wipe_chroma_and_reindex_all() -> dict[str, Any]:
         f"new embedding={backend_config.rag_embedding_model}, "
         f"new chunk_size={backend_config.rag_chunk_size}"
     )
+    # Sprint 20 caveat (accepted trade-off, see docs/architecture/decisions.md):
+    # `client.reset()` wipes EVERY collection on this Chroma client, not just
+    # the active one — so if an admin has old provider-swap collections
+    # sitting around from `reindex_all_scopes_into_new_collection`, a
+    # same-provider "Wipe & Reindex All" (chunk_size / local-model change)
+    # destroys them too, losing the rollback safety net those snapshots
+    # existed for. This function is ONLY meant for the same-provider case
+    # (chunk_size or local embedding-model change); provider/model swaps for
+    # "omlx"/"openai_compatible" MUST go through
+    # `reindex_all_scopes_into_new_collection` instead, which never calls
+    # reset() and leaves old collections untouched.
 
     # 1. Drop in-memory caches.
     with _indexes_lock:
@@ -1139,6 +1434,123 @@ def wipe_chroma_and_reindex_all() -> dict[str, Any]:
         "stats": stats,
         "embedding_model": backend_config.rag_embedding_model,
         "chunk_size": backend_config.rag_chunk_size,
+    }
+
+
+def reindex_all_scopes_into_new_collection() -> dict[str, Any]:
+    """Sprint 20 — blue-green reindex for an embedding provider/model swap.
+
+    Builds a BRAND NEW Chroma collection (name derived from the CURRENTLY
+    CONFIGURED target in `embedding_config_store`) and ingests every scope
+    into it, while the existing active collection keeps serving live
+    queries untouched (via the `_build_override` thread-local — see that
+    variable's docstring). Only if every scope ingests successfully does
+    this swap the active pointer, which is the single atomic moment new
+    queries start hitting the new collection. On any failure, the override
+    is torn down and the active pointer is left exactly as it was — the old
+    collection was never touched, so there is nothing to roll back on disk,
+    only in-memory caches to drop.
+
+    Returns `{"swapped": bool, "collection": str, "old_collection": str,
+    "scopes_reindexed": int, "stats": [...]}`. Raises `RuntimeError` if any
+    scope fails (mirrors `wipe_chroma_and_reindex_all`'s all-or-nothing
+    contract) — the caller (admin endpoint) surfaces this to the UI.
+    """
+    from src.services import embedding_config_store
+
+    cfg = embedding_config_store.load_config()
+    target_provider = cfg.embedding.provider
+    target_model = (
+        backend_config.rag_embedding_model if target_provider == "local" else cfg.embedding.model
+    )
+    target_chunks_name = _collection_name_for(target_provider, target_model, kind="chunks")
+    target_tables_name = _collection_name_for(target_provider, target_model, kind="tables")
+
+    old_pointer = _read_active_collection_pointer()
+    if target_chunks_name == old_pointer["chunks_collection"]:
+        # Nothing to swap — the configured target already IS the active
+        # collection (e.g. admin hit the button twice, or only chunk_size
+        # changed which doesn't move the collection name). Fall back to a
+        # normal in-place reindex of the active collection.
+        logger.info(
+            f"reindex_all_scopes_into_new_collection: target {target_chunks_name!r} "
+            f"already active; running a normal reindex instead of a blue-green swap."
+        )
+        stats = reindex_all_scopes()
+        errs = [s for s in stats if s.get("error")]
+        if errs:
+            raise RuntimeError(f"{len(errs)}/{len(stats)} scopes failed to reindex")
+        return {
+            "swapped": False,
+            "collection": target_chunks_name,
+            "old_collection": old_pointer["chunks_collection"],
+            "scopes_reindexed": len(stats),
+            "stats": stats,
+        }
+
+    logger.warning(
+        f"Blue-green reindex: building NEW collection {target_chunks_name!r} "
+        f"(tables: {target_tables_name!r}) for provider={target_provider!r} "
+        f"model={target_model!r}. OLD collection {old_pointer['chunks_collection']!r} "
+        f"stays untouched and keeps serving queries until this completes."
+    )
+
+    client = _ensure_chroma_client()
+    new_chunks = client.get_or_create_collection(name=target_chunks_name, metadata={"hnsw:space": "cosine"})
+    new_tables = client.get_or_create_collection(name=target_tables_name, metadata={"hnsw:space": "cosine"})
+    new_embed_model = _construct_embed_model(target_provider, target_model)
+
+    _build_override.chunks = new_chunks
+    _build_override.tables = new_tables
+    _build_override.embed_model = new_embed_model
+    try:
+        stats = reindex_all_scopes()
+    except Exception as e:
+        logger.error(f"Blue-green reindex crashed: {e}")
+        raise
+    finally:
+        # Always tear down the thread-local override — this worker thread
+        # may be reused by a future unrelated asyncio.to_thread call, and a
+        # leftover override would silently redirect that call too.
+        for attr in ("chunks", "tables", "embed_model"):
+            if hasattr(_build_override, attr):
+                delattr(_build_override, attr)
+
+    errs = [s for s in stats if s.get("error")]
+    if errs:
+        err_summary = "; ".join(f"{s['scope_key']}: {s['error']}" for s in errs[:5])
+        logger.error(
+            f"Blue-green reindex failed for {len(errs)}/{len(stats)} scopes; "
+            f"active pointer left unchanged at {old_pointer['chunks_collection']!r}. "
+            f"First failures: {err_summary}"
+        )
+        raise RuntimeError(
+            f"Reindex into new collection failed for {len(errs)}/{len(stats)} scopes; "
+            f"the previous collection {old_pointer['chunks_collection']!r} is untouched "
+            f"and still active. First failures: {err_summary}"
+        )
+
+    # Every scope ingested successfully — swap the pointer AND promote the
+    # new embedder to the shared singleton so subsequent queries (on any
+    # thread) resolve it without re-constructing. This is the one moment
+    # live traffic starts seeing the new provider/model.
+    _write_active_collection_pointer(target_chunks_name, target_tables_name, target_provider, target_model)
+    global _embed_model, _tables_collection, _chroma_collection
+    with _embed_lock:
+        _embed_model = new_embed_model
+    with _chroma_lock:
+        _chroma_collection = new_chunks
+        _tables_collection = new_tables
+    with _indexes_lock:
+        _indexes.clear()
+    _invalidate_bm25_cache(None)
+
+    return {
+        "swapped": True,
+        "collection": target_chunks_name,
+        "old_collection": old_pointer["chunks_collection"],
+        "scopes_reindexed": len(stats),
+        "stats": stats,
     }
 
 

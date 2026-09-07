@@ -18,6 +18,7 @@ from src.api.v1.admin.rag import router as rag_router
 from src.api.v1.admin.tables import router as tables_router
 from src.api.v1.admin.knowledge import router as knowledge_router
 from src.api.v1.admin.llm import router as llm_router
+from src.api.v1.admin.embedding import router as embedding_router
 from src.api.v1.admin.smtp import router as smtp_router
 from src.api.v1.admin.contacts import router as contacts_router
 from src.api.v1.admin.frontends import router as frontends_router
@@ -106,6 +107,7 @@ app.include_router(rag_router)
 app.include_router(tables_router)
 app.include_router(knowledge_router)
 app.include_router(llm_router)
+app.include_router(embedding_router)
 app.include_router(smtp_router)
 app.include_router(contacts_router)
 app.include_router(resolvers_router)

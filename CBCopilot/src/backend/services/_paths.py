@@ -33,6 +33,17 @@ ORGANIZATIONS_FILE = KNOWLEDGE_DIR / "organizations.json"
 # rag_contextual_enabled) — LLMConfig fields already persist via
 # llm_config_store. See runtime_overrides_store.py.
 RUNTIME_OVERRIDES_FILE = DATA_DIR / "runtime_overrides.json"
+# Sprint 20 — embedding/reranker provider configuration (local / omlx /
+# openai_compatible). See embedding_config_store.py.
+EMBEDDING_CONFIG_FILE = DATA_DIR / "embedding_config.json"
+# Sprint 20 — blue-green Chroma collection pointer. Records which
+# collection (+ provider/model it was built with) is CURRENTLY serving
+# queries, decoupled from whatever the admin has configured as the target
+# in embedding_config.json. Only updated atomically at the end of a
+# successful `rag_service.reindex_all_scopes_into_new_collection()` swap.
+# Missing file means "legacy defaults" — the pre-Sprint-20 collection
+# names (`cbc_chunks` / `cbc_tables`) built with the local HF embedder.
+ACTIVE_COLLECTION_FILE = DATA_DIR / "active_rag_collection.json"
 
 
 def frontend_dir(frontend_id: str) -> Path:

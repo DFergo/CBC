@@ -1,20 +1,42 @@
 // Sprint 9: global RAG pipeline knobs.
-// Sprint 15 phase 3: chunk_size + embedding_model are now editable from
-// the admin (slider + dropdown). Reranker model stays read-only — only one
-// is pre-downloaded in the Docker image. Changing chunk_size OR embedding_
-// model requires wiping the Chroma collection (dim change / bucketing
-// change) and re-ingesting every scope. The "Wipe & Reindex All" button
-// does that synchronously.
+// Sprint 15 phase 3: chunk_size is editable from the admin (slider).
+// Sprint 20: embedding + reranker model selection now goes through a
+// provider picker (local baked-in HuggingFace / oMLX / generic
+// OpenAI-compatible) instead of a plain model dropdown. This used to be a
+// separate "Embedding & reranker provider" section — folded back in here
+// per Daniel's feedback ("no tiene sentido meter una sección nueva", the
+// admin expects ONE place for the embedder, not two). Local model choice
+// still round-trips through the pre-existing `update_runtime_rag_settings`
+// / chunk_size dim-change machinery (see `saveEmbedding` below for why);
+// non-local providers go through `embedding_config_store` + the blue-green
+// `reindex_all_scopes_into_new_collection` swap, which also transparently
+// covers "just changed chunk_size or local model, same collection" since it
+// falls back to a normal in-place reindex when the target collection name
+// doesn't change.
 import { useEffect, useState } from 'react'
 import {
+  deleteChromaCollection,
+  getEmbeddingConfig,
   getRAGSettings,
+  listChromaCollections,
+  reindexToNewProvider,
+  saveEmbeddingConfig,
   toggleContextualRetrieval,
   updateRAGSettings,
   updateRAGTuning,
   wipeAndReindexAll,
 } from '../api'
-import type { GlobalRAGSettings, RAGTuning } from '../api'
+import type {
+  ChromaCollectionInfo,
+  EmbeddingConfig,
+  EmbeddingConfigResponse,
+  EmbeddingSlotConfig,
+  GlobalRAGSettings,
+  RAGTuning,
+  RerankerSlotConfig,
+} from '../api'
 import { useT } from '../i18n'
+import EmbeddingSlotEditor from '../components/rag/EmbeddingSlotEditor'
 
 // Sprint 18 Fase 4 — bounds for the tuning sliders. Mirror the backend's
 // _TUNING_RANGES in rag_service.py; UI re-validation is just a UX nicety,
@@ -44,17 +66,15 @@ const DEFAULT_TUNING: RAGTuning = {
 }
 
 const CHUNK_SIZE_OPTIONS = [512, 1024, 1536, 2048] as const
-const EMBEDDING_MODEL_OPTIONS: { value: string; label: string }[] = [
-  { value: 'BAAI/bge-m3', label: 'BAAI/bge-m3 (1024-dim, multilingual)' },
-  { value: 'sentence-transformers/all-MiniLM-L6-v2', label: 'all-MiniLM-L6-v2 (384-dim, legacy)' },
-]
+const LOCAL_EMBEDDING_MODELS = ['BAAI/bge-m3', 'sentence-transformers/all-MiniLM-L6-v2']
+const LOCAL_RERANKER_MODELS = ['BAAI/bge-reranker-v2-m3']
 
 export default function RAGPipelineSection() {
   const [settings, setSettings] = useState<GlobalRAGSettings | null>(null)
-  // Draft values — what the slider / dropdown are currently showing. Synced
-  // to `settings` on load; applied to backend on Save.
+  // Draft value — what the slider is currently showing. Synced to
+  // `settings` on load; applied to backend on Save. (embedding_model moved
+  // to the provider-based flow below, Sprint 20.)
   const [draftChunk, setDraftChunk] = useState<number>(1024)
-  const [draftEmbed, setDraftEmbed] = useState<string>('BAAI/bge-m3')
   const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
@@ -65,10 +85,11 @@ export default function RAGPipelineSection() {
   // visible right where the admin clicked.
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState('')
-  // "Settings staged but NOT yet applied". Persists across the save action
-  // itself — only cleared by a successful Wipe & Reindex. Tells the admin
-  // that their chunk_size / embedder change is written to backend config but
-  // the corpus is still indexed at the previous values.
+  // "Settings staged but NOT yet applied" — covers BOTH chunk_size changes
+  // (legacy flow) AND embedding/reranker provider changes (Sprint 20 flow).
+  // Either one clears this via the single "Reindex" button below, which
+  // always calls the blue-green endpoint (safe no-op-collection-swap when
+  // nothing about the embedder actually changed).
   const [pendingReindex, setPendingReindex] = useState(false)
   // Sprint 18 Fase 4 — admin-tunable retrieval + watcher knobs. Synced from
   // settings.tuning on load; applied via PATCH /admin/api/v1/rag/tuning.
@@ -78,24 +99,52 @@ export default function RAGPipelineSection() {
   const [tuningError, setTuningError] = useState('')
   const { t } = useT()
 
+  // --- Sprint 20 — embedding / reranker provider state ---
+  const [embedRemote, setEmbedRemote] = useState<EmbeddingConfigResponse | null>(null)
+  const [embedDraft, setEmbedDraft] = useState<EmbeddingConfig | null>(null)
+  const [collections, setCollections] = useState<ChromaCollectionInfo[]>([])
+  const [embedSaving, setEmbedSaving] = useState(false)
+  const [embedSaveMsg, setEmbedSaveMsg] = useState('')
+  const [embedError, setEmbedError] = useState('')
+  const [reindexing, setReindexing] = useState(false)
+  const [reindexMsg, setReindexMsg] = useState('')
+
   const reload = async () => {
     setError('')
     try {
       const s = await getRAGSettings()
       setSettings(s)
       setDraftChunk(s.chunk_size)
-      setDraftEmbed(s.embedding_model)
       if (s.tuning) setTuningDraft(s.tuning)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    }
+    try {
+      const cfg = await getEmbeddingConfig()
+      setEmbedRemote(cfg)
+      setEmbedDraft({ embedding: cfg.embedding, reranker: cfg.reranker })
+      if (cfg.pending_reindex) setPendingReindex(true)
+      const cols = await listChromaCollections()
+      setCollections(cols.collections)
+    } catch (e) {
+      setEmbedError(e instanceof Error ? e.message : String(e))
     }
   }
 
   useEffect(() => { reload() }, [])
 
-  const dirty = !!settings && (
-    draftChunk !== settings.chunk_size || draftEmbed !== settings.embedding_model
-  )
+  const dirty = !!settings && draftChunk !== settings.chunk_size
+
+  const embedDirty = !!embedRemote && !!embedDraft && JSON.stringify(embedDraft) !== JSON.stringify({
+    embedding: embedRemote.embedding, reranker: embedRemote.reranker,
+  })
+
+  const patchEmbedding = (patch: Partial<EmbeddingSlotConfig>) => {
+    setEmbedDraft(d => d && ({ ...d, embedding: { ...d.embedding, ...patch } as EmbeddingSlotConfig }))
+  }
+  const patchReranker = (patch: Partial<RerankerSlotConfig>) => {
+    setEmbedDraft(d => d && ({ ...d, reranker: { ...d.reranker, ...patch } as RerankerSlotConfig }))
+  }
 
   const handleToggle = async (next: boolean) => {
     if (!settings) return
@@ -132,11 +181,8 @@ export default function RAGPipelineSection() {
     try {
       const res = await updateRAGSettings({
         chunk_size: draftChunk !== settings?.chunk_size ? draftChunk : undefined,
-        embedding_model: draftEmbed !== settings?.embedding_model ? draftEmbed : undefined,
       })
       await reload()
-      // Backend says any of these changed → admin must wipe+reindex to apply.
-      // Keep that banner visible until the wipe finishes successfully.
       if (res.requires_wipe_and_reindex) {
         setPendingReindex(true)
       }
@@ -147,6 +193,42 @@ export default function RAGPipelineSection() {
     } finally {
       setSaving(false)
       setBusy(false)
+    }
+  }
+
+  // Sprint 20 — single save button for both embedding + reranker slots.
+  // When the embedding slot's provider is "local", the actual model value
+  // is still owned by `backend_config.rag_embedding_model` (see
+  // `rag_service._resolve_active_embedding_slot` — deliberate single-
+  // source-of-truth decision so the local zero-config path never gets a
+  // second place to configure the same value). We route that leg through
+  // the pre-existing `updateRAGSettings` call FIRST, then always persist
+  // `embedding_config_store` too (even for local) so its `provider` field
+  // stays in sync — otherwise switching an admin from "omlx" back to
+  // "local" here would update the model but leave the store still pointed
+  // at "omlx", and `_resolve_active_embedding_slot` would keep routing
+  // queries through the old remote provider.
+  const saveEmbedding = async () => {
+    if (!embedDraft) return
+    setEmbedSaving(true)
+    setEmbedError('')
+    setEmbedSaveMsg('')
+    try {
+      if (embedDraft.embedding.provider === 'local') {
+        const r = await updateRAGSettings({ embedding_model: embedDraft.embedding.model })
+        if (r.requires_wipe_and_reindex) setPendingReindex(true)
+      }
+      const res = await saveEmbeddingConfig(embedDraft)
+      setEmbedRemote(res)
+      setEmbedDraft({ embedding: res.embedding, reranker: res.reranker })
+      if (res.pending_reindex) setPendingReindex(true)
+      setEmbedSaveMsg('Saved')
+      setTimeout(() => setEmbedSaveMsg(''), 3000)
+      await reload()
+    } catch (e) {
+      setEmbedError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setEmbedSaving(false)
     }
   }
 
@@ -184,6 +266,60 @@ export default function RAGPipelineSection() {
     setTuningDraft(DEFAULT_TUNING)
   }
 
+  // Sprint 20 — this is now THE reindex button for chunk_size AND embedding/
+  // reranker provider changes. `reindex_all_scopes_into_new_collection`
+  // already handles both cases correctly: if the target (provider, model)
+  // resolves to the SAME collection name that's already active (e.g. only
+  // chunk_size changed, or the admin re-saved without changing provider),
+  // it transparently falls back to a normal in-place reindex of the active
+  // collection — no blue-green dance, no client.reset(), just fresh chunks.
+  // If the target is a genuinely different collection (provider/model
+  // swap), it builds the new one with zero downtime and swaps atomically.
+  const doReindex = async () => {
+    if (!confirm(
+      'Reindex every scope (global + every frontend + every company) with the currently saved chunk size / ' +
+      'embedding settings. If the embedding provider or model changed, this builds a brand-new vector ' +
+      'collection in the background — chat keeps using the OLD collection until the rebuild finishes ' +
+      'successfully, then queries switch over atomically. Can take minutes to hours depending on corpus size. ' +
+      'Continue?',
+    )) return
+    setReindexing(true)
+    setReindexMsg('Reindexing…')
+    setError('')
+    setEmbedError('')
+    try {
+      const r = await reindexToNewProvider()
+      setReindexMsg(
+        r.swapped
+          ? `Swapped to ${r.collection} (${r.scopes_reindexed} scopes reindexed). Old collection ${r.old_collection} left on disk — purge it below once you're confident.`
+          : `Reindexed ${r.scopes_reindexed} scopes (same collection).`,
+      )
+      setPendingReindex(false)
+      await reload()
+    } catch (e) {
+      setEmbedError(e instanceof Error ? e.message : String(e))
+      setReindexMsg('')
+    } finally {
+      setReindexing(false)
+    }
+  }
+
+  const purgeCollection = async (name: string) => {
+    if (!confirm(`Permanently delete Chroma collection "${name}"? This cannot be undone.`)) return
+    setEmbedError('')
+    try {
+      await deleteChromaCollection(name)
+      await reload()
+    } catch (e) {
+      setEmbedError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  // Full-wipe fallback — kept for corruption recovery / the rare case where
+  // an admin wants to nuke every collection (including old provider
+  // snapshots) and rebuild from scratch. Routine chunk_size / embedding
+  // provider changes should use "Reindex" above instead, which is
+  // non-destructive and reversible.
   const wipeAndReindex = async () => {
     const ok = confirm(t('rag_pipeline_wipe_confirm'))
     if (!ok) return
@@ -198,8 +334,6 @@ export default function RAGPipelineSection() {
       } else {
         setStatus(t('rag_pipeline_wipe_done', { count: r.scopes_reindexed }))
         setTimeout(() => setStatus(''), 8000)
-        // Wipe succeeded → the "pending apply" banner from a prior Save
-        // is no longer relevant. Clear it.
         setPendingReindex(false)
       }
       await reload()
@@ -236,24 +370,65 @@ export default function RAGPipelineSection() {
 
           {settings && (
             <>
-              {/* Editable: embedding model */}
-              <div className="border border-gray-200 rounded-lg p-4">
-                <label className="block">
-                  <div className="text-xs text-gray-500 mb-1">{t('rag_pipeline_embedder')}</div>
-                  <select
-                    value={draftEmbed}
-                    onChange={e => setDraftEmbed(e.target.value)}
-                    disabled={busy}
-                    className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:opacity-50"
-                  >
-                    {EMBEDDING_MODEL_OPTIONS.map(o => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <p className="text-[11px] text-gray-500 mt-1.5">
-                  {t('rag_pipeline_embedder_hint')}
-                </p>
+              {/* Sprint 20 — embedding + reranker, provider-first. Local
+                  keeps the pre-Sprint-20 in-container HuggingFace weights;
+                  oMLX / OpenAI-compatible route to a remote server instead. */}
+              {embedDraft && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <EmbeddingSlotEditor
+                      kind="embedding"
+                      label={t('rag_pipeline_embedder')}
+                      hint={t('rag_pipeline_embedder_hint')}
+                      slot={embedDraft.embedding}
+                      onChange={patchEmbedding}
+                      localModelOptions={LOCAL_EMBEDDING_MODELS}
+                      disabled={embedSaving || reindexing}
+                    />
+                    {embedDraft.embedding.provider === 'local' && (
+                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5 mt-1.5">
+                        Se ejecuta dentro del contenedor sin aceleración GPU/Metal — la opción más lenta.
+                        Si tienes un servidor de inferencia propio (p.ej. oMLX), usa uno de los proveedores
+                        API de arriba para acelerar embeddings y reranking.
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <EmbeddingSlotEditor
+                      kind="reranker"
+                      label={t('rag_pipeline_reranker')}
+                      hint="Rescores retrieved candidates before they reach the prompt. Changing this takes effect on the next query — no reindex needed."
+                      slot={embedDraft.reranker}
+                      onChange={patchReranker}
+                      localModelOptions={LOCAL_RERANKER_MODELS}
+                      disabled={embedSaving || reindexing}
+                    />
+                    {embedDraft.reranker.provider === 'local' && (
+                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5 mt-1.5">
+                        Se ejecuta dentro del contenedor — la opción más lenta. "Enabled"/"Top N" no
+                        aplican en local (se controlan por configuración de despliegue); cambia de
+                        proveedor arriba para poder ajustarlos desde aquí.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {embedError && <p className="text-uni-red text-sm">{embedError}</p>}
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={saveEmbedding}
+                  disabled={embedSaving || reindexing || !embedDirty}
+                  className="text-sm bg-uni-blue text-white rounded-lg px-3 py-2 hover:opacity-90 disabled:opacity-40"
+                >
+                  {embedSaving ? t('generic_saving') : t('rag_pipeline_save_settings')}
+                </button>
+                {embedSaveMsg && <span className="text-xs text-green-700 font-medium">✓ {embedSaveMsg}</span>}
+                {embedDirty && !embedSaving && (
+                  <span className="text-[11px] text-amber-800">{t('rag_pipeline_save_requires_wipe')}</span>
+                )}
               </div>
 
               {/* Editable: chunk size */}
@@ -280,18 +455,10 @@ export default function RAGPipelineSection() {
                 </p>
               </div>
 
-              {/* Read-only: reranker + strategy */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
-                  <div className="text-xs text-gray-500 mb-0.5">{t('rag_pipeline_reranker')}</div>
-                  <code className="text-sm text-gray-800">
-                    {settings.reranker_enabled ? settings.reranker_model : '—'}
-                  </code>
-                </div>
-                <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
-                  <div className="text-xs text-gray-500 mb-0.5">{t('rag_pipeline_strategy')}</div>
-                  <div className="text-sm text-gray-800">Hybrid BM25 + vector + cross-encoder rerank</div>
-                </div>
+              {/* Read-only: retrieval strategy */}
+              <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
+                <div className="text-xs text-gray-500 mb-0.5">{t('rag_pipeline_strategy')}</div>
+                <div className="text-sm text-gray-800">Hybrid BM25 + vector + cross-encoder rerank</div>
               </div>
 
               {/* Save settings — HRDD-style inline feedback right next to
@@ -315,10 +482,9 @@ export default function RAGPipelineSection() {
                 )}
               </div>
 
-              {/* Sprint 15 phase 3 fix — persistent "pending apply" banner.
-                  After the admin saves a chunk_size / embedder change, the
-                  value is in backend config but the index is still at the
-                  OLD settings. Keep this prominent until Wipe & Reindex
+              {/* Sprint 15 phase 3 fix / Sprint 20 — persistent "pending
+                  apply" banner covering chunk_size AND embedding/reranker
+                  provider changes. Stays up until the Reindex button below
                   succeeds, so the admin can't think the change is live when
                   it isn't. */}
               {pendingReindex && (
@@ -332,18 +498,62 @@ export default function RAGPipelineSection() {
                       <p className="text-[12px] text-amber-900">
                         {t('rag_pipeline_pending_apply_body')}
                       </p>
+                      <button
+                        type="button"
+                        onClick={doReindex}
+                        disabled={reindexing}
+                        className="mt-2 text-sm bg-amber-600 text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-40"
+                      >
+                        {reindexing ? 'Reindexing…' : 'Reindex'}
+                      </button>
+                      {reindexMsg && <p className="text-[12px] text-amber-900 mt-2">{reindexMsg}</p>}
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Wipe & Reindex All — destructive, red */}
+              {/* Sprint 20 — collections management. Old provider snapshots
+                  from a previous blue-green swap stay on disk until purged
+                  manually here. */}
+              <details className="border border-gray-200 rounded-md">
+                <summary className="cursor-pointer list-none select-none px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded-t-md flex items-center justify-between">
+                  <span className="text-sm font-semibold text-gray-800">Collections ({collections.length})</span>
+                  <span className="text-xs text-gray-500">Old provider snapshots stay on disk until purged manually</span>
+                </summary>
+                <div className="p-3 space-y-2">
+                  {collections.length === 0 && <p className="text-xs text-gray-400">No collections found.</p>}
+                  {collections.map(c => (
+                    <div key={c.name} className="flex items-center justify-between border border-gray-100 rounded px-2 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs">{c.name}</code>
+                        {c.is_active_chunks && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">active chunks</span>}
+                        {c.is_active_tables && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">active tables</span>}
+                        <span className="text-[11px] text-gray-400">{c.chunk_count} items</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => purgeCollection(c.name)}
+                        disabled={c.is_active_chunks || c.is_active_tables}
+                        className="text-[11px] text-uni-red border border-red-200 rounded px-2 py-0.5 disabled:opacity-30 hover:bg-red-50"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </details>
+
+              {/* Wipe & Reindex All — destructive, full nuke including old
+                  provider snapshots. Danger-zone fallback, not the routine
+                  path (use "Reindex" above for that). */}
               <div className="border border-red-300 bg-red-50/40 rounded-lg p-4">
                 <div className="text-sm font-semibold text-red-800 mb-1">
                   {t('rag_pipeline_wipe_title')}
                 </div>
                 <p className="text-[12px] text-red-800 mb-3">
                   {t('rag_pipeline_wipe_description')}
+                  {' '}Also deletes every OTHER Chroma collection on disk, including old provider snapshots
+                  kept for rollback — prefer "Reindex" above for routine chunk_size / provider changes.
                 </p>
                 <button
                   type="button"
