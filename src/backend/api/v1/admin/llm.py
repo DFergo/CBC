@@ -1,18 +1,41 @@
 """Admin LLM configuration (SPEC §4.7).
 
-3 slots (inference, compressor, summariser) × 3 provider types (lm_studio, ollama, api).
-The `api` provider stores only the ENV VAR NAME for the key — never the key itself.
+4 slots (inference, compressor, summariser, translation), each referencing a
+named connection from the registry (connection_registry.py) instead of
+embedding its own provider/endpoint/api_key. The `api` connection type stores
+either a pasted key or an ENV VAR NAME — never both in plaintext in the
+response (pasted keys are redacted with a sentinel).
 Plus top-level compression settings + summary-routing toggles.
 """
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from src.api.v1.admin.auth import require_admin
-from src.services import llm_config_store
-from src.services.llm_config_store import LLMConfig, SlotConfig
+from src.services import connection_registry, llm_config_store
+from src.services.llm_config_store import API_KEY_SENTINEL, LLMConfig, SlotConfig
 
 router = APIRouter(prefix="/admin/api/v1/llm", tags=["admin-llm"])
+
+
+class ConnectionModel(BaseModel):
+    id: str
+    type: str
+    api_flavor: str | None = None
+    endpoint: str | None = None
+    api_endpoint: str | None = None
+    api_key: str | None = None
+    api_key_env: str | None = None
+    model_ids: list[str] = []
+    enable: bool = True
+
+
+def _redact_connection(conn: dict[str, Any]) -> dict[str, Any]:
+    out = dict(conn)
+    if (out.get("api_key") or "").strip():
+        out["api_key"] = API_KEY_SENTINEL
+    return out
 
 
 @router.get("")
@@ -29,69 +52,89 @@ async def save_config(cfg: LLMConfig, _admin: dict = Depends(require_admin)):
 
 @router.get("/defaults")
 async def get_defaults(_admin: dict = Depends(require_admin)):
-    """Auto-detected endpoint per provider (for UI auto-fill on provider change).
+    """Auto-detected endpoint per local provider type (for prefilling a NEW
+    lm_studio/ollama connection's Endpoint field).
 
     Probe order: `deployment_backend.json` override first (if set), then
-    `host.docker.internal:<port>`, then `localhost:<port>`. First to answer wins.
-    If the admin wants a specific endpoint (e.g. Tailscale), they can always
-    override it in the slot's Endpoint field — that saves normally.
+    `host.docker.internal:<port>`, then `localhost:<port>`.
     """
     return await llm_config_store.endpoint_defaults()
 
 
-@router.get("/providers")
-async def get_providers(_admin: dict = Depends(require_admin)):
-    """Live status + model list for the default lm_studio + ollama endpoints.
+# --- Connections registry ---
 
-    Drives the top indicator panel in the admin LLM section (HRDD pattern). The
-    admin UI polls this every ~15s so the dots stay fresh; the models list
-    populates the dropdown when a slot picks lm_studio or ollama.
-    Per-slot / API endpoints are covered by POST /health.
+
+@router.get("/connections")
+async def list_connections(_admin: dict = Depends(require_admin)):
+    return [_redact_connection(c) for c in connection_registry.connections.all()]
+
+
+@router.post("/connections")
+async def create_connection(conn: ConnectionModel, _admin: dict = Depends(require_admin)):
+    try:
+        created = connection_registry.connections.add(conn.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _redact_connection(created)
+
+
+@router.put("/connections/{connection_id}")
+async def update_connection(
+    connection_id: str, conn: ConnectionModel, _admin: dict = Depends(require_admin)
+):
+    patch = conn.model_dump()
+    # Sentinel rule — same as the old per-slot api_key handling: if the admin
+    # opened the form and didn't retype the key, preserve the stored value.
+    if (patch.get("api_key") or "") == API_KEY_SENTINEL:
+        existing = connection_registry.connections.get(connection_id)
+        patch["api_key"] = (existing or {}).get("api_key")
+    try:
+        updated = connection_registry.connections.update(connection_id, patch)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return _redact_connection(updated)
+
+
+@router.delete("/connections/{connection_id}")
+async def delete_connection(connection_id: str, _admin: dict = Depends(require_admin)):
+    connection_registry.connections.delete(connection_id)
+    return {"ok": True}
+
+
+@router.get("/connections/status")
+async def connections_status(_admin: dict = Depends(require_admin)) -> dict[str, Any]:
+    """Live status + model list for every enabled connection. Drives the
+    admin's Connections list indicator + every slot's model dropdown. Polled
+    every ~15s by the admin UI."""
+    return await llm_config_store.fetch_connections_status()
+
+
+@router.post("/connections/probe")
+async def probe_connection(conn: ConnectionModel, _admin: dict = Depends(require_admin)) -> dict[str, Any]:
+    """Probe an in-progress (not yet saved) connection so the admin UI can
+    show the model catalogue before persisting.
+
+    Sentinel rule: if `api_key` arrives as the redact sentinel, the admin
+    opened the form for an EXISTING saved connection and didn't retype the
+    key — resolve it from the persisted registry by id.
     """
-    return await llm_config_store.fetch_provider_status()
+    conn_dict = conn.model_dump()
+    if conn_dict.get("type") == "api" and (conn_dict.get("api_key") or "") == API_KEY_SENTINEL:
+        saved = connection_registry.connections.get(conn.id)
+        if saved:
+            conn_dict["api_key"] = saved.get("api_key")
+    return await llm_config_store.check_connection_health(conn_dict)
+
+
+# --- Per-slot health ---
 
 
 @router.post("/health")
 async def health(_admin: dict = Depends(require_admin)) -> dict[str, Any]:
     cfg = llm_config_store.load_config()
-    inference = await llm_config_store.check_slot_health(cfg.inference)
-    compressor = await llm_config_store.check_slot_health(cfg.compressor)
-    summariser = await llm_config_store.check_slot_health(cfg.summariser)
-    return {
-        "inference": {"provider": cfg.inference.provider, **inference},
-        "compressor": {"provider": cfg.compressor.provider, **compressor},
-        "summariser": {"provider": cfg.summariser.provider, **summariser},
-    }
-
-
-@router.post("/providers/probe")
-async def probe_slot(slot: SlotConfig,
-                     _admin: dict = Depends(require_admin)) -> dict[str, Any]:
-    """Sprint 19 followup — probe an in-progress slot config (NOT yet saved)
-    so the admin UI can show the model catalogue before persisting.
-
-    The admin types endpoint + flavor + api_key into the form, clicks
-    "Test connection". The frontend POSTs the current values here. We
-    instantiate a transient SlotConfig and run the same `check_slot_health`
-    that the regular /health endpoint uses — but without touching the
-    persisted llm_config.json. Result is purely a UX hint: status + model
-    list to populate the dropdown.
-
-    Sprint 19 Fase 1 sentinel rule: if `api_key` arrives as the redact
-    sentinel, the admin opened the form for an EXISTING saved slot and
-    didn't retype the key. Resolve from the persisted config instead.
-    """
-    # Sentinel resolution — if the admin pasted the sentinel back, look up
-    # the real key from the saved config (matching by api_endpoint).
-    if slot.provider == "api" and (slot.api_key or "") == llm_config_store.API_KEY_SENTINEL:
-        saved = llm_config_store.load_config()
-        for saved_slot in (saved.inference, saved.compressor, saved.summariser):
-            if (
-                saved_slot.provider == "api"
-                and saved_slot.api_endpoint == slot.api_endpoint
-                and saved_slot.api_flavor == slot.api_flavor
-                and (saved_slot.api_key or "")
-            ):
-                slot.api_key = saved_slot.api_key
-                break
-    return await llm_config_store.check_slot_health(slot)
+    result: dict[str, Any] = {}
+    for slot_name in llm_config_store.SLOT_NAMES:
+        slot: SlotConfig = getattr(cfg, slot_name)
+        r = await llm_config_store.check_slot_health(slot)
+        result[slot_name] = {"connection_id": slot.connection_id, **r}
+    return result

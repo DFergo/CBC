@@ -216,6 +216,7 @@ export type AdminTranslationKeys =
   | 'llm_slot_inference' | 'llm_slot_inference_hint'
   | 'llm_slot_compressor' | 'llm_slot_compressor_hint'
   | 'llm_slot_summariser' | 'llm_slot_summariser_hint'
+  | 'llm_slot_translation' | 'llm_slot_translation_hint'
   | 'llm_context_compression' | 'llm_context_enabled' | 'llm_context_description'
   | 'llm_context_first_threshold' | 'llm_context_step_size'
   | 'llm_summary_routing' | 'llm_summary_routing_description'
@@ -630,13 +631,15 @@ const EN: AdminTranslations = {
   guardrails_user_sees_end: 'User sees when session is ended',
   // LLM section
   llm_heading: 'LLM',
-  llm_description: 'Three slots, each picking one of three provider types independently. API keys live in container env vars — only the variable name is stored here.',
+  llm_description: 'Register provider connections once below, then pick a connection + model independently for each of the four slots. API keys live on the connection — paste them in the UI or point to a container env var.',
   llm_slot_inference: 'Inference',
   llm_slot_inference_hint: 'Main chat responses.',
   llm_slot_compressor: 'Compressor',
   llm_slot_compressor_hint: 'Lightweight model that folds older messages into a running summary at progressive thresholds.',
   llm_slot_summariser: 'Summariser',
   llm_slot_summariser_hint: 'Document summaries during injection + final conversation summary emailed to the user.',
+  llm_slot_translation: 'Translation',
+  llm_slot_translation_hint: 'Auto-translates the disclaimer and instructions text into the app languages (Branding tab).',
   llm_context_compression: 'Context compression',
   llm_context_enabled: 'Enabled',
   llm_context_description: 'When enabled, the conversation is compressed by the slot configured above as "Compressor", using progressive thresholds: first compression at first threshold tokens, then every step size tokens after. Example: first=20 000, step=15 000 → compressions at 20k, 35k, 50k, 65k, …',
@@ -1133,13 +1136,15 @@ const ES: AdminTranslations = {
   guardrails_user_sees_end: 'El usuario ve cuando la sesión finaliza',
 
   llm_heading: 'LLM',
-  llm_description: 'Tres ranuras, cada una selecciona de forma independiente uno de los tres tipos de proveedor. Las claves API se almacenan en variables de entorno del contenedor — aquí solo se guarda el nombre de la variable.',
+  llm_description: 'Registra las conexiones de proveedor una vez abajo, y luego elige una conexión + modelo de forma independiente para cada una de las cuatro ranuras. Las claves API viven en la conexión — pégalas en la interfaz o apunta a una variable de entorno del contenedor.',
   llm_slot_inference: 'Inference',
   llm_slot_inference_hint: 'Respuestas principales del chat.',
   llm_slot_compressor: 'Compressor',
   llm_slot_compressor_hint: 'Modelo ligero que condensa los mensajes más antiguos en un resumen progresivo según umbrales definidos.',
   llm_slot_summariser: 'Summariser',
   llm_slot_summariser_hint: 'Resúmenes de documentos durante la inyección y resumen final de la conversación enviado al usuario por correo.',
+  llm_slot_translation: 'Translation',
+  llm_slot_translation_hint: 'Traduce automáticamente el texto de aviso legal e instrucciones a los idiomas de la app (pestaña Branding).',
   llm_context_compression: 'Compresión de contexto',
   llm_context_enabled: 'Activada',
   llm_context_description: 'Cuando está activada, la conversación es comprimida por la ranura configurada como «Compressor», utilizando umbrales progresivos: primera compresión al alcanzar el primer umbral de tokens, luego cada paso de tamaño adicional. Ejemplo: first=20 000, step=15 000 → compresiones en 20k, 35k, 50k, 65k, …',

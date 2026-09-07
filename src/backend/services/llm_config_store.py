@@ -1,112 +1,71 @@
 """LLM configuration + health check (SPEC §4.7).
 
-Three slots:
-- `inference`  — main chat
-- `compressor` — periodic context-window compression (progressive thresholds)
-- `summariser` — document summaries on injection + final conversation summary
+Four slots:
+- `inference`   — main chat
+- `compressor`  — periodic context-window compression (progressive thresholds)
+- `summariser`  — document summaries on injection + final conversation summary
+- `translation` — branding auto-translate (disclaimer/instructions → i18n
+                   languages); previously hardwired to reuse `summariser`.
 
 Plus a top-level `compression` block (enabled/first_threshold/step_size) and a
-`routing` block with two summary-routing toggles. Fallback cascade on failure:
-compressor → summariser → inference (preserved from HRDD Sprint 17; applied at
-call-time in Sprint 6 llm_provider).
+`routing` block with two summary-routing toggles (routes only among the
+original 3 slots — translation is invoked directly, not part of routing).
+Fallback cascade on failure: own slot → summariser → inference → compressor
+(preserved from HRDD Sprint 17 / Daniel's Sprint 6A rule; applied at call-time
+in llm_provider). `translation` additionally falls back into that same chain.
 
-API key handling: only the env-var NAME is stored in the config file.
+Each slot references a connection from the registry (connection_registry.py)
+instead of embedding its own provider/endpoint/api_key — that's the Sprint-N
+"LLM provider registry" port from HRDDHelper. API key handling now lives on
+the connection record: only the env-var NAME or the pasted secret is stored
+there, never duplicated per slot.
 """
 import logging
-import os
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
-from src.core.config import config as backend_config
+from src.services import connection_registry
 from src.services._paths import LLM_CONFIG_FILE, atomic_write_json, read_json
 
 logger = logging.getLogger("llm_config")
 
 ProviderType = Literal["lm_studio", "ollama", "api"]
 ApiFlavor = Literal["anthropic", "openai", "openai_compatible"]
-SlotName = Literal["inference", "compressor", "summariser"]
+SlotName = Literal["inference", "compressor", "summariser", "translation"]
 
-
-def _lm_studio_default() -> str:
-    return backend_config.lm_studio_endpoint
-
-
-def _ollama_default() -> str:
-    return backend_config.ollama_endpoint
+SLOT_NAMES: tuple[SlotName, ...] = ("inference", "compressor", "summariser", "translation")
 
 
 class SlotConfig(BaseModel):
-    provider: ProviderType = "lm_studio"
+    connection_id: str = ""
     model: str = ""
     temperature: float = 0.7
     max_tokens: int = 4096
     num_ctx: int = 8192
 
-    # Endpoint for local providers (lm_studio / ollama)
-    endpoint: str = Field(default_factory=_lm_studio_default)
 
-    # api provider — meaningful only when provider == "api". Two ways to
-    # supply the key (Sprint 19 Fase 1):
-    #   - `api_key`: pasted into the admin UI, persisted in llm_config.json.
-    #     Sentinel `••••••••` is shown in GET responses; PUT preserves the
-    #     stored value when it sees the sentinel back. Open WebUI pattern.
-    #   - `api_key_env`: name of an env var on the container; the key value
-    #     comes from `os.environ[<name>]` at request time. Pattern A from
-    #     Sprint 9 — kept for deployments that prefer Vault / external
-    #     secret stores. Either one is enough; if both are set, `api_key`
-    #     wins (more local + explicit).
-    api_flavor: ApiFlavor | None = None
-    api_endpoint: str | None = None
-    api_key_env: str | None = None
-    api_key: str | None = None
-
-    @model_validator(mode="after")
-    def _validate(self) -> "SlotConfig":
-        if self.provider == "api":
-            if not self.api_flavor:
-                raise ValueError("api_flavor required when provider is 'api'")
-            # Sprint 19 Fase 1 — accept EITHER inline api_key OR api_key_env.
-            # The validator can't know about the redact sentinel "••••••••"
-            # (the loader resolves that before we get here), so this just
-            # checks "did the admin supply something". Empty strings count
-            # as not-supplied so a "key cleared" flow surfaces as a clean
-            # config error.
-            has_inline = bool((self.api_key or "").strip())
-            has_env = bool((self.api_key_env or "").strip())
-            if not has_inline and not has_env:
-                raise ValueError(
-                    "either api_key (paste in admin) or api_key_env (env var name) "
-                    "is required when provider is 'api'"
-                )
-            if not self.api_endpoint:
-                self.api_endpoint = {
-                    "anthropic": "https://api.anthropic.com/v1",
-                    "openai": "https://api.openai.com/v1",
-                    "openai_compatible": "",
-                }[self.api_flavor]
-        return self
-
-
-# Sprint 19 Fase 1 — sentinel string used to (a) tell the admin UI "this
-# slot has an api_key set, just don't tell me what it is" and (b) tell
-# the PUT handler "the user didn't retype the key, preserve the stored
-# one". 8 bullet chars; unlikely to collide with a real provider key.
+# Sentinel string used to (a) tell the admin UI "this connection has an
+# api_key set, just don't tell me what it is" and (b) tell the PUT handler
+# "the user didn't retype the key, preserve the stored one". 8 bullet chars;
+# unlikely to collide with a real provider key.
 API_KEY_SENTINEL = "••••••••"
 
 
-def resolve_api_key(slot: SlotConfig) -> str | None:
-    """Return the actual api key for a slot, or None if neither source has
-    a value. Inline `api_key` wins over env var (admin had to explicitly
-    paste it, more recent + explicit). The env var path stays so deploys
-    that wire keys via Portainer / vault keep working."""
-    if slot.provider != "api":
+def resolve_api_key(conn: dict[str, Any]) -> str | None:
+    """Return the actual api key for a connection dict, or None if neither
+    source has a value. Inline `api_key` wins over env var (admin had to
+    explicitly paste it, more recent + explicit). The env var path stays so
+    deploys that wire keys via Portainer / vault keep working."""
+    if conn.get("type") != "api":
         return None
-    inline = (slot.api_key or "").strip()
+    import os
+
+    inline = (conn.get("api_key") or "").strip()
     if inline and inline != API_KEY_SENTINEL:
         return inline
-    env_name = (slot.api_key_env or "").strip()
+    env_name = (conn.get("api_key_env") or "").strip()
     if env_name:
         env_val = os.environ.get(env_name)
         if env_val:
@@ -121,32 +80,22 @@ class CompressionSettings(BaseModel):
 
 
 class RoutingToggles(BaseModel):
-    document_summary_slot: SlotName = "summariser"
-    user_summary_slot: SlotName = "summariser"
+    document_summary_slot: Literal["inference", "compressor", "summariser"] = "summariser"
+    user_summary_slot: Literal["inference", "compressor", "summariser"] = "summariser"
     # Sprint 15 phase 5: CR generates a 60-word context sentence per chunk at
     # ingest time. The task is "summarise this chunk with document context" —
     # doesn't need a 122B model. Default to `compressor` (small fast slot,
     # e.g. qwen3.5-9b on Ollama). For a 100-CBA corpus this cuts a CR reindex
     # from ~35 hours on the summariser slot to ~3-4 hours on the compressor.
     # Admin can bump to `summariser` if quality ever requires it.
-    contextual_retrieval_slot: SlotName = "compressor"
-
-
-def _default_compressor() -> SlotConfig:
-    return SlotConfig(
-        provider="ollama",
-        endpoint=_ollama_default(),
-        model=backend_config.ollama_summariser_model,
-        temperature=0.3,
-        max_tokens=1024,
-        num_ctx=backend_config.ollama_num_ctx,
-    )
+    contextual_retrieval_slot: Literal["inference", "compressor", "summariser"] = "compressor"
 
 
 class LLMConfig(BaseModel):
     inference: SlotConfig = Field(default_factory=SlotConfig)
-    compressor: SlotConfig = Field(default_factory=_default_compressor)
+    compressor: SlotConfig = Field(default_factory=SlotConfig)
     summariser: SlotConfig = Field(default_factory=SlotConfig)
+    translation: SlotConfig = Field(default_factory=SlotConfig)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)
     routing: RoutingToggles = Field(default_factory=RoutingToggles)
     # Sprint 13: when True, the provider request body and the system prompt are
@@ -165,26 +114,74 @@ class LLMConfig(BaseModel):
     max_concurrent_turns: Literal[1, 2, 4, 6] = 4
 
 
+def _migrate_legacy_slot(slot_data: dict[str, Any]) -> dict[str, Any]:
+    """Convert one old-shape slot dict (inline provider/endpoint/api_key/...)
+    into the new shape (connection_id + model + params), reusing or creating
+    a connection in the registry. No-op if already migrated (has connection_id
+    or lacks the old `provider` marker)."""
+    if "connection_id" in slot_data or "provider" not in slot_data:
+        return slot_data
+    conn_id = connection_registry.connections.add_or_reuse({
+        "id": f"migrated-{slot_data.get('provider', 'unknown')}",
+        "type": slot_data.get("provider", "lm_studio"),
+        "api_flavor": slot_data.get("api_flavor"),
+        "endpoint": slot_data.get("endpoint"),
+        "api_endpoint": slot_data.get("api_endpoint"),
+        "api_key": slot_data.get("api_key"),
+        "api_key_env": slot_data.get("api_key_env"),
+    })
+    return {
+        "connection_id": conn_id,
+        "model": slot_data.get("model", ""),
+        "temperature": slot_data.get("temperature", 0.7),
+        "max_tokens": slot_data.get("max_tokens", 4096),
+        "num_ctx": slot_data.get("num_ctx", 8192),
+    }
+
+
 def _migrate_legacy(data: dict[str, Any]) -> dict[str, Any]:
-    """Migrate old 2-slot config (Sprint 3 initial) to the 3-slot shape.
+    """Migrate old shapes to the current one:
 
-    Old shape: {inference: {...}, summariser: {...}}
-    New shape: {inference, compressor, summariser, compression, routing}
-
-    The old `summariser` becomes the new `compressor` (it was lightweight, used
-    for context compression). The new `summariser` starts from inference's config
-    so it's immediately usable.
+    1. Sprint 3 initial 2-slot config {inference, summariser} → 3-slot shape
+       (compressor takes over the old summariser role, summariser starts
+       from inference).
+    2. Pre-connection-registry 3-slot config (each slot has inline
+       provider/endpoint/api_key fields) → connection_id-based slots, plus a
+       new `translation` slot. Translation defaults to a copy of the
+       (migrated) summariser slot's connection_id/model, so the existing
+       auto-translate behaviour (which used to hardcode the summariser slot)
+       doesn't change until the admin deliberately reconfigures it.
     """
-    if "compressor" in data or "compression" in data:
-        return data  # already new shape
-    if "summariser" in data and "inference" in data:
-        logger.info("Migrating legacy 2-slot LLM config to 3-slot shape")
-        migrated = {
-            "inference": data["inference"],
-            "compressor": data["summariser"],
-            "summariser": dict(data["inference"]),
-        }
-        return migrated
+    if "compressor" not in data and "compression" not in data:
+        if "summariser" in data and "inference" in data:
+            logger.info("Migrating legacy 2-slot LLM config to 3-slot shape")
+            data = {
+                "inference": data["inference"],
+                "compressor": data["summariser"],
+                "summariser": dict(data["inference"]),
+            }
+
+    inference = data.get("inference") or {}
+    compressor = data.get("compressor") or {}
+    summariser = data.get("summariser") or {}
+    needs_connection_migration = any(
+        "provider" in s and "connection_id" not in s
+        for s in (inference, compressor, summariser)
+        if isinstance(s, dict)
+    )
+    if needs_connection_migration:
+        logger.info("Migrating legacy inline-provider LLM slots to connection_id shape")
+        data = dict(data)
+        data["inference"] = _migrate_legacy_slot(inference) if inference else inference
+        data["compressor"] = _migrate_legacy_slot(compressor) if compressor else compressor
+        data["summariser"] = _migrate_legacy_slot(summariser) if summariser else summariser
+        if "translation" not in data:
+            data["translation"] = dict(data["summariser"])
+
+    if "translation" not in data:
+        data = dict(data)
+        data["translation"] = dict(data.get("summariser") or {})
+
     return data
 
 
@@ -193,50 +190,26 @@ def load_config() -> LLMConfig:
     if not isinstance(data, dict):
         return LLMConfig()
     try:
-        data = _migrate_legacy(data)
-        return LLMConfig(**data)
+        migrated = _migrate_legacy(data)
+        cfg = LLMConfig(**migrated)
+        if migrated is not data:
+            save_config(cfg)
+        return cfg
     except Exception as e:
         logger.warning(f"Invalid llm_config.json ({e}); returning defaults")
         return LLMConfig()
 
 
 def save_config(cfg: LLMConfig) -> None:
-    """Persist the LLM config. Sprint 19 Fase 1 — if any slot's `api_key`
-    arrived as the redact sentinel (admin opened the form, didn't retype the
-    key, hit Save), preserve the previously stored value. Otherwise the
-    sentinel would overwrite the real key with literal bullets and the next
-    health check would fail.
-
-    Loading the prior state to merge is one extra read; cheap.
-    """
-    incoming = cfg.model_dump()
-    prior = read_json(LLM_CONFIG_FILE)
-    if isinstance(prior, dict):
-        for slot_name in ("inference", "compressor", "summariser"):
-            slot_in = incoming.get(slot_name) or {}
-            slot_prev = (prior.get(slot_name) or {}) if isinstance(prior, dict) else {}
-            if (slot_in.get("api_key") or "") == API_KEY_SENTINEL:
-                # Preserve whatever was stored before (could be a real key,
-                # could be empty if env-var path is used).
-                slot_in["api_key"] = slot_prev.get("api_key") or None
-                incoming[slot_name] = slot_in
-    atomic_write_json(LLM_CONFIG_FILE, incoming)
+    atomic_write_json(LLM_CONFIG_FILE, cfg.model_dump())
     logger.info("LLM config saved")
 
 
 def redact_for_response(cfg: LLMConfig) -> dict[str, Any]:
-    """Sprint 19 Fase 1 — `api_key_env` is a variable NAME (safe), but
-    `api_key` is the literal secret pasted by the admin. Replace it with
-    the sentinel `••••••••` for any slot that has it set, so the admin UI
-    knows "key is configured" without ever receiving the value.
-    """
-    out = cfg.model_dump()
-    for slot_name in ("inference", "compressor", "summariser"):
-        slot = out.get(slot_name) or {}
-        if (slot.get("api_key") or "").strip():
-            slot["api_key"] = API_KEY_SENTINEL
-            out[slot_name] = slot
-    return out
+    """Slot dump has no secrets any more (those live on the connection record,
+    redacted separately by the connections API) — kept for API-shape
+    stability with callers that expect this helper's name."""
+    return cfg.model_dump()
 
 
 def _candidate_endpoints(provider: ProviderType) -> list[str]:
@@ -248,6 +221,8 @@ def _candidate_endpoints(provider: ProviderType) -> list[str]:
 
     Duplicates are removed while preserving order.
     """
+    from src.core.config import config as backend_config
+
     if provider == "lm_studio":
         override = (backend_config.lm_studio_endpoint or "").strip()
         defaults = ["http://host.docker.internal:1234/v1", "http://localhost:1234/v1"]
@@ -280,7 +255,7 @@ async def _autodetect(provider: ProviderType, timeout: float = 2.0) -> dict[str,
 
     last: dict[str, Any] = {}
     for url in candidates:
-        r = await check_slot_health(SlotConfig(provider=provider, endpoint=url), timeout=timeout)
+        r = await check_connection_health({"type": provider, "endpoint": url}, timeout=timeout)
         last = {"endpoint": url, **r}
         if r["ok"]:
             return last
@@ -288,12 +263,8 @@ async def _autodetect(provider: ProviderType, timeout: float = 2.0) -> dict[str,
 
 
 async def endpoint_defaults() -> dict[str, str]:
-    """Auto-detected endpoint per provider, used by the admin UI for auto-fill.
-
-    Probes the candidates from `_candidate_endpoints` and returns whichever
-    responds. If none do, returns the last candidate attempted (so the UI still
-    shows something sensible and the admin can see what to override).
-    """
+    """Auto-detected endpoint per provider, used by the admin UI for auto-fill
+    when creating a NEW lm_studio/ollama connection."""
     lm = await _autodetect("lm_studio")
     ol = await _autodetect("ollama")
     return {
@@ -302,7 +273,7 @@ async def endpoint_defaults() -> dict[str, str]:
     }
 
 
-def _parse_models(provider: ProviderType, flavor: ApiFlavor | None, payload: Any) -> list[str]:
+def _parse_models(provider: ProviderType, payload: Any) -> list[str]:
     """Extract model IDs from a provider's /models response.
 
     LM Studio + OpenAI + Anthropic + OpenAI-compatible → OpenAI-style payload:
@@ -316,162 +287,95 @@ def _parse_models(provider: ProviderType, flavor: ApiFlavor | None, payload: Any
     return [m.get("id", "") for m in payload.get("data", []) if m.get("id")]
 
 
-async def check_slot_health(slot: SlotConfig, timeout: float = 5.0) -> dict[str, Any]:
-    """Light HTTP probe + model listing.
+def _result(ok: bool, status: int, error: str | None, models: list[str] | None = None) -> dict[str, Any]:
+    return {"ok": ok, "status_code": status, "error": error, "models": models or []}
+
+
+async def check_connection_health(conn: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    """Light HTTP probe + model listing for one connection record (or a
+    transient in-progress dict shaped the same way, for the "Test connection"
+    UX before Save).
 
     - lm_studio: GET {endpoint}/models  (OpenAI-compatible)
     - ollama:    GET {endpoint}/api/tags
-    - api:       verify env var is set, GET {api_endpoint}/models with auth header
+    - api:       verify a key is resolvable, GET {api_endpoint}/models with
+                 auth header appropriate to api_flavor
 
     Returns {ok, status_code, error, models}.
     """
+    provider = conn.get("type")
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            if slot.provider == "lm_studio":
-                r = await client.get(f"{slot.endpoint.rstrip('/')}/models")
-                models = _parse_models("lm_studio", None, r.json()) if r.status_code == 200 else []
+            if provider == "lm_studio":
+                endpoint = (conn.get("endpoint") or "").rstrip("/")
+                r = await client.get(f"{endpoint}/models")
+                models = _parse_models("lm_studio", r.json()) if r.status_code == 200 else []
                 return _result(r.status_code == 200, r.status_code, None, models)
 
-            if slot.provider == "ollama":
-                r = await client.get(f"{slot.endpoint.rstrip('/')}/api/tags")
-                models = _parse_models("ollama", None, r.json()) if r.status_code == 200 else []
+            if provider == "ollama":
+                endpoint = (conn.get("endpoint") or "").rstrip("/")
+                r = await client.get(f"{endpoint}/api/tags")
+                models = _parse_models("ollama", r.json()) if r.status_code == 200 else []
                 return _result(r.status_code == 200, r.status_code, None, models)
 
             # provider == "api"
-            # Sprint 19 Fase 1 — resolve via inline api_key first, then env var.
-            key = resolve_api_key(slot)
+            key = resolve_api_key(conn)
             if not key:
-                if (slot.api_key or "").strip():
-                    # Inline path: stored value is empty / sentinel only — admin
-                    # never actually pasted a key. Surface that exact problem.
+                if (conn.get("api_key") or "").strip():
                     return _result(False, 0, "api_key is empty (paste it in admin or set api_key_env)", [])
-                env_name = (slot.api_key_env or "").strip()
+                env_name = (conn.get("api_key_env") or "").strip()
                 if env_name:
                     return _result(False, 0, f"env var {env_name} is not set in the container", [])
                 return _result(False, 0, "no api_key (paste in admin) and no api_key_env set", [])
 
+            api_flavor = conn.get("api_flavor")
+            api_endpoint = (conn.get("api_endpoint") or "").rstrip("/")
             headers: dict[str, str] = {}
-            if slot.api_flavor == "anthropic":
+            if api_flavor == "anthropic":
                 headers["x-api-key"] = key
                 headers["anthropic-version"] = "2023-06-01"
-                url = f"{slot.api_endpoint.rstrip('/')}/models"
-            elif slot.api_flavor in ("openai", "openai_compatible"):
+                url = f"{api_endpoint}/models"
+            elif api_flavor in ("openai", "openai_compatible"):
                 headers["Authorization"] = f"Bearer {key}"
-                url = f"{slot.api_endpoint.rstrip('/')}/models"
+                url = f"{api_endpoint}/models"
             else:
-                return _result(False, 0, f"unknown api_flavor {slot.api_flavor!r}", [])
+                return _result(False, 0, f"unknown api_flavor {api_flavor!r}", [])
 
             r = await client.get(url, headers=headers)
-            models = _parse_models("api", slot.api_flavor, r.json()) if r.status_code == 200 else []
+            models = _parse_models("api", r.json()) if r.status_code == 200 else []
             err = None if r.status_code == 200 else r.text[:200]
             return _result(r.status_code == 200, r.status_code, err, models)
         except httpx.HTTPError as e:
             return _result(False, 0, str(e), [])
 
 
-def _slot_endpoint_for_provider(cfg: "LLMConfig", provider: ProviderType) -> str | None:
-    """Return the endpoint of the first slot that uses this provider (inference
-    → compressor → summariser order), or None if no slot does.
-    """
-    for slot in (cfg.inference, cfg.compressor, cfg.summariser):
-        if slot.provider == provider and slot.endpoint:
-            return slot.endpoint
-    return None
+async def check_slot_health(slot: SlotConfig, timeout: float = 5.0) -> dict[str, Any]:
+    """Resolve the slot's connection and probe it. Used by /health."""
+    conn = connection_registry.connections.get(slot.connection_id)
+    if not conn:
+        return _result(False, 0, f"no connection configured (connection_id={slot.connection_id!r})", [])
+    return await check_connection_health(conn, timeout=timeout)
 
 
-async def fetch_provider_status(timeout: float = 5.0) -> dict[str, Any]:
-    """Probe every configured provider and return status + model list.
+async def fetch_connections_status(timeout: float = 5.0) -> dict[str, Any]:
+    """Probe every enabled connection in parallel. Returns
+    {connection_id: {status, models, error}}. Feeds the admin's Connections
+    list + every slot's model dropdown."""
+    import asyncio
 
-    Feeds the top-level indicator in the admin LLM section (HRDD pattern) +
-    populates the per-slot model dropdown.
-
-    Shape (Sprint 18 Fase 5 — extended for `api` providers):
-    {
-      "lm_studio": { endpoint, status, models, error },
-      "ollama":    { endpoint, status, models, error },
-      "api":       [
-        { slot, api_flavor, api_endpoint, api_key_env, status, models, error },
-        ...one entry per slot configured with provider=api...
-      ]
-    }
-
-    Logic per provider:
-    - lm_studio / ollama (single endpoint each): if a saved slot uses this
-      provider, probe that slot's endpoint; otherwise run auto-detect
-      (host.docker.internal → localhost, with deployment_backend.json
-      override taking priority if set).
-    - api (potentially multiple): iterate every slot whose provider is
-      "api" and probe each one — different slots may point at different
-      API providers (e.g. summariser=Anthropic, inference=MiniMax). Each
-      slot becomes its own entry in the result list.
-    """
-    cfg = load_config()
-    result: dict[str, Any] = {}
-
-    for provider_type in ("lm_studio", "ollama"):
-        slot_endpoint = _slot_endpoint_for_provider(cfg, provider_type)
-        if slot_endpoint:
-            r = await check_slot_health(
-                SlotConfig(provider=provider_type, endpoint=slot_endpoint),
-                timeout=timeout,
-            )
-            endpoint = slot_endpoint
-            ok = r["ok"]
-            models = r["models"]
-            error = r["error"]
+    enabled = connection_registry.connections.enabled()
+    results = await asyncio.gather(
+        *(check_connection_health(c, timeout=timeout) for c in enabled),
+        return_exceptions=True,
+    )
+    status: dict[str, Any] = {}
+    for conn, res in zip(enabled, results):
+        if isinstance(res, Exception):
+            status[conn["id"]] = {"status": "offline", "error": str(res), "models": []}
         else:
-            detected = await _autodetect(provider_type, timeout=timeout)
-            endpoint = detected["endpoint"]
-            ok = detected["ok"]
-            models = detected["models"]
-            error = detected["error"]
-
-        result[provider_type] = {
-            "endpoint": endpoint,
-            "status": "online" if ok else "offline",
-            "models": models,
-            "error": error,
-        }
-
-    # Sprint 18 Fase 5 — also probe every slot configured as `api`. Each slot
-    # is its own entry (different endpoint / flavor / key per slot is allowed:
-    # you can have summariser=Anthropic + inference=MiniMax in the same setup).
-    api_entries: list[dict[str, Any]] = []
-    seen: set[tuple[str, str | None, str | None]] = set()
-    for slot_name, slot in (
-        ("inference", cfg.inference),
-        ("compressor", cfg.compressor),
-        ("summariser", cfg.summariser),
-    ):
-        if slot.provider != "api":
-            continue
-        # Dedup: if two slots happen to point at the exact same api_endpoint
-        # + flavor + key_env, probe once and report both slot names.
-        key = (slot.api_endpoint or "", slot.api_flavor, slot.api_key_env)
-        if key in seen:
-            for entry in api_entries:
-                if (
-                    entry["api_endpoint"] == (slot.api_endpoint or "")
-                    and entry["api_flavor"] == slot.api_flavor
-                    and entry["api_key_env"] == slot.api_key_env
-                ):
-                    entry["slots"].append(slot_name)
-            continue
-        seen.add(key)
-        r = await check_slot_health(slot, timeout=timeout)
-        api_entries.append({
-            "slots": [slot_name],
-            "api_flavor": slot.api_flavor,
-            "api_endpoint": slot.api_endpoint or "",
-            "api_key_env": slot.api_key_env,
-            "status": "online" if r["ok"] else "offline",
-            "models": r["models"],
-            "error": r["error"],
-        })
-    result["api"] = api_entries
-
-    return result
-
-
-def _result(ok: bool, status: int, error: str | None, models: list[str] | None = None) -> dict[str, Any]:
-    return {"ok": ok, "status_code": status, "error": error, "models": models or []}
+            status[conn["id"]] = {
+                "status": "online" if res["ok"] else "offline",
+                "models": res["models"],
+                "error": res["error"],
+            }
+    return status

@@ -2,7 +2,9 @@
 
 Fills in `disclaimer_text_translations` and `instructions_text_translations`
 for every language in LANGUAGE_CODES that is not already populated, running
-the summariser LLM slot (with the standard fallback chain in llm_provider).
+the dedicated `translation` LLM slot (with the standard fallback chain in
+llm_provider — falls back into summariser/inference/compressor if
+unconfigured or unavailable).
 
 Called from admin endpoints, synchronously — translating 30 targets × 2
 blocks × one round-trip each takes ~30-60 s on a typical local model, which
@@ -85,11 +87,11 @@ async def _translate_one(
     target_lang: str,
     frontend_id: str | None,
 ) -> str:
-    """One round-trip through the summariser slot. Returns the translation,
+    """One round-trip through the translation slot. Returns the translation,
     stripped of surrounding whitespace. Raises on LLM failure — caller decides
     whether to swallow per-language or fail the whole job."""
     messages = _build_messages(source_text, source_lang, target_lang)
-    out = await llm_chat(messages, slot="summariser", frontend_id=frontend_id)
+    out = await llm_chat(messages, slot="translation", frontend_id=frontend_id)
     return out.strip()
 
 
@@ -143,7 +145,7 @@ async def auto_translate_branding(
                 logger.warning(f"auto-translate {kind} → {tgt}: {e}")
         return out
 
-    # Run sequentially — the summariser slot is typically a single-threaded
+    # Run sequentially — the translation slot is typically a single-threaded
     # local model; parallel calls would just queue inside LM Studio / Ollama
     # and give no speedup while making failure logs messier.
     disc = await _fill("disclaimer", branding.disclaimer_text, branding.disclaimer_text_translations)

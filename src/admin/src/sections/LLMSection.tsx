@@ -1,61 +1,62 @@
 // SPEC §4.7 + §5.1.
-// Three slots (inference / compressor / summariser), each configurable independently.
-// Endpoint auto-fills on provider change via /admin/api/v1/llm/defaults.
+// Four slots (inference / compressor / summariser / translation), each picking
+// a registered connection + a model within it. Connections are managed once
+// in the ConnectionsCard above the slot grid (LLM provider registry port).
 // Top-level context-compression settings + two summary-routing toggles (3 positions each).
-// Top indicator panel polls /providers every 15s (HRDD pattern).
-// Model field is a <select> when models are available (HRDD-style: auto-corrects
-// to the first available if the saved model isn't in the fetched list). Falls
-// back to a text <input> when the list is empty (e.g. API slot before Check health).
+// Connections status panel polls /connections/status every 15s (HRDD pattern).
 import { useEffect, useState } from 'react'
 import {
-  getLLMConfig, saveLLMConfig, checkLLMHealth, getLLMDefaults, getProvidersStatus,
+  getLLMConfig, saveLLMConfig, checkLLMHealth, getLLMDefaults, getConnections, getConnectionsStatus,
 } from '../api'
 import type {
   LLMConfig, SlotConfig, SlotName,
-  CompressionSettings, RoutingToggles, LLMHealth, ProvidersStatus,
+  CompressionSettings, RoutingToggles, LLMHealth, LLMConnection, ConnectionsStatus, RoutableSlotName,
 } from '../api'
 import SlotEditor from '../components/llm/SlotEditor'
-import ProviderCard, { ApiProviderCard } from '../components/llm/ProviderCard'
+import ConnectionsCard from '../components/llm/ConnectionsCard'
 import { useT } from '../i18n'
 import type { AdminTranslationKeys } from '../i18n'
 
-const SLOT_ORDER: { key: 'inference' | 'compressor' | 'summariser'; labelKey: AdminTranslationKeys; hintKey: AdminTranslationKeys }[] = [
+const SLOT_ORDER: { key: SlotName; labelKey: AdminTranslationKeys; hintKey: AdminTranslationKeys }[] = [
   { key: 'inference', labelKey: 'llm_slot_inference', hintKey: 'llm_slot_inference_hint' },
   { key: 'compressor', labelKey: 'llm_slot_compressor', hintKey: 'llm_slot_compressor_hint' },
   { key: 'summariser', labelKey: 'llm_slot_summariser', hintKey: 'llm_slot_summariser_hint' },
+  { key: 'translation', labelKey: 'llm_slot_translation', hintKey: 'llm_slot_translation_hint' },
 ]
 
-const SLOT_OPTIONS: SlotName[] = ['inference', 'compressor', 'summariser']
+const SLOT_OPTIONS: RoutableSlotName[] = ['inference', 'compressor', 'summariser']
 
 const POLL_INTERVAL_MS = 15000
 
 export default function LLMSection() {
   const [cfg, setCfg] = useState<LLMConfig | null>(null)
   const [defaults, setDefaults] = useState<{ lm_studio: string; ollama: string } | null>(null)
-  const [providers, setProviders] = useState<ProvidersStatus | null>(null)
+  const [connections, setConnections] = useState<LLMConnection[]>([])
+  const [status, setStatus] = useState<ConnectionsStatus | null>(null)
   const [health, setHealth] = useState<LLMHealth | null>(null)
   const [saveStatus, setSaveStatus] = useState('')
   const [error, setError] = useState('')
   const { t } = useT()
 
-  const refreshProviders = async () => {
+  const refreshConnections = async () => {
     try {
-      setProviders(await getProvidersStatus())
+      setConnections(await getConnections())
+      setStatus(await getConnectionsStatus())
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
 
   useEffect(() => {
-    Promise.all([getLLMConfig(), getLLMDefaults(), getProvidersStatus()])
-      .then(([c, d, p]) => { setCfg(c); setDefaults(d); setProviders(p) })
+    Promise.all([getLLMConfig(), getLLMDefaults(), getConnections(), getConnectionsStatus()])
+      .then(([c, d, conns, st]) => { setCfg(c); setDefaults(d); setConnections(conns); setStatus(st) })
       .catch(e => setError(String(e)))
 
-    const interval = window.setInterval(refreshProviders, POLL_INTERVAL_MS)
+    const interval = window.setInterval(refreshConnections, POLL_INTERVAL_MS)
     return () => window.clearInterval(interval)
   }, [])
 
-  const updateSlot = (which: 'inference' | 'compressor' | 'summariser', patch: Partial<SlotConfig>) => {
+  const updateSlot = (which: SlotName, patch: Partial<SlotConfig>) => {
     setCfg(c => c ? { ...c, [which]: { ...c[which], ...patch } } : c)
   }
 
@@ -101,28 +102,6 @@ export default function LLMSection() {
     )
   }
 
-  // Map from slot config to models available for that slot (populates datalist)
-  const modelsForSlot = (slot: SlotConfig, slotKey: 'inference' | 'compressor' | 'summariser'): string[] => {
-    if (slot.provider === 'lm_studio') return providers?.lm_studio.models || []
-    if (slot.provider === 'ollama') return providers?.ollama.models || []
-    // Sprint 18 Fase 5 — api provider models now also come from
-    // /llm/providers (auto-refreshed). Match the slot's saved api_endpoint
-    // + flavor + key_env against the entries the backend returned. Falls
-    // back to the per-slot Health probe result if the providers list
-    // doesn't have a matching entry yet (e.g. slot just edited but Save
-    // not clicked, so providers/ hasn't re-fetched).
-    if (slot.provider === 'api') {
-      const match = providers?.api?.find(
-        e => e.api_endpoint === (slot.api_endpoint || '')
-          && e.api_flavor === (slot.api_flavor || null)
-          && e.api_key_env === (slot.api_key_env || null),
-      )
-      if (match && match.models.length > 0) return match.models
-      return health?.[slotKey]?.models || []
-    }
-    return []
-  }
-
   return (
     <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
       <div className="flex items-center justify-between mb-1">
@@ -133,21 +112,13 @@ export default function LLMSection() {
         {t('llm_description')}
       </p>
 
-      {/* Top indicator: LM Studio + Ollama live status + model count.
-          Sprint 18 Fase 5 — also one card per slot configured as API
-          (MiniMax, Anthropic, OpenAI, etc.) so admin sees the same
-          green dot + model count across every configured provider. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
-        <ProviderCard name="LM Studio" info={providers?.lm_studio} />
-        <ProviderCard name="Ollama" info={providers?.ollama} />
-        {(providers?.api || []).map((entry, i) => (
-          <ApiProviderCard key={`api-${i}-${entry.api_endpoint}`} info={entry} />
-        ))}
+      <div className="mb-5">
+        <ConnectionsCard defaults={defaults} status={status} onChanged={refreshConnections} />
       </div>
 
       {error && <p className="text-uni-red text-sm mb-3">{error}</p>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
         {SLOT_ORDER.map(({ key, labelKey, hintKey }) => (
           <SlotEditor
             key={key}
@@ -156,12 +127,8 @@ export default function LLMSection() {
             slot={cfg[key]}
             onChange={p => updateSlot(key, p)}
             health={health?.[key]}
-            defaults={defaults}
-            availableModels={modelsForSlot(cfg[key], key)}
-            onProviderSwitched={async () => {
-              try { setProviders(await getProvidersStatus()) }
-              catch { /* best-effort refresh — leave stale data if it fails */ }
-            }}
+            connections={connections}
+            status={status}
           />
         ))}
       </div>
@@ -264,7 +231,7 @@ export default function LLMSection() {
             <label className="block text-xs text-gray-500 mb-1">{t('llm_summary_document')}</label>
             <select
               value={cfg.routing.document_summary_slot}
-              onChange={e => updateRouting({ document_summary_slot: e.target.value as SlotName })}
+              onChange={e => updateRouting({ document_summary_slot: e.target.value as RoutableSlotName })}
               className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
             >
               {SLOT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
@@ -274,7 +241,7 @@ export default function LLMSection() {
             <label className="block text-xs text-gray-500 mb-1">{t('llm_summary_final')}</label>
             <select
               value={cfg.routing.user_summary_slot}
-              onChange={e => updateRouting({ user_summary_slot: e.target.value as SlotName })}
+              onChange={e => updateRouting({ user_summary_slot: e.target.value as RoutableSlotName })}
               className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
             >
               {SLOT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
@@ -284,7 +251,7 @@ export default function LLMSection() {
             <label className="block text-xs text-gray-500 mb-1">{t('llm_summary_contextual')}</label>
             <select
               value={cfg.routing.contextual_retrieval_slot}
-              onChange={e => updateRouting({ contextual_retrieval_slot: e.target.value as SlotName })}
+              onChange={e => updateRouting({ contextual_retrieval_slot: e.target.value as RoutableSlotName })}
               className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
             >
               {SLOT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
@@ -299,9 +266,8 @@ export default function LLMSection() {
       <div className="flex gap-2 mt-4">
         <button onClick={save} className="text-sm bg-uni-blue text-white rounded-lg px-3 py-2 hover:opacity-90">{t('llm_save_config')}</button>
         <button onClick={runHealth} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50">{t('llm_check_health')}</button>
-        <button onClick={refreshProviders} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50">{t('llm_refresh_providers')}</button>
+        <button onClick={refreshConnections} className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-2 hover:bg-gray-50">{t('llm_refresh_providers')}</button>
       </div>
     </section>
   )
 }
-

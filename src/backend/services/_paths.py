@@ -24,6 +24,9 @@ CAMPAIGNS_DIR = DATA_DIR / "campaigns"
 
 # --- Global config files ---
 LLM_CONFIG_FILE = DATA_DIR / "llm_config.json"
+# Named LLM provider connections (registry), referenced by SlotConfig.connection_id
+# in llm_config.json. See connection_registry.py.
+CONNECTIONS_FILE = DATA_DIR / "connections.json"
 SMTP_CONFIG_FILE = DATA_DIR / "smtp_config.json"
 GLOSSARY_FILE = KNOWLEDGE_DIR / "glossary.json"
 ORGANIZATIONS_FILE = KNOWLEDGE_DIR / "organizations.json"

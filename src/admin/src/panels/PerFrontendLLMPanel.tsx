@@ -5,41 +5,41 @@
 //              slot only (other slots stay null and continue inheriting).
 //
 // Compression and routing settings always inherit from global at the frontend
-// tier (not exposed here).
+// tier (not exposed here). Connections are managed globally (LLMSection); this
+// panel only lets a frontend pick a different connection/model per slot.
 import { useEffect, useState } from 'react'
 import {
-  getLLMConfig, getLLMDefaults, getProvidersStatus,
+  getLLMConfig, getLLMDefaults, getConnections, getConnectionsStatus,
   getFrontendLLMOverride, saveFrontendLLMOverride,
   EMPTY_LLM_OVERRIDE,
 } from '../api'
-import type { LLMConfig, LLMOverride, SlotConfig, ProvidersStatus } from '../api'
+import type { LLMConfig, LLMOverride, SlotConfig, SlotName, LLMConnection, ConnectionsStatus } from '../api'
 import SlotEditor from '../components/llm/SlotEditor'
-import ProviderCard, { ApiProviderCard } from '../components/llm/ProviderCard'
 import { useT } from '../i18n'
 import type { AdminTranslationKeys } from '../i18n'
 
 const POLL_INTERVAL_MS = 15000
 
-const SLOT_ORDER: { key: 'inference' | 'compressor' | 'summariser'; labelKey: AdminTranslationKeys; hintKey: AdminTranslationKeys }[] = [
+const SLOT_ORDER: { key: SlotName; labelKey: AdminTranslationKeys; hintKey: AdminTranslationKeys }[] = [
   { key: 'inference', labelKey: 'llm_slot_inference', hintKey: 'llm_slot_inference_hint' },
   { key: 'compressor', labelKey: 'llm_slot_compressor', hintKey: 'llm_slot_compressor_hint' },
   { key: 'summariser', labelKey: 'llm_slot_summariser', hintKey: 'llm_slot_summariser_hint' },
+  { key: 'translation', labelKey: 'llm_slot_translation', hintKey: 'llm_slot_translation_hint' },
 ]
-
-type SlotKey = 'inference' | 'compressor' | 'summariser'
 
 export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string }) {
   const [globalCfg, setGlobalCfg] = useState<LLMConfig | null>(null)
   const [defaults, setDefaults] = useState<{ lm_studio: string; ollama: string } | null>(null)
-  const [providers, setProviders] = useState<ProvidersStatus | null>(null)
+  const [connections, setConnections] = useState<LLMConnection[]>([])
+  const [status, setStatus] = useState<ConnectionsStatus | null>(null)
   const [override, setOverride] = useState<LLMOverride>(EMPTY_LLM_OVERRIDE)
   const [dirty, setDirty] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
   const [error, setError] = useState('')
   const { t } = useT()
 
-  const refreshProviders = async () => {
-    try { setProviders(await getProvidersStatus()) }
+  const refreshStatus = async () => {
+    try { setStatus(await getConnectionsStatus()) }
     catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
@@ -49,18 +49,20 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
     Promise.all([
       getLLMConfig(),
       getLLMDefaults(),
-      getProvidersStatus(),
+      getConnections(),
+      getConnectionsStatus(),
       getFrontendLLMOverride(frontendId),
     ])
-      .then(([g, d, p, o]) => {
+      .then(([g, d, conns, st, o]) => {
         setGlobalCfg(g)
         setDefaults(d)
-        setProviders(p)
+        setConnections(conns)
+        setStatus(st)
         setOverride(o.override)
       })
       .catch(e => setError(e instanceof Error ? e.message : String(e)))
 
-    const interval = window.setInterval(refreshProviders, POLL_INTERVAL_MS)
+    const interval = window.setInterval(refreshStatus, POLL_INTERVAL_MS)
     return () => window.clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frontendId])
@@ -74,7 +76,7 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
     )
   }
 
-  const toggleSlot = (key: SlotKey, checked: boolean) => {
+  const toggleSlot = (key: SlotName, checked: boolean) => {
     setOverride(o => ({
       ...o,
       // Snapshot global into the override on enable; null on disable.
@@ -83,7 +85,7 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
     setDirty(true)
   }
 
-  const updateSlot = (key: SlotKey, patch: Partial<SlotConfig>) => {
+  const updateSlot = (key: SlotName, patch: Partial<SlotConfig>) => {
     setOverride(o => {
       if (!o[key]) return o  // safety: don't edit an inherited slot
       return { ...o, [key]: { ...o[key]!, ...patch } }
@@ -106,24 +108,6 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
     }
   }
 
-  const modelsForSlot = (slot: SlotConfig): string[] => {
-    if (slot.provider === 'lm_studio') return providers?.lm_studio.models || []
-    if (slot.provider === 'ollama') return providers?.ollama.models || []
-    if (slot.provider === 'api') {
-      // Sprint 18 Fase 5 — match by api_endpoint + flavor + key_env against
-      // the global providers/ probe. Per-frontend overrides reuse the
-      // global LLMConfig's API slots, so this lookup works as long as the
-      // override points at the same API endpoint as a global slot.
-      const match = providers?.api?.find(
-        e => e.api_endpoint === (slot.api_endpoint || '')
-          && e.api_flavor === (slot.api_flavor || null)
-          && e.api_key_env === (slot.api_key_env || null),
-      )
-      return match?.models || []
-    }
-    return []
-  }
-
   const overriddenCount = Object.values(override).filter(Boolean).length
 
   return (
@@ -143,17 +127,9 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
         {t('llm_override_description')}
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-        <ProviderCard name="LM Studio" info={providers?.lm_studio} />
-        <ProviderCard name="Ollama" info={providers?.ollama} />
-        {(providers?.api || []).map((entry, i) => (
-          <ApiProviderCard key={`api-${i}-${entry.api_endpoint}`} info={entry} />
-        ))}
-      </div>
-
       {error && <p className="text-uni-red text-xs mb-3">{error}</p>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-3">
         {SLOT_ORDER.map(({ key, labelKey, hintKey }) => {
           const isOverridden = override[key] !== null
           const effective: SlotConfig = isOverridden ? override[key]! : globalCfg[key]
@@ -164,13 +140,9 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
               hint={t(hintKey)}
               slot={effective}
               onChange={p => updateSlot(key, p)}
-              defaults={defaults}
-              availableModels={modelsForSlot(effective)}
+              connections={connections}
+              status={status}
               disabled={!isOverridden}
-              onProviderSwitched={async () => {
-                try { setProviders(await getProvidersStatus()) }
-                catch { /* best-effort refresh */ }
-              }}
               headerRight={
                 <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                   <input
@@ -196,7 +168,7 @@ export default function PerFrontendLLMPanel({ frontendId }: { frontendId: string
           {t('llm_override_save')}
         </button>
         <button
-          onClick={refreshProviders}
+          onClick={refreshStatus}
           className="text-sm border border-gray-300 text-gray-700 rounded-lg px-3 py-1.5 hover:bg-gray-50"
         >
           {t('llm_override_refresh_providers')}

@@ -334,29 +334,37 @@ export async function saveOrganizations(organizations: Organization[]): Promise<
 
 export type ProviderType = 'lm_studio' | 'ollama' | 'api'
 export type ApiFlavor = 'anthropic' | 'openai' | 'openai_compatible'
-export type SlotName = 'inference' | 'compressor' | 'summariser'
+export type SlotName = 'inference' | 'compressor' | 'summariser' | 'translation'
+
+// Named, reusable provider connection (LLM provider registry). A slot picks
+// one of these by id instead of embedding its own provider/endpoint/api_key.
+export interface LLMConnection {
+  id: string
+  type: ProviderType
+  api_flavor?: ApiFlavor | null
+  endpoint?: string | null
+  api_endpoint?: string | null
+  api_key_env?: string | null
+  // Paste-once-persist API key. The backend redacts it to "••••••••" in GET
+  // responses; PUT preserves the stored value when it sees the sentinel back.
+  api_key?: string | null
+  // Optional manual model allowlist; empty = auto-discover via probe.
+  model_ids: string[]
+  enable: boolean
+}
+
+// Sentinel literal mirrored from the backend. Used by the admin UI to detect
+// "key is set, don't show me the value" state and to decide whether to send
+// the value back to the backend on Save.
+export const API_KEY_SENTINEL = '••••••••'
 
 export interface SlotConfig {
-  provider: ProviderType
+  connection_id: string
   model: string
   temperature: number
   max_tokens: number
   num_ctx: number
-  endpoint: string
-  api_flavor?: ApiFlavor | null
-  api_endpoint?: string | null
-  api_key_env?: string | null
-  // Sprint 19 Fase 1 — paste-once-persist API key. The backend redacts it
-  // to "••••••••" in GET responses; PUT preserves the stored value when
-  // it sees the sentinel back. Keep both fields available so the admin
-  // can pick paste-in-UI or env-var-on-container per slot.
-  api_key?: string | null
 }
-
-// Sprint 19 Fase 1 — sentinel literal mirrored from the backend. Used by
-// the admin UI to detect "key is set, don't show me the value" state and
-// to decide whether to send the value back to the backend on Save.
-export const API_KEY_SENTINEL = '••••••••'
 
 export interface CompressionSettings {
   enabled: boolean
@@ -364,20 +372,26 @@ export interface CompressionSettings {
   step_size: number
 }
 
+export type RoutableSlotName = 'inference' | 'compressor' | 'summariser'
+
 export interface RoutingToggles {
-  document_summary_slot: SlotName
-  user_summary_slot: SlotName
+  document_summary_slot: RoutableSlotName
+  user_summary_slot: RoutableSlotName
   // Sprint 15 phase 5 — which slot handles Contextual Retrieval's per-chunk
   // context-sentence generation at ingest time. Default "compressor" because
   // the task doesn't need a heavy model and the scale gets brutal (~35 h on
   // 122B for 100 CBAs vs ~3-4 h on 9B).
-  contextual_retrieval_slot: SlotName
+  contextual_retrieval_slot: RoutableSlotName
 }
 
 export interface LLMConfig {
   inference: SlotConfig
   compressor: SlotConfig
   summariser: SlotConfig
+  // Branding auto-translate (disclaimer/instructions → i18n languages).
+  // Previously hardwired to reuse the summariser slot; now independently
+  // selectable, same as HRDDHelper's translation slot.
+  translation: SlotConfig
   compression: CompressionSettings
   routing: RoutingToggles
   // Sprint 13 — when true, the backend nudges the runtime to suppress
@@ -393,7 +407,7 @@ export interface LLMConfig {
 }
 
 export interface SlotHealth {
-  provider: ProviderType
+  connection_id: string
   ok: boolean
   status_code: number
   error: string | null
@@ -404,35 +418,16 @@ export interface LLMHealth {
   inference: SlotHealth
   compressor: SlotHealth
   summariser: SlotHealth
+  translation: SlotHealth
 }
 
-export interface ProviderInfo {
-  endpoint: string
+// Live status + model list, keyed by connection id. Drives the Connections
+// list indicator + every slot's model dropdown.
+export type ConnectionsStatus = Record<string, {
   status: 'online' | 'offline'
   models: string[]
   error: string | null
-}
-
-// Sprint 18 Fase 5 — one entry per slot configured with provider="api".
-// Different slots may point at different APIs (e.g. summariser=Anthropic,
-// inference=MiniMax) so this is a list, not a single object. When two slots
-// share the exact same api_endpoint+flavor+key_env, they're collapsed into
-// one entry whose `slots` lists both names.
-export interface ApiProviderInfo {
-  slots: string[]
-  api_flavor: 'anthropic' | 'openai' | 'openai_compatible' | null
-  api_endpoint: string
-  api_key_env: string | null
-  status: 'online' | 'offline'
-  models: string[]
-  error: string | null
-}
-
-export interface ProvidersStatus {
-  lm_studio: ProviderInfo
-  ollama: ProviderInfo
-  api: ApiProviderInfo[]
-}
+}>
 
 export async function getLLMConfig(): Promise<LLMConfig> {
   return request('/admin/api/v1/llm')
@@ -446,25 +441,43 @@ export async function getLLMDefaults(): Promise<{ lm_studio: string; ollama: str
   return request('/admin/api/v1/llm/defaults')
 }
 
-export async function getProvidersStatus(): Promise<ProvidersStatus> {
-  return request('/admin/api/v1/llm/providers')
+export async function getConnections(): Promise<LLMConnection[]> {
+  return request('/admin/api/v1/llm/connections')
 }
 
-// Sprint 19 followup — probe an in-progress slot config without saving.
-// Used by the SlotEditor "Test connection" button so the admin can validate
-// the API endpoint + flavor + key BEFORE Save (otherwise the model dropdown
-// would stay empty until a save+health-cycle, and a wrong combination only
-// surfaces when a real chat turn fails with 400).
-export interface SlotProbeResult {
+export async function createConnection(conn: LLMConnection): Promise<LLMConnection> {
+  return request('/admin/api/v1/llm/connections', { method: 'POST', body: JSON.stringify(conn) })
+}
+
+export async function updateConnection(id: string, conn: LLMConnection): Promise<LLMConnection> {
+  return request(`/admin/api/v1/llm/connections/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(conn),
+  })
+}
+
+export async function deleteConnection(id: string): Promise<{ ok: boolean }> {
+  return request(`/admin/api/v1/llm/connections/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export async function getConnectionsStatus(): Promise<ConnectionsStatus> {
+  return request('/admin/api/v1/llm/connections/status')
+}
+
+// Probe an in-progress (not yet saved) connection so the admin UI can
+// validate endpoint + flavor + key BEFORE Save — otherwise the model
+// dropdown would stay empty until a save+health-cycle, and a wrong
+// combination only surfaces when a real chat turn fails with 400.
+export interface ConnectionProbeResult {
   ok: boolean
   status_code: number
   error: string | null
   models: string[]
 }
-export async function probeSlot(slot: Partial<SlotConfig>): Promise<SlotProbeResult> {
-  return request('/admin/api/v1/llm/providers/probe', {
+export async function probeConnection(conn: Partial<LLMConnection>): Promise<ConnectionProbeResult> {
+  return request('/admin/api/v1/llm/connections/probe', {
     method: 'POST',
-    body: JSON.stringify(slot),
+    body: JSON.stringify(conn),
   })
 }
 
@@ -837,9 +850,12 @@ export interface LLMOverride {
   inference: SlotConfig | null
   compressor: SlotConfig | null
   summariser: SlotConfig | null
+  translation: SlotConfig | null
 }
 
-export const EMPTY_LLM_OVERRIDE: LLMOverride = { inference: null, compressor: null, summariser: null }
+export const EMPTY_LLM_OVERRIDE: LLMOverride = {
+  inference: null, compressor: null, summariser: null, translation: null,
+}
 
 export async function getFrontendLLMOverride(frontendId: string): Promise<{ frontend_id: string; override: LLMOverride }> {
   return request(`/admin/api/v1/frontends/${encodeURIComponent(frontendId)}/llm`)

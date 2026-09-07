@@ -1,13 +1,13 @@
 """Per-frontend LLM override.
 
-Per-slot opt-in: each slot (`inference`, `compressor`, `summariser`) can be
-overridden independently. Slots set to None inherit the global config.
-Compression and routing always inherit from global at the frontend tier —
-they're not exposed in the override.
+Per-slot opt-in: each slot (`inference`, `compressor`, `summariser`,
+`translation`) can be overridden independently. Slots set to None inherit the
+global config. Compression and routing always inherit from global at the
+frontend tier — they're not exposed in the override.
 
 Storage: /app/data/campaigns/{frontend_id}/llm_override.json
 Schema:  {"inference": SlotConfig | null, "compressor": SlotConfig | null,
-          "summariser": SlotConfig | null}
+          "summariser": SlotConfig | null, "translation": SlotConfig | null}
 
 Sprint 6's llm_provider reads `resolve_llm_config(frontend_id)` which merges
 the override on top of the global config per slot.
@@ -23,11 +23,14 @@ from src.services.llm_config_store import LLMConfig, SlotConfig, load_config as 
 
 logger = logging.getLogger("llm_override")
 
+_SLOT_KEYS = ("inference", "compressor", "summariser", "translation")
+
 
 class LLMOverride(BaseModel):
     inference: SlotConfig | None = None
     compressor: SlotConfig | None = None
     summariser: SlotConfig | None = None
+    translation: SlotConfig | None = None
 
 
 def _path(frontend_id: str) -> Path:
@@ -36,13 +39,27 @@ def _path(frontend_id: str) -> Path:
 
 def _migrate_legacy(data: dict[str, Any]) -> dict[str, Any]:
     """Old shape was a full LLMConfig (every slot present + compression + routing).
-    Translate that to the per-slot override: keep the three slots (treat them
+    Translate that to the per-slot override: keep the slots (treat them
     all as overridden, since the admin had explicitly enabled the override),
-    drop compression/routing.
+    drop compression/routing. Old-shape slot dicts (inline provider fields,
+    no `translation` key) are migrated the same way as the global config, via
+    LLMConfig's own migration — simplest path is to round-trip through
+    load_config-style migration by stuffing the slots into a throwaway
+    LLMConfig-shaped dict and reusing its slot migration.
     """
+    from src.services.llm_config_store import _migrate_legacy_slot
+
     if "compression" in data or "routing" in data:
         slots = {k: data[k] for k in ("inference", "compressor", "summariser") if k in data}
-        return slots
+        if "translation" not in slots and "summariser" in slots:
+            slots["translation"] = dict(slots["summariser"])
+        data = slots
+
+    for key in _SLOT_KEYS:
+        slot = data.get(key)
+        if isinstance(slot, dict) and "provider" in slot and "connection_id" not in slot:
+            data[key] = _migrate_legacy_slot(slot)
+
     return data
 
 
@@ -92,6 +109,7 @@ def resolve_llm_config(frontend_id: str | None = None) -> LLMConfig:
         inference=override.inference or base.inference,
         compressor=override.compressor or base.compressor,
         summariser=override.summariser or base.summariser,
+        translation=override.translation or base.translation,
         compression=base.compression,
         routing=base.routing,
     )
