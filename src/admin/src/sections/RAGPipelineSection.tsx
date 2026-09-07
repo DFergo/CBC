@@ -224,7 +224,7 @@ export default function RAGPipelineSection() {
       setEmbedRemote(res)
       setEmbedDraft({ embedding: res.embedding, reranker: res.reranker })
       if (res.pending_reindex) setPendingReindex(true)
-      setEmbedSaveMsg('Saved')
+      setEmbedSaveMsg(t('generic_saved'))
       setTimeout(() => setEmbedSaveMsg(''), 3000)
       await reload()
     } catch (e) {
@@ -278,23 +278,17 @@ export default function RAGPipelineSection() {
   // If the target is a genuinely different collection (provider/model
   // swap), it builds the new one with zero downtime and swaps atomically.
   const doReindex = async () => {
-    if (!confirm(
-      'Reindex every scope (global + every frontend + every company) with the currently saved chunk size / ' +
-      'embedding settings. If the embedding provider or model changed, this builds a brand-new vector ' +
-      'collection in the background — chat keeps using the OLD collection until the rebuild finishes ' +
-      'successfully, then queries switch over atomically. Can take minutes to hours depending on corpus size. ' +
-      'Continue?',
-    )) return
+    if (!confirm(t('rag_pipeline_reindex_confirm'))) return
     setReindexing(true)
-    setReindexMsg('Reindexing…')
+    setReindexMsg(t('rag_pipeline_reindexing'))
     setError('')
     setEmbedError('')
     try {
       const r = await reindexToNewProvider()
       setReindexMsg(
         r.swapped
-          ? `Swapped to ${r.collection} (${r.scopes_reindexed} scopes reindexed). Old collection ${r.old_collection} left on disk — purge it below once you're confident.`
-          : `Reindexed ${r.scopes_reindexed} scopes (same collection).`,
+          ? t('rag_pipeline_reindex_swapped', { collection: r.collection, count: r.scopes_reindexed, old: r.old_collection })
+          : t('rag_pipeline_reindex_same', { count: r.scopes_reindexed }),
       )
       setPendingReindex(false)
       await reload()
@@ -307,7 +301,7 @@ export default function RAGPipelineSection() {
   }
 
   const purgeCollection = async (name: string) => {
-    if (!confirm(`Permanently delete Chroma collection "${name}"? This cannot be undone.`)) return
+    if (!confirm(t('rag_pipeline_purge_confirm', { name }))) return
     setEmbedError('')
     try {
       await deleteChromaCollection(name)
@@ -378,42 +372,24 @@ export default function RAGPipelineSection() {
                   (self-hosted or commercial — nothing vendor-specific baked in). */}
               {embedDraft && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <EmbeddingSlotEditor
-                      kind="embedding"
-                      label={t('rag_pipeline_embedder')}
-                      hint={t('rag_pipeline_embedder_hint')}
-                      slot={embedDraft.embedding}
-                      onChange={patchEmbedding}
-                      localModelOptions={LOCAL_EMBEDDING_MODELS}
-                      disabled={embedSaving || reindexing}
-                    />
-                    {embedDraft.embedding.provider === 'local' && (
-                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5 mt-1.5">
-                        Se ejecuta dentro del contenedor sin aceleración GPU/Metal — la opción más lenta.
-                        Si tienes un servidor de inferencia propio (self-hosted, p.ej. oMLX o vLLM) o una
-                        API comercial, elige "API" arriba para acelerar embeddings y reranking.
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <EmbeddingSlotEditor
-                      kind="reranker"
-                      label={t('rag_pipeline_reranker')}
-                      hint="Rescores retrieved candidates before they reach the prompt. Changing this takes effect on the next query — no reindex needed."
-                      slot={embedDraft.reranker}
-                      onChange={patchReranker}
-                      localModelOptions={LOCAL_RERANKER_MODELS}
-                      disabled={embedSaving || reindexing}
-                    />
-                    {embedDraft.reranker.provider === 'local' && (
-                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5 mt-1.5">
-                        Se ejecuta dentro del contenedor — la opción más lenta. "Enabled"/"Top N" no
-                        aplican en local (se controlan por configuración de despliegue); cambia de
-                        proveedor arriba para poder ajustarlos desde aquí.
-                      </p>
-                    )}
-                  </div>
+                  <EmbeddingSlotEditor
+                    kind="embedding"
+                    label={t('rag_pipeline_embedder')}
+                    hint={t('rag_pipeline_embedder_hint')}
+                    slot={embedDraft.embedding}
+                    onChange={patchEmbedding}
+                    localModelOptions={LOCAL_EMBEDDING_MODELS}
+                    disabled={embedSaving || reindexing}
+                  />
+                  <EmbeddingSlotEditor
+                    kind="reranker"
+                    label={t('rag_pipeline_reranker')}
+                    hint={t('rag_pipeline_reranker_hint')}
+                    slot={embedDraft.reranker}
+                    onChange={patchReranker}
+                    localModelOptions={LOCAL_RERANKER_MODELS}
+                    disabled={embedSaving || reindexing}
+                  />
                 </div>
               )}
 
@@ -426,7 +402,7 @@ export default function RAGPipelineSection() {
                   disabled={embedSaving || reindexing || !embedDirty}
                   className="text-sm bg-uni-blue text-white rounded-lg px-3 py-2 hover:opacity-90 disabled:opacity-40"
                 >
-                  {embedSaving ? t('generic_saving') : t('rag_pipeline_save_settings')}
+                  {embedSaving ? t('generic_saving') : t('rag_pipeline_embed_section_save')}
                 </button>
                 {embedSaveMsg && <span className="text-xs text-green-700 font-medium">✓ {embedSaveMsg}</span>}
                 {embedDirty && !embedSaving && (
@@ -438,7 +414,7 @@ export default function RAGPipelineSection() {
               <div className="border border-gray-200 rounded-lg p-4">
                 <div className="flex items-baseline justify-between mb-1">
                   <div className="text-xs text-gray-500">{t('rag_pipeline_chunk_size')}</div>
-                  <div className="text-sm font-mono text-gray-800">{draftChunk}{' tokens'}</div>
+                  <div className="text-sm font-mono text-gray-800">{draftChunk} {t('rag_pipeline_tokens_unit')}</div>
                 </div>
                 <input
                   type="range"
@@ -461,7 +437,7 @@ export default function RAGPipelineSection() {
               {/* Read-only: retrieval strategy */}
               <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
                 <div className="text-xs text-gray-500 mb-0.5">{t('rag_pipeline_strategy')}</div>
-                <div className="text-sm text-gray-800">Hybrid BM25 + vector + cross-encoder rerank</div>
+                <div className="text-sm text-gray-800">{t('rag_pipeline_strategy_value')}</div>
               </div>
 
               {/* Save settings — HRDD-style inline feedback right next to
@@ -507,7 +483,7 @@ export default function RAGPipelineSection() {
                         disabled={reindexing}
                         className="mt-2 text-sm bg-amber-600 text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-40"
                       >
-                        {reindexing ? 'Reindexing…' : 'Reindex'}
+                        {reindexing ? t('rag_pipeline_reindexing') : t('rag_pipeline_reindex_action')}
                       </button>
                       {reindexMsg && <p className="text-[12px] text-amber-900 mt-2">{reindexMsg}</p>}
                     </div>
@@ -520,18 +496,18 @@ export default function RAGPipelineSection() {
                   manually here. */}
               <details className="border border-gray-200 rounded-md">
                 <summary className="cursor-pointer list-none select-none px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded-t-md flex items-center justify-between">
-                  <span className="text-sm font-semibold text-gray-800">Collections ({collections.length})</span>
-                  <span className="text-xs text-gray-500">Old provider snapshots stay on disk until purged manually</span>
+                  <span className="text-sm font-semibold text-gray-800">{t('rag_pipeline_collections_heading', { count: collections.length })}</span>
+                  <span className="text-xs text-gray-500">{t('rag_pipeline_collections_hint')}</span>
                 </summary>
                 <div className="p-3 space-y-2">
-                  {collections.length === 0 && <p className="text-xs text-gray-400">No collections found.</p>}
+                  {collections.length === 0 && <p className="text-xs text-gray-400">{t('rag_pipeline_collections_empty')}</p>}
                   {collections.map(c => (
                     <div key={c.name} className="flex items-center justify-between border border-gray-100 rounded px-2 py-1.5">
                       <div className="flex items-center gap-2">
                         <code className="text-xs">{c.name}</code>
-                        {c.is_active_chunks && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">active chunks</span>}
-                        {c.is_active_tables && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">active tables</span>}
-                        <span className="text-[11px] text-gray-400">{c.chunk_count} items</span>
+                        {c.is_active_chunks && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">{t('rag_pipeline_collections_badge_chunks')}</span>}
+                        {c.is_active_tables && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">{t('rag_pipeline_collections_badge_tables')}</span>}
+                        <span className="text-[11px] text-gray-400">{t('rag_pipeline_collections_items', { count: c.chunk_count })}</span>
                       </div>
                       <button
                         type="button"
@@ -539,7 +515,7 @@ export default function RAGPipelineSection() {
                         disabled={c.is_active_chunks || c.is_active_tables}
                         className="text-[11px] text-uni-red border border-red-200 rounded px-2 py-0.5 disabled:opacity-30 hover:bg-red-50"
                       >
-                        Delete
+                        {t('rag_pipeline_collections_delete')}
                       </button>
                     </div>
                   ))}
@@ -555,8 +531,6 @@ export default function RAGPipelineSection() {
                 </div>
                 <p className="text-[12px] text-red-800 mb-3">
                   {t('rag_pipeline_wipe_description')}
-                  {' '}Also deletes every OTHER Chroma collection on disk, including old provider snapshots
-                  kept for rollback — prefer "Reindex" above for routine chunk_size / provider changes.
                 </p>
                 <button
                   type="button"

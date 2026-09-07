@@ -30,11 +30,27 @@
 //    by default, with a "show all detected models" toggle for when the
 //    heuristic is wrong about a custom name.
 //
+// Sprint 20 followup 4: the visual default shown by the model <select>
+// (dropdownModels[0] when slot.model was "") never committed to real state
+// until the admin clicked it, so Save could silently submit model="" and
+// fail validation — fixed with a useEffect that commits it.
+//
+// Sprint 20 followup 5 (Daniel's feedback: mixed EN/ES text depending on
+// what I happened to type, and several buttons whose purpose wasn't
+// obvious even to him): EVERY string here now goes through the admin i18n
+// system (`useT()`) instead of hardcoded text, so the component always
+// matches whatever language the admin has selected — never a mix. Also
+// added short always-visible explanations for the Local/API choice
+// (`rag_embed_hint_local` / `_api`) instead of relying on a separate note
+// elsewhere, since "what does this button actually do" was the core
+// complaint.
+//
 // Reused twice by RAGPipelineSection: once for `embedding`, once for
 // `reranker` (which additionally shows enabled/top_n fields via `kind`).
 import { useEffect, useState } from 'react'
 import type { EmbeddingProviderType, EmbeddingSlotConfig, RerankerSlotConfig } from '../../api'
 import { API_KEY_SENTINEL, testEmbeddingConnection } from '../../api'
+import { useT } from '../../i18n'
 
 type AnySlot = EmbeddingSlotConfig | RerankerSlotConfig
 
@@ -86,6 +102,7 @@ function looksRelevant(kind: 'embedding' | 'reranker', modelId: string): boolean
 export default function EmbeddingSlotEditor({
   kind, label, hint, slot, onChange, localModelOptions, disabled = false,
 }: Props) {
+  const { t } = useT()
   const [probeStatus, setProbeStatus] = useState<'idle' | 'probing' | 'ok' | 'error'>('idle')
   const [probeMessage, setProbeMessage] = useState('')
   const [probedModels, setProbedModels] = useState<string[]>([])
@@ -121,14 +138,14 @@ export default function EmbeddingSlotEditor({
         setProbeStatus('ok')
         setProbeMessage(
           hasModel
-            ? `OK · model verified · ${r.models.length} detected`
-            : `${r.models.length} model${r.models.length === 1 ? '' : 's'} detected — pick one below`,
+            ? t('rag_embed_probe_verified', { count: r.models.length })
+            : t('rag_embed_probe_listed', { count: r.models.length }),
         )
       } else {
         setProbeStatus('error')
         setProbeMessage(
           r.models.length > 0
-            ? `${r.models.length} model${r.models.length === 1 ? '' : 's'} found, but: ${(r.error || `HTTP ${r.status_code}`).slice(0, 90)}`
+            ? t('rag_embed_probe_found_but_error', { count: r.models.length, error: (r.error || `HTTP ${r.status_code}`).slice(0, 90) })
             : (r.error?.slice(0, 100) || `HTTP ${r.status_code}`),
         )
       }
@@ -198,31 +215,39 @@ export default function EmbeddingSlotEditor({
               onChange={e => onChange({ enabled: e.target.checked } as Partial<AnySlot>)}
               className="rounded border-gray-300"
             />
-            Enabled
+            {t('rag_embed_enabled_label')}
           </label>
         )}
       </div>
       <p className="text-[11px] text-gray-400 leading-snug">{hint}</p>
 
-      <label className="block text-xs text-gray-500">Provider</label>
+      <label className="block text-xs text-gray-500">{t('rag_embed_provider_label')}</label>
       <select
         value={slot.provider}
         onChange={e => onProviderChange(e.target.value as EmbeddingProviderType)}
         disabled={disabled}
         className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100 disabled:text-gray-500"
       >
-        <option value="local">Local (baked into image)</option>
-        <option value="api">API (self-hosted or commercial — oMLX, vLLM, OpenAI, ...)</option>
+        <option value="local">{t('rag_embed_provider_local')}</option>
+        <option value="api">{t('rag_embed_provider_api')}</option>
       </select>
+      <p className="text-[11px] text-gray-400 leading-snug">
+        {slot.provider === 'local' ? t('rag_embed_hint_local') : t('rag_embed_hint_api')}
+      </p>
+      {slot.provider === 'local' && kind === 'reranker' && (
+        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5">
+          {t('rag_embed_reranker_local_caveat')}
+        </p>
+      )}
 
       {slot.provider !== 'local' && (
         <>
-          <label className="block text-xs text-gray-500">API endpoint</label>
+          <label className="block text-xs text-gray-500">{t('rag_embed_endpoint_label')}</label>
           <input
             type="text"
             value={slot.api_endpoint || ''}
             onChange={e => onChange({ api_endpoint: e.target.value } as Partial<AnySlot>)}
-            placeholder="http://<host>:<port>/v1 — e.g. your oMLX/vLLM server, or https://api.openai.com/v1"
+            placeholder={t('rag_embed_endpoint_placeholder')}
             disabled={disabled}
             className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
           />
@@ -231,9 +256,7 @@ export default function EmbeddingSlotEditor({
 
           {kind === 'reranker' && (
             <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5">
-              Reranking uses a de-facto <code>/rerank</code> endpoint (shared by oMLX, HF TEI, vLLM,
-              Infinity) that is NOT part of the official OpenAI API. It may not work against every
-              API provider — click "Test connection" to confirm before saving.
+              {t('rag_embed_rerank_caveat')}
             </p>
           )}
 
@@ -244,7 +267,7 @@ export default function EmbeddingSlotEditor({
               disabled={disabled || probeStatus === 'probing'}
               className="px-2 py-1 text-xs border border-gray-300 text-gray-700 rounded disabled:opacity-50 hover:bg-gray-50"
             >
-              {probeStatus === 'probing' ? 'Testing…' : 'Test connection'}
+              {probeStatus === 'probing' ? t('rag_embed_testing') : t('rag_embed_test_button')}
             </button>
             {probeStatus === 'ok' && (
               <span className="text-[11px] px-2 py-0.5 rounded bg-green-100 text-green-700">{probeMessage}</span>
@@ -257,12 +280,12 @@ export default function EmbeddingSlotEditor({
       )}
 
       <label className="block text-xs text-gray-500">
-        Model
-        {dropdownModels.length > 0 && <span className="text-gray-400 ml-1">({dropdownModels.length} available)</span>}
-        {dropdownModels.length === 0 && slot.provider !== 'local' && (
-          <span className="text-gray-400 ml-1">(fill endpoint + key, click "Test connection" to populate)</span>
-        )}
+        {t('rag_embed_model_label')}
+        {dropdownModels.length > 0 && <span className="text-gray-400 ml-1">{t('rag_embed_model_available', { count: dropdownModels.length })}</span>}
       </label>
+      {dropdownModels.length === 0 && slot.provider !== 'local' && (
+        <p className="text-[11px] text-gray-400">{t('rag_embed_model_prompt')}</p>
+      )}
       {dropdownModels.length > 0 ? (
         <select
           value={dropdownModels.includes(slot.model) ? slot.model : (slot.model || dropdownModels[0])}
@@ -283,7 +306,7 @@ export default function EmbeddingSlotEditor({
       )}
       {recommendedInList.length > 0 && (
         <p className="text-[11px] text-gray-400">
-          Recommended (tested by us): {recommendedInList.join(', ')}
+          {t('rag_embed_recommended', { models: recommendedInList.join(', ') })}
         </p>
       )}
       {slot.provider !== 'local' && probedModels.length > 0 && (
@@ -294,16 +317,16 @@ export default function EmbeddingSlotEditor({
             onChange={e => setShowAllModels(e.target.checked)}
             className="rounded border-gray-300"
           />
-          Show all {probedModels.length} detected models (including LLM/TTS/other — not filtered to likely {kind} models)
+          {t('rag_embed_show_all', { count: probedModels.length })} ({t('rag_embed_show_all_hint')})
           {!showAllModels && hiddenByFilter > 0 && (
-            <span className="text-gray-400">· {hiddenByFilter} hidden</span>
+            <span className="text-gray-400">· {t('rag_embed_hidden_count', { count: hiddenByFilter })}</span>
           )}
         </label>
       )}
 
       {kind === 'reranker' && (
         <div>
-          <label className="block text-xs text-gray-500">Top N</label>
+          <label className="block text-xs text-gray-500">{t('rag_embed_topn_label')}</label>
           <input
             type="number"
             min={1}
@@ -331,6 +354,7 @@ function ApiKeyField({
   onChange: (patch: Partial<AnySlot>) => void
   disabled: boolean
 }) {
+  const { t } = useT()
   const initialMode: 'paste' | 'env' =
     (slot.api_key || '').length > 0 ? 'paste'
     : (slot.api_key_env || '').length > 0 ? 'env'
@@ -341,15 +365,15 @@ function ApiKeyField({
   return (
     <>
       <div className="flex items-center gap-2 mt-1">
-        <label className="text-xs text-gray-500">API key source</label>
+        <label className="text-xs text-gray-500">{t('rag_embed_key_source_label')}</label>
         <div className="ml-auto flex gap-1 text-[11px]">
           <button type="button" onClick={() => setMode('paste')} disabled={disabled}
             className={`px-2 py-0.5 rounded border ${mode === 'paste' ? 'bg-blue-50 border-blue-400 text-blue-700' : 'border-gray-300 text-gray-600 hover:bg-gray-50'} disabled:opacity-50`}>
-            Paste
+            {t('rag_embed_key_mode_paste')}
           </button>
           <button type="button" onClick={() => setMode('env')} disabled={disabled}
             className={`px-2 py-0.5 rounded border ${mode === 'env' ? 'bg-blue-50 border-blue-400 text-blue-700' : 'border-gray-300 text-gray-600 hover:bg-gray-50'} disabled:opacity-50`}>
-            Env var
+            {t('rag_embed_key_mode_env')}
           </button>
         </div>
       </div>
@@ -357,8 +381,8 @@ function ApiKeyField({
       {mode === 'paste' ? (
         <>
           <label className="block text-xs text-gray-500">
-            API key <span className="text-gray-400">
-              ({(slot.api_key || '') === API_KEY_SENTINEL ? 'set; type to replace' : 'pasted, persisted in /app/data/embedding_config.json'})
+            {t('rag_embed_key_source_label')} <span className="text-gray-400">
+              ({(slot.api_key || '') === API_KEY_SENTINEL ? t('rag_embed_key_set_hint') : t('rag_embed_key_saved_hint')})
             </span>
           </label>
           <div className="relative">
@@ -366,24 +390,24 @@ function ApiKeyField({
               type={reveal ? 'text' : 'password'}
               value={slot.api_key || ''}
               onChange={e => onChange({ api_key: e.target.value })}
-              placeholder="optional — some self-hosted servers don't require one"
+              placeholder={t('rag_embed_key_placeholder')}
               disabled={disabled}
               className="w-full border border-gray-300 rounded-lg pl-2 pr-16 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
             />
             <button type="button" onClick={() => setReveal(r => !r)} disabled={disabled}
               className="absolute right-1 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[11px] text-gray-500 hover:text-gray-700 disabled:opacity-50">
-              {reveal ? 'hide' : 'show'}
+              {reveal ? t('rag_embed_key_hide') : t('rag_embed_key_reveal')}
             </button>
           </div>
         </>
       ) : (
         <>
-          <label className="block text-xs text-gray-500">API key env var name</label>
+          <label className="block text-xs text-gray-500">{t('rag_embed_key_env_label')}</label>
           <input
             type="text"
             value={slot.api_key_env || ''}
             onChange={e => onChange({ api_key_env: e.target.value })}
-            placeholder="MY_EMBEDDING_API_KEY"
+            placeholder={t('rag_embed_key_env_placeholder')}
             disabled={disabled}
             className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
           />
