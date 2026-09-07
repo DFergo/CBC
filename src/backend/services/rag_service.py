@@ -71,7 +71,20 @@ _chroma_collection: Any = None
 # Lives alongside `cbc_chunks` so `client.reset()` on wipe-and-reindex-all
 # clears both in one atomic step without extra plumbing.
 _tables_collection: Any = None
-_chroma_lock = threading.Lock()
+# Sprint 20 hotfix — MUST be an RLock, not a plain Lock. `_get_chroma_collection`
+# / `_get_tables_collection` acquire this lock and then, WHILE STILL HOLDING
+# IT, call `_ensure_chroma_client()`, which also does `with _chroma_lock:`.
+# With a plain `threading.Lock` that's a guaranteed self-deadlock on the same
+# thread — 100% reproducible on literally the first Chroma access of the
+# process's lifetime (not a race: it fires deterministically, every time,
+# whichever code path touches Chroma first after a fresh deploy). Confirmed
+# in production Sep 2026: the whole backend became unresponsive — every
+# admin route timed out, all threads parked in futex_wait, 0% CPU — the
+# moment the (newly merged) RAG Pipeline admin page made its first-ever call
+# into `list_chroma_collections_with_stats()`. Same reentrant-lock hazard
+# `_build_locks` already documents and solves with RLock (see that dict's
+# comment above) — applying the identical fix here for the identical reason.
+_chroma_lock = threading.RLock()
 CHROMA_DIR = DATA_DIR / "chroma"
 # Legacy / default collection names — used whenever no admin-driven provider
 # swap has ever happened (no active_rag_collection.json on disk). Sprint 20

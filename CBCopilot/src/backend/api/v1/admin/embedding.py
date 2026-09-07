@@ -109,13 +109,32 @@ async def reindex_to_new_provider(_admin: dict = Depends(require_admin)) -> dict
 
 @router.get("/collections")
 async def list_collections(_admin: dict = Depends(require_admin)) -> dict[str, Any]:
-    return {"collections": rag_service.list_chroma_collections_with_stats()}
+    """Sprint 20 hotfix — this touches ChromaDB (`_ensure_chroma_client()` /
+    `_chroma_lock`), which can be the FIRST Chroma access of the process
+    lifetime (e.g. right after a fresh deploy, before any chat query or
+    reindex has run). `RAGPipelineSection` now calls this unconditionally
+    on every admin General-tab mount, so unlike before Sprint 20 — when
+    Chroma was only ever touched from an already-offloaded background
+    thread (chat queries via `asyncio.to_thread`-wrapped retrieval, or the
+    reindex endpoints below) — this became a frequently-hit synchronous
+    Chroma touch running directly on the event loop thread. If that first
+    touch is ever slow (cold FS cache, concurrent watcher activity holding
+    `_chroma_lock`), it froze the ENTIRE server, not just this request,
+    because a plain `threading.Lock` blocks whichever thread calls it and
+    there is only one event-loop thread. `asyncio.to_thread` — same
+    pattern already used correctly by `reindex_to_new_provider` below —
+    moves the blocking call to a worker thread so a slow/stuck Chroma
+    access degrades to one delayed request instead of a total outage."""
+    collections = await asyncio.to_thread(rag_service.list_chroma_collections_with_stats)
+    return {"collections": collections}
 
 
 @router.delete("/collections/{name}")
 async def delete_collection(name: str, _admin: dict = Depends(require_admin)) -> dict[str, Any]:
+    """Same `asyncio.to_thread` rationale as `list_collections` above —
+    `delete_chroma_collection` also touches `_ensure_chroma_client()`."""
     try:
-        return rag_service.delete_chroma_collection(name)
+        return await asyncio.to_thread(rag_service.delete_chroma_collection, name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
