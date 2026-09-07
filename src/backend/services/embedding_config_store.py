@@ -207,6 +207,41 @@ def _result(ok: bool, status: int, error: str | None, models: list[str] | None =
     return {"ok": ok, "status_code": status, "error": error, "models": models or []}
 
 
+async def list_provider_models(
+    api_endpoint: str | None,
+    api_key: str | None,
+    api_key_env: str | None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Sprint 20 followup 3 — pure model-listing probe. GET {endpoint}/models
+    only, no model name required. Used for the FIRST "Test connection" click
+    on a fresh `api` slot, before the admin has picked anything — the old
+    code path always ran the deep round-trip too, using whatever `model`
+    happened to be set (often the Pydantic default `"BAAI/bge-m3"` left over
+    from the `local` provider), so a perfectly reachable server with 44
+    models loaded still came back as a failure ("Model 'BAAI/bge-m3' not
+    found") before the admin ever got a chance to choose from the list.
+    `test_connection` in `admin/embedding.py` calls this instead of the deep
+    check whenever the request's `deep` flag is false.
+    """
+    endpoint = (api_endpoint or "").rstrip("/")
+    if not endpoint:
+        return _result(False, 0, "api_endpoint is empty", [])
+    key = api_key if (api_key and api_key != API_KEY_SENTINEL) else None
+    if not key and api_key_env:
+        key = os.environ.get(api_key_env)
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            r = await client.get(f"{endpoint}/models", headers=headers)
+            if r.status_code != 200:
+                return _result(False, r.status_code, r.text[:200], [])
+            models = [m.get("id", "") for m in r.json().get("data", []) if m.get("id")]
+            return _result(True, r.status_code, None, models)
+        except httpx.HTTPError as e:
+            return _result(False, 0, str(e), [])
+
+
 async def check_embedding_slot_health(
     slot: EmbeddingSlotConfig, timeout: float = 5.0, deep: bool = True
 ) -> dict[str, Any]:

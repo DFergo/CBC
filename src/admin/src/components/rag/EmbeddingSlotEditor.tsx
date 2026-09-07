@@ -7,12 +7,28 @@
 // in as its own named provider — "api" is generic (works with oMLX, vLLM,
 // HF TEI, OpenAI, or anything else speaking the same protocol) and the
 // model list is always auto-detected from `GET {endpoint}/models` rather
-// than typed against a fixed name. This also fixed a real bug: the probe
-// used to discard the detected model list whenever the (optional) deep
-// round-trip check failed — e.g. because no model was picked yet — forcing
-// the admin to guess an exact model string by hand even though the server
-// had already told us what it has loaded. `runProbe` below always keeps
-// `r.models` regardless of `r.ok`.
+// than typed against a fixed name.
+//
+// Sprint 20 followup 3 (more feedback the same day, after Daniel actually
+// tried connecting to his oMLX):
+// 1. The very first "Test connection" click ran a full deep round-trip
+//    (an actual embed/rerank call) using whatever `model` happened to be
+//    set — which, before the admin has picked anything, is the Pydantic
+//    default left over from the `local` provider ("BAAI/bge-m3"). Against
+//    oMLX that model doesn't exist under that exact name, so a perfectly
+//    healthy 44-model server came back as a failure. Fixed: when no model
+//    is selected yet, the probe runs `deep=false` (list-only, no model
+//    needed at all) — see `list_provider_models` on the backend.
+// 2. The "(recommended)" hint used to be baked into the `<option>` text
+//    itself, which also then showed up as the CLOSED select's displayed
+//    value once chosen — ugly and confusing. Moved to a separate static
+//    note below the field, same visual pattern as the API key hint text.
+// 3. oMLX (and similar all-in-one servers) serve LLM/TTS/vision models
+//    through the SAME `/v1/models` list as embeddings/rerankers — there's
+//    no `type` field to filter on structurally. Added a name-pattern
+//    heuristic (`looksRelevant`) that hides the obviously-irrelevant ones
+//    by default, with a "show all detected models" toggle for when the
+//    heuristic is wrong about a custom name.
 //
 // Reused twice by RAGPipelineSection: once for `embedding`, once for
 // `reranker` (which additionally shows enabled/top_n fields via `kind`).
@@ -33,13 +49,13 @@ interface Props {
 }
 
 // Models we've actually tested end-to-end (live, against a real oMLX
-// instance) and can vouch for — surfaced as a "(recommended)" hint in the
-// dropdown when the provider happens to expose one of these, never as a
-// restriction. Matched by substring so naming variants (e.g.
-// "bge-m3-mlx-fp16", "BAAI/bge-m3") still get flagged. Both are
-// multilingual: BGE-M3 covers 100+ languages; the same recommendation logic
-// applies to any future validated model — extend this list, don't replace
-// the auto-detection.
+// instance) and can vouch for — surfaced as a static "Recommended" note
+// below the field when the provider happens to expose one of these, never
+// as a restriction on what's selectable. Matched by substring so naming
+// variants (e.g. "bge-m3-mlx-fp16", "BAAI/bge-m3") still get flagged. Both
+// are multilingual: BGE-M3 covers 100+ languages; the same recommendation
+// logic applies to any future validated model — extend this list, don't
+// replace the auto-detection.
 const RECOMMENDED_SUBSTRINGS: Record<'embedding' | 'reranker', string[]> = {
   embedding: ['bge-m3'],
   reranker: ['bge-reranker-v2-m3'],
@@ -50,12 +66,30 @@ function isRecommended(kind: 'embedding' | 'reranker', modelId: string): boolean
   return RECOMMENDED_SUBSTRINGS[kind].some(s => needle.includes(s))
 }
 
+// Name-pattern heuristic to declutter a mixed catalog (oMLX-style servers
+// serve LLM/TTS/vision/embedding/reranker models through the same
+// /v1/models list, with no structural "type" field to filter on). This is
+// a UX default, never a hard filter — `showAllModels` bypasses it entirely,
+// and nothing here blocks selecting/typing an arbitrary model id.
+const IRRELEVANT_HINTS = /tts|kokoro|whisper|-vl-|vision|markitdown|-coder-|instruct|abliterated|heretic/i
+const EMBEDDING_HINTS = /embed|bge|e5[-_]|gte|jina|nomic|minilm|arctic|gecko|voyage/i
+const RERANKER_HINTS = /rerank|cross-encoder/i
+
+function looksRelevant(kind: 'embedding' | 'reranker', modelId: string): boolean {
+  const id = modelId.toLowerCase()
+  if (IRRELEVANT_HINTS.test(id)) return false
+  if (kind === 'reranker') return RERANKER_HINTS.test(id)
+  if (RERANKER_HINTS.test(id)) return false // a reranker is never a usable embedder
+  return EMBEDDING_HINTS.test(id)
+}
+
 export default function EmbeddingSlotEditor({
   kind, label, hint, slot, onChange, localModelOptions, disabled = false,
 }: Props) {
   const [probeStatus, setProbeStatus] = useState<'idle' | 'probing' | 'ok' | 'error'>('idle')
   const [probeMessage, setProbeMessage] = useState('')
   const [probedModels, setProbedModels] = useState<string[]>([])
+  const [showAllModels, setShowAllModels] = useState(false)
 
   useEffect(() => {
     setProbeStatus('idle')
@@ -66,6 +100,9 @@ export default function EmbeddingSlotEditor({
   const runProbe = async () => {
     setProbeStatus('probing')
     setProbeMessage('')
+    // No model chosen yet -> list-only probe (no round-trip embed/rerank
+    // call, so there's nothing to fail against a not-yet-selected model).
+    const hasModel = !!(slot.model || '').trim()
     try {
       const r = await testEmbeddingConnection(kind, {
         provider: slot.provider,
@@ -73,7 +110,7 @@ export default function EmbeddingSlotEditor({
         api_endpoint: slot.api_endpoint || null,
         api_key: slot.api_key || null,
         api_key_env: slot.api_key_env || null,
-      })
+      }, hasModel)
       // Always keep the detected model list, even on failure — the backend
       // already returns it whenever `GET /models` succeeded, regardless of
       // whether the (optional) deep round-trip against the CURRENTLY
@@ -82,7 +119,11 @@ export default function EmbeddingSlotEditor({
       setProbedModels(r.models)
       if (r.ok) {
         setProbeStatus('ok')
-        setProbeMessage(`OK · ${r.models.length} model${r.models.length === 1 ? '' : 's'}`)
+        setProbeMessage(
+          hasModel
+            ? `OK · model verified · ${r.models.length} detected`
+            : `${r.models.length} model${r.models.length === 1 ? '' : 's'} detected — pick one below`,
+        )
       } else {
         setProbeStatus('error')
         setProbeMessage(
@@ -113,15 +154,19 @@ export default function EmbeddingSlotEditor({
 
   const dropdownModels = (() => {
     if (slot.provider === 'local') return localModelOptions
-    if (probedModels.length > 0) {
-      // Recommended (validated) models float to the top; rest stay in
-      // whatever order the server reported them.
-      const recommended = probedModels.filter(m => isRecommended(kind, m))
-      const rest = probedModels.filter(m => !isRecommended(kind, m))
-      return [...recommended, ...rest]
-    }
-    return []
+    if (probedModels.length === 0) return []
+    const base = showAllModels ? probedModels : probedModels.filter(m => looksRelevant(kind, m))
+    // Recommended (validated) models float to the top; rest stay in
+    // whatever order the server reported them.
+    const recommended = base.filter(m => isRecommended(kind, m))
+    const rest = base.filter(m => !isRecommended(kind, m))
+    return [...recommended, ...rest]
   })()
+
+  const recommendedInList = dropdownModels.filter(m => isRecommended(kind, m))
+  const hiddenByFilter = slot.provider !== 'local' && !showAllModels
+    ? probedModels.length - dropdownModels.length
+    : 0
 
   return (
     <div className={`border border-gray-200 rounded-lg p-3 space-y-2 ${disabled ? 'bg-gray-50' : ''}`}>
@@ -208,9 +253,7 @@ export default function EmbeddingSlotEditor({
           disabled={disabled}
           className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
         >
-          {dropdownModels.map(m => (
-            <option key={m} value={m}>{m}{isRecommended(kind, m) ? ' — recomendado (probado por nosotros)' : ''}</option>
-          ))}
+          {dropdownModels.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       ) : (
         <input
@@ -220,6 +263,25 @@ export default function EmbeddingSlotEditor({
           disabled={disabled}
           className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
         />
+      )}
+      {recommendedInList.length > 0 && (
+        <p className="text-[11px] text-gray-400">
+          Recommended (tested by us): {recommendedInList.join(', ')}
+        </p>
+      )}
+      {slot.provider !== 'local' && probedModels.length > 0 && (
+        <label className="flex items-center gap-1.5 text-[11px] text-gray-500">
+          <input
+            type="checkbox"
+            checked={showAllModels}
+            onChange={e => setShowAllModels(e.target.checked)}
+            className="rounded border-gray-300"
+          />
+          Show all {probedModels.length} detected models (including LLM/TTS/other — not filtered to likely {kind} models)
+          {!showAllModels && hiddenByFilter > 0 && (
+            <span className="text-gray-400">· {hiddenByFilter} hidden</span>
+          )}
+        </label>
       )}
 
       {kind === 'reranker' && (

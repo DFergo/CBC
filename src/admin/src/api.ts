@@ -1126,10 +1126,11 @@ export interface EmbeddingProbeResult {
 export async function testEmbeddingConnection(
   kind: 'embedding' | 'reranker',
   slot: Partial<EmbeddingSlotConfig> | Partial<RerankerSlotConfig>,
+  deep = true,
 ): Promise<EmbeddingProbeResult> {
   return request('/admin/api/v1/embedding-config/test-connection', {
     method: 'POST',
-    body: JSON.stringify({ kind, slot }),
+    body: JSON.stringify({ kind, slot, deep }),
   })
 }
 

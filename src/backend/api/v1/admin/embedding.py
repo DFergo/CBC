@@ -66,6 +66,12 @@ async def save_config(cfg: EmbeddingConfig, _admin: dict = Depends(require_admin
 class SlotProbeRequest(BaseModel):
     kind: str  # "embedding" | "reranker"
     slot: dict[str, Any]
+    # Sprint 20 followup 3 — when False, only `GET {endpoint}/models` runs
+    # (no model name needed at all). The frontend sends this whenever the
+    # admin hasn't picked a model yet, so the very first "Test connection"
+    # click just lists what the server has instead of failing a real embed/
+    # rerank call against a placeholder model name.
+    deep: bool = True
 
 
 @router.post("/test-connection")
@@ -75,6 +81,17 @@ async def test_connection(req: SlotProbeRequest, _admin: dict = Depends(require_
     `admin/llm.py`'s `/providers/probe`."""
     if req.kind not in ("embedding", "reranker"):
         raise HTTPException(status_code=400, detail="kind must be 'embedding' or 'reranker'")
+
+    if not req.deep:
+        # List-only path — deliberately does NOT construct a validated
+        # EmbeddingSlotConfig/RerankerSlotConfig, since that would require a
+        # non-empty `model` for provider != "local" and raise before we ever
+        # get to list anything. Read the raw fields straight off the dict.
+        return await embedding_config_store.list_provider_models(
+            req.slot.get("api_endpoint"),
+            req.slot.get("api_key"),
+            req.slot.get("api_key_env"),
+        )
 
     saved = embedding_config_store.load_config()
     if req.kind == "embedding":
