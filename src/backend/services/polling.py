@@ -508,15 +508,25 @@ TERMINAL_EVENTS = ("done", "error", "cancelled")
 
 
 async def _push_chunk(client: httpx.AsyncClient, url: str, token: str, event: str, data: str) -> None:
-    """Push one SSE event to the sidecar. Terminal events (done/error/cancelled)
-    retry once on failure — losing a terminal event leaves the user's UI stuck
-    on isStreaming=true, showing a generic "something went wrong" after the
-    onerror strikes out. Non-terminal tokens fail silently (individual token
-    drops degrade content quality but the UI still gets the terminal and
-    unlocks the input).
+    """Push one SSE event to the sidecar.
+
+    Sprint 20 followup 9 (production bug, confirmed live 2026-09-07): this
+    used to give non-terminal `token` events ZERO retries — a single failed
+    POST (LAN/Tailscale blip, sidecar momentarily busy) permanently dropped
+    that fragment of the model's answer, with no error surfaced anywhere.
+    Reproduced live: table headers and cell text missing their first few
+    characters, worst right after a newline (heading/new row) — exactly
+    where a token happens to land on its own POST. Session recovery showed
+    the text intact because it re-reads the complete, already-persisted
+    history instead of replaying this at-least-once-only delivery path.
+    All call sites `await` this function strictly in sequence (see the
+    call sites in this module — never `asyncio.create_task`), so retrying
+    a failed token CANNOT reorder it relative to the next one; it's safe.
+    Terminal events (done/error/cancelled) still get one extra attempt on
+    top, since losing one of those leaves the UI stuck on isStreaming=true.
     """
     is_terminal = event in TERMINAL_EVENTS
-    attempts = 2 if is_terminal else 1
+    attempts = 3 if is_terminal else 2
     for attempt in range(1, attempts + 1):
         try:
             r = await client.post(
@@ -526,15 +536,15 @@ async def _push_chunk(client: httpx.AsyncClient, url: str, token: str, event: st
             )
             if r.status_code // 100 == 2:
                 return
-            level = logger.warning if is_terminal else logger.info
+            level = logger.warning if attempt == attempts else logger.info
             level(f"[{token}] push_chunk [{event}] HTTP {r.status_code} "
                   f"(attempt {attempt}/{attempts})")
         except httpx.HTTPError as e:
-            level = logger.warning if is_terminal else logger.info
+            level = logger.warning if attempt == attempts else logger.info
             level(f"[{token}] push_chunk [{event}] failed: {e} "
                   f"(attempt {attempt}/{attempts})")
         if attempt < attempts:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
 
 async def _process_turn(
