@@ -34,13 +34,22 @@ interface Props {
   defaults: { lm_studio: string; ollama: string }
   status: ConnectionsStatus | null
   onChanged: () => void
+  // Manual "Refresh" — re-probes every connection's status. Separate from
+  // onChanged (which just re-lists connections after a CRUD action) so the
+  // button can show its own busy/done feedback.
+  onRefreshStatus: () => Promise<void>
+  // Extra buttons rendered next to Refresh (e.g. LLMSection's "Check slot
+  // health") so every provider-related action lives in one place, visible
+  // without scrolling past the slot cards.
+  extraActions?: React.ReactNode
 }
 
-export default function ConnectionsCard({ defaults, status, onChanged }: Props) {
+export default function ConnectionsCard({ defaults, status, onChanged, onRefreshStatus, extraActions }: Props) {
   const [connections, setConnections] = useState<LLMConnection[]>([])
   const [editing, setEditing] = useState<LLMConnection | null>(null)
   const [isNew, setIsNew] = useState(false)
   const [error, setError] = useState('')
+  const [refreshState, setRefreshState] = useState<'idle' | 'busy' | 'done'>('idle')
 
   const load = async () => {
     try { setConnections(await getConnections()) }
@@ -48,6 +57,20 @@ export default function ConnectionsCard({ defaults, status, onChanged }: Props) 
   }
 
   useEffect(() => { load() }, [])
+
+  const refresh = async () => {
+    setRefreshState('busy')
+    setError('')
+    try {
+      await load()
+      await onRefreshStatus()
+      setRefreshState('done')
+      setTimeout(() => setRefreshState('idle'), 1500)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setRefreshState('idle')
+    }
+  }
 
   const startNew = () => { setEditing(blankConnection(defaults)); setIsNew(true) }
   const startEdit = (c: LLMConnection) => { setEditing({ ...c }); setIsNew(false) }
@@ -81,14 +104,24 @@ export default function ConnectionsCard({ defaults, status, onChanged }: Props) 
 
   return (
     <div className="border border-gray-200 rounded-lg p-4">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
         <h4 className="text-sm font-semibold text-gray-700">Connections</h4>
-        <button
-          onClick={startNew}
-          className="text-xs border border-gray-300 text-gray-700 rounded px-2 py-1 hover:bg-gray-50"
-        >
-          + Add connection
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={refresh}
+            disabled={refreshState === 'busy'}
+            className="text-xs border border-gray-300 text-gray-700 rounded px-2 py-1 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {refreshState === 'busy' ? 'Refreshing…' : refreshState === 'done' ? 'Updated ✓' : 'Refresh'}
+          </button>
+          {extraActions}
+          <button
+            onClick={startNew}
+            className="text-xs border border-gray-300 text-gray-700 rounded px-2 py-1 hover:bg-gray-50"
+          >
+            + Add connection
+          </button>
+        </div>
       </div>
       <p className="text-[11px] text-gray-400 mb-3">
         Register a provider once (LM Studio, Ollama, or a remote API) and reuse it across

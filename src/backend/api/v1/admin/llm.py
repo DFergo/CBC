@@ -7,16 +7,32 @@ either a pasted key or an ENV VAR NAME — never both in plaintext in the
 response (pasted keys are redacted with a sentinel).
 Plus top-level compression settings + summary-routing toggles.
 """
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from src.api.v1.admin.auth import require_admin
 from src.services import connection_registry, llm_config_store
-from src.services.llm_config_store import API_KEY_SENTINEL, LLMConfig, SlotConfig
+from src.services.llm_config_store import (
+    API_KEY_SENTINEL,
+    CompressionSettings,
+    LLMConfig,
+    RoutingToggles,
+    SlotConfig,
+)
 
 router = APIRouter(prefix="/admin/api/v1/llm", tags=["admin-llm"])
+
+
+class LLMSettingsPatch(BaseModel):
+    """Everything in LLMConfig that ISN'T one of the 4 slots — saved
+    independently via PUT /settings so editing a slot card never touches
+    these, and vice versa."""
+    compression: CompressionSettings
+    routing: RoutingToggles
+    disable_thinking: bool
+    max_concurrent_turns: Literal[1, 2, 4, 6]
 
 
 class ConnectionModel(BaseModel):
@@ -46,6 +62,34 @@ async def get_config(_admin: dict = Depends(require_admin)):
 
 @router.put("")
 async def save_config(cfg: LLMConfig, _admin: dict = Depends(require_admin)):
+    llm_config_store.save_config(cfg)
+    return llm_config_store.redact_for_response(cfg)
+
+
+@router.put("/slots/{slot_name}")
+async def save_slot(slot_name: str, slot: SlotConfig, _admin: dict = Depends(require_admin)):
+    """Save a single slot in isolation — read-modify-write against the
+    persisted config, leaving every other slot and the top-level settings
+    (compression/routing/disable_thinking/max_concurrent_turns) untouched.
+    Backs the per-slot Save button in the admin's LLM section."""
+    if slot_name not in llm_config_store.SLOT_NAMES:
+        raise HTTPException(status_code=404, detail=f"Unknown slot: {slot_name!r}")
+    cfg = llm_config_store.load_config()
+    setattr(cfg, slot_name, slot)
+    llm_config_store.save_config(cfg)
+    return llm_config_store.redact_for_response(cfg)
+
+
+@router.put("/settings")
+async def save_settings(patch: LLMSettingsPatch, _admin: dict = Depends(require_admin)):
+    """Save the non-slot settings in isolation — leaves all 4 slots
+    untouched. Backs the "additional settings" Save button (thinking mode,
+    concurrency, context compression, summary routing)."""
+    cfg = llm_config_store.load_config()
+    cfg.compression = patch.compression
+    cfg.routing = patch.routing
+    cfg.disable_thinking = patch.disable_thinking
+    cfg.max_concurrent_turns = patch.max_concurrent_turns
     llm_config_store.save_config(cfg)
     return llm_config_store.redact_for_response(cfg)
 

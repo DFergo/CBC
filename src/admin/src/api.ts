@@ -433,8 +433,28 @@ export async function getLLMConfig(): Promise<LLMConfig> {
   return request('/admin/api/v1/llm')
 }
 
-export async function saveLLMConfig(cfg: LLMConfig): Promise<LLMConfig> {
-  return request('/admin/api/v1/llm', { method: 'PUT', body: JSON.stringify(cfg) })
+// Save one slot in isolation — leaves every other slot and the top-level
+// settings (compression/routing/disable_thinking/max_concurrent_turns)
+// untouched. Backs each slot card's own Save button.
+export async function saveLLMSlot(slotName: SlotName, slot: SlotConfig): Promise<LLMConfig> {
+  return request(`/admin/api/v1/llm/slots/${encodeURIComponent(slotName)}`, {
+    method: 'PUT',
+    body: JSON.stringify(slot),
+  })
+}
+
+export interface LLMSettingsPatch {
+  compression: CompressionSettings
+  routing: RoutingToggles
+  disable_thinking: boolean
+  max_concurrent_turns: 1 | 2 | 4 | 6
+}
+
+// Save the non-slot settings in isolation — leaves all 4 slots untouched.
+// Backs the "additional settings" Save button (thinking mode, concurrency,
+// context compression, summary routing).
+export async function saveLLMSettings(patch: LLMSettingsPatch): Promise<LLMConfig> {
+  return request('/admin/api/v1/llm/settings', { method: 'PUT', body: JSON.stringify(patch) })
 }
 
 export async function getLLMDefaults(): Promise<{ lm_studio: string; ollama: string }> {

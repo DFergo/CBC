@@ -23,10 +23,13 @@ interface Props {
   // Right-aligned slot in the header (e.g. an Override checkbox at the
   // per-frontend tier). When set, replaces the health badge in that position.
   headerRight?: React.ReactNode
+  // Bottom-of-card slot (e.g. a per-slot Save button). Keeps Save next to the
+  // fields it applies to instead of one button at the bottom of the page.
+  footer?: React.ReactNode
 }
 
 export default function SlotEditor({
-  label, hint, slot, onChange, health, connections, status, disabled = false, headerRight,
+  label, hint, slot, onChange, health, connections, status, disabled = false, headerRight, footer,
 }: Props) {
   const activeConnection = connections.find(c => c.id === slot.connection_id)
   const connModels = (() => {
@@ -130,6 +133,7 @@ export default function SlotEditor({
             className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100 disabled:text-gray-500" />
         </div>
       </div>
+      {footer}
     </div>
   )
 }
