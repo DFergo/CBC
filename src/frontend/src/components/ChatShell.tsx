@@ -68,6 +68,32 @@ function mapRecovery(rec: RecoveryData | null | undefined): ChatMessage[] {
   }))
 }
 
+// Dedup by (scope_key, filename) while preserving first-seen order — shared
+// between the initial recovery state (sources persisted per turn) and the
+// live SSE `sources` event, so a resumed session and a fresh one accumulate
+// the CBA sidepanel's list identically.
+function dedupeSources(list: CitationSource[]): CitationSource[] {
+  const seen = new Set<string>()
+  const out: CitationSource[] = []
+  for (const s of list) {
+    const k = `${s.scope_key}::${s.filename}`
+    if (s.filename && !seen.has(k)) {
+      seen.add(k)
+      out.push(s)
+    }
+  }
+  return out
+}
+
+// Rebuild the CBA sidepanel's accumulated source list from a recovered
+// session — each assistant turn's persisted `sources` (see session_store),
+// flattened across the whole conversation and deduped the same way the live
+// SSE handler does.
+function mapRecoverySources(rec: RecoveryData | null | undefined): CitationSource[] {
+  if (!rec) return []
+  return dedupeSources(rec.messages.flatMap(m => m.sources || []))
+}
+
 export default function ChatShell({
   lang, sessionToken, survey, branding: _branding, recoveryData,
   cbaSidepanelEnabled = true,
@@ -98,7 +124,9 @@ export default function ChatShell({
   const [endAt, setEndAt] = useState(DEFAULT_END_AT)
   // Sprint 11 — CBA citations piling up across this session. The panel renders
   // them deduped by (scope_key, filename) and offers a pull-inverse download.
-  const [sources, setSources] = useState<CitationSource[]>([])
+  // On a recovered session, seed it from the sources persisted per turn
+  // instead of starting empty (previously this reset on every reopen).
+  const [sources, setSources] = useState<CitationSource[]>(() => mapRecoverySources(recoveryData))
   // Sidepanel open state. Default open on md+ viewports, closed on mobile so
   // the chat starts clean. Re-checked on resize so rotating a tablet doesn't
   // leave the user stuck.
@@ -166,18 +194,7 @@ export default function ChatShell({
       try {
         const incoming = JSON.parse(e.data) as CitationSource[]
         if (!Array.isArray(incoming)) return
-        setSources(prev => {
-          const seen = new Set(prev.map(s => `${s.scope_key}::${s.filename}`))
-          const next = [...prev]
-          for (const s of incoming) {
-            const k = `${s.scope_key}::${s.filename}`
-            if (s.filename && !seen.has(k)) {
-              seen.add(k)
-              next.push(s)
-            }
-          }
-          return next
-        })
+        setSources(prev => dedupeSources([...prev, ...incoming]))
       } catch {
         // ignore malformed payload — drop silently
       }

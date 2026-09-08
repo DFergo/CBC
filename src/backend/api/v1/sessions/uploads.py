@@ -156,6 +156,7 @@ async def recover_session(token: str):
             "role": m.get("role"),
             "content": m.get("content", ""),
             "attachments": m.get("attachments") or [],
+            "sources": m.get("sources") or [],
         }
         for m in sess.get("messages", [])
     ]

@@ -702,12 +702,15 @@ async def _process_turn(
         return
 
     full = "".join(accumulated).strip()
+    # Persist the citation list alongside the message (not just pushed over
+    # SSE) so a resumed/recovered session can rebuild the CBA sidepanel
+    # instead of starting empty — see session_store.add_message.
+    sources = assembled.sources or []
     if full:
-        session_store.add_message(session_token, "assistant", full)
+        session_store.add_message(session_token, "assistant", full, sources=sources)
     # Emit the citation list for this turn so the CBA sidepanel can render.
     # Fired before `done` so the UI can attach sources to the streaming bubble
     # before it's finalised. A no-op when retrieval returned nothing.
-    sources = assembled.sources or []
     if sources:
         await _push_chunk(client, url, session_token, "sources", json.dumps(sources))
     await _push_chunk(client, url, session_token, "done", "")

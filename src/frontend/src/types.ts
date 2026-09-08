@@ -91,6 +91,9 @@ export interface RecoveryMessage {
   role: 'user' | 'assistant' | 'assistant_summary' | string
   content: string
   attachments?: string[]
+  // CBA documents that contributed chunks to this (assistant) turn, if any —
+  // used to rebuild the CBA sidepanel's accumulated source list on resume.
+  sources?: CitationSource[]
 }
 
 export interface RecoveryData {

@@ -122,12 +122,15 @@ class SessionStore:
         content: str,
         timestamp: str,
         attachments: list[str] | None = None,
+        sources: list[dict[str, Any]] | None = None,
     ) -> None:
         d = _session_dir(token)
         d.mkdir(parents=True, exist_ok=True)
         entry: dict[str, Any] = {"role": role, "content": content, "timestamp": timestamp}
         if attachments:
             entry["attachments"] = list(attachments)
+        if sources:
+            entry["sources"] = list(sources)
         line = json.dumps(entry, ensure_ascii=False)
         with open(d / "conversation.jsonl", "a") as f:
             f.write(line + "\n")
@@ -182,6 +185,7 @@ class SessionStore:
         role: str,
         content: str,
         attachments: list[str] | None = None,
+        sources: list[dict[str, Any]] | None = None,
     ) -> None:
         """Append a message to the session (memory + disk).
 
@@ -189,6 +193,12 @@ class SessionStore:
         message so the UI can render chips on the user bubble AND the LLM
         message-builder can decorate the content with an "attached this turn"
         signal (see `get_llm_messages`).
+
+        When `sources` is set (assistant turns only — the CBA documents that
+        contributed chunks to this response), it's persisted alongside the
+        message so the CBA sidepanel can be rebuilt on session recovery
+        instead of starting empty (previously this was only ever pushed
+        once over SSE and discarded server-side the moment the turn ended).
         """
         self._ensure_loaded()
         self._ensure_session(token)
@@ -196,9 +206,11 @@ class SessionStore:
         entry: dict[str, Any] = {"role": role, "content": content, "timestamp": now}
         if attachments:
             entry["attachments"] = list(attachments)
+        if sources:
+            entry["sources"] = list(sources)
         self._cache[token]["messages"].append(entry)
         self._cache[token]["last_activity"] = now
-        self._append_message(token, role, content, now, attachments=attachments)
+        self._append_message(token, role, content, now, attachments=attachments, sources=sources)
         self._save_meta(token)
 
     def _ensure_session(self, token: str) -> None:
