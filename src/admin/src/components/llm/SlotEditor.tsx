@@ -38,12 +38,19 @@ export default function SlotEditor({
     return status?.[activeConnection.id]?.models || []
   })()
 
-  // HRDD-style: if the saved model isn't in the fetched list, auto-correct to
-  // the first available. Skipped when disabled — we don't mutate inherited
-  // values from another tier.
+  // HRDD-style: if the model is blank (just switched connection) or the
+  // saved model isn't in the fetched list, auto-correct to the first
+  // available — and actually persist it via onChange. Previously this only
+  // fired when `slot.model` was truthy, so a blank model (the state right
+  // after switching connections) never got corrected: the <select> below
+  // LOOKS like it shows a model (render-time fallback to connModels[0]) but
+  // that value was never written back to state, so Save silently persisted
+  // an empty model — which is exactly what broke OpenRouter (400 Bad
+  // Request: empty `model` in the request body). Skipped when disabled —
+  // we don't mutate inherited values from another tier.
   useEffect(() => {
     if (disabled) return
-    if (connModels.length > 0 && slot.model && !connModels.includes(slot.model)) {
+    if (connModels.length > 0 && !connModels.includes(slot.model)) {
       const t = window.setTimeout(() => onChange({ model: connModels[0] }), 0)
       return () => window.clearTimeout(t)
     }
