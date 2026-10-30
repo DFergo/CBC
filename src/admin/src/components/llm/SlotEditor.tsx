@@ -9,6 +9,7 @@
 // firing — used at the per-frontend tier when the slot is showing an inherited
 // (read-only) global value.
 import { useEffect } from 'react'
+import ModelCombobox from '../ModelCombobox'
 import type { SlotConfig, SlotHealth, LLMConnection, ConnectionsStatus } from '../../api'
 
 interface Props {
@@ -37,6 +38,8 @@ export default function SlotEditor({
     if (activeConnection.model_ids.length > 0) return activeConnection.model_ids
     return status?.[activeConnection.id]?.models || []
   })()
+  // Everything the endpoint reports, even when the connection has an allow-list.
+  const discoveredModels = (activeConnection && status?.[activeConnection.id]?.models) || []
 
   // HRDD-style: if the model is blank (just switched connection) or the
   // saved model isn't in the fetched list, auto-correct to the first
@@ -50,7 +53,9 @@ export default function SlotEditor({
   // we don't mutate inherited values from another tier.
   useEffect(() => {
     if (disabled) return
-    if (connModels.length > 0 && !connModels.includes(slot.model)) {
+    // Only a BLANK model is filled in: an exact ID the connection doesn't list
+    // is a deliberate choice (the model field accepts it and warns).
+    if (connModels.length > 0 && !slot.model) {
       const t = window.setTimeout(() => onChange({ model: connModels[0] }), 0)
       return () => window.clearTimeout(t)
     }
@@ -97,25 +102,14 @@ export default function SlotEditor({
           <span className="text-gray-400 ml-1">({connModels.length} available)</span>
         )}
       </label>
-      {connModels.length > 0 ? (
-        <select
-          value={connModels.includes(slot.model) ? slot.model : (slot.model || connModels[0])}
-          onChange={e => onChange({ model: e.target.value })}
-          disabled={disabled}
-          className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
-        >
-          {connModels.map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      ) : (
-        <input
-          type="text"
-          value={slot.model}
-          onChange={e => onChange({ model: e.target.value })}
-          disabled={disabled}
-          placeholder={activeConnection ? 'model id' : 'pick a connection first'}
-          className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
-        />
-      )}
+      <ModelCombobox
+        value={slot.model}
+        models={connModels}
+        extra={discoveredModels.filter(m => !connModels.includes(m))}
+        onChange={model => onChange({ model })}
+        disabled={disabled}
+        placeholder={activeConnection ? undefined : 'pick a connection first'}
+      />
 
       <div className="grid grid-cols-3 gap-2">
         <div>

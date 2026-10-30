@@ -48,6 +48,7 @@
 // Reused twice by RAGPipelineSection: once for `embedding`, once for
 // `reranker` (which additionally shows enabled/top_n fields via `kind`).
 import { useEffect, useState } from 'react'
+import ModelCombobox from '../ModelCombobox'
 import type { EmbeddingProviderType, EmbeddingSlotConfig, RerankerSlotConfig } from '../../api'
 import { API_KEY_SENTINEL, testEmbeddingConnection } from '../../api'
 import { useT } from '../../i18n'
@@ -286,24 +287,20 @@ export default function EmbeddingSlotEditor({
       {dropdownModels.length === 0 && slot.provider !== 'local' && (
         <p className="text-[11px] text-gray-400">{t('rag_embed_model_prompt')}</p>
       )}
-      {dropdownModels.length > 0 ? (
-        <select
-          value={dropdownModels.includes(slot.model) ? slot.model : (slot.model || dropdownModels[0])}
-          onChange={e => onChange({ model: e.target.value } as Partial<AnySlot>)}
-          disabled={disabled}
-          className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
-        >
-          {dropdownModels.map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      ) : (
-        <input
-          type="text"
-          value={slot.model}
-          onChange={e => onChange({ model: e.target.value } as Partial<AnySlot>)}
-          disabled={disabled}
-          className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-500"
-        />
-      )}
+      <ModelCombobox
+        value={slot.model}
+        models={dropdownModels}
+        extra={slot.provider === 'local' ? [] : probedModels.filter(m => !dropdownModels.includes(m))}
+        onChange={model => onChange({ model } as Partial<AnySlot>)}
+        disabled={disabled}
+        labels={{
+          placeholder: t('model_search_placeholder'),
+          noteEndpoint: t('model_note_endpoint'),
+          noteExact: t('model_note_exact'),
+          statusOutside: t('model_status_outside'),
+          statusNotOffered: t('model_status_not_offered'),
+        }}
+      />
       {recommendedInList.length > 0 && (
         <p className="text-[11px] text-gray-400">
           {t('rag_embed_recommended', { models: recommendedInList.join(', ') })}
