@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-31
+
+- **Lost replies after quick follow-up messages (fix).** The frontend sidecar dropped a finished response stream 5 seconds after `done`; a message sent within those 5 seconds (the browser opens its stream before sending) could lose its reply. The sidecar now counts open stream connections per session and drops a finished stream only when nobody is listening. Reproduced with real timings before the fix; tests in `src/frontend/sidecar/tests/test_backend_surface.py`.
+
 ## 2026-10-30
 
 - **LLM providers (Sprint 22).** Responses whose `content` is a list of blocks (Mistral reasoning models such as `mistral-large-4`) are normalised: only text reaches the user (previously the stream broke). Request fields are chosen per provider and model (Mistral never receives fields it rejects; a rejected optional field is dropped and the request retried once). Per-slot **Reasoning** control (provider default / off / low / medium / high) mapped per provider replaces the global "Thinking / Reasoning" toggle (old "off" migrates to "off" on every slot). Temp / Max tokens / Context can be left blank (not sent). Each slot shows whether every control is sent, adjusted or ignored for the chosen model.
