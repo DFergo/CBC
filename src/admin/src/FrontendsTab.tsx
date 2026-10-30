@@ -11,6 +11,8 @@ import PerFrontendLLMPanel from './panels/PerFrontendLLMPanel'
 import PromptsSection from './sections/PromptsSection'
 import RAGSection from './sections/RAGSection'
 import { useT } from './i18n'
+import FrontendSecurityPanel, { AccessFields, SigningBadge, draftToCredentials } from './FrontendSecurityPanel'
+import type { AccessDraft } from './FrontendSecurityPanel'
 
 const POLL_INTERVAL_MS = 10000  // refresh status every 10s
 
@@ -20,6 +22,9 @@ export default function FrontendsTab() {
   const [showRegister, setShowRegister] = useState(false)
   const [newUrl, setNewUrl] = useState('')
   const [newName, setNewName] = useState('')
+  const [newAccess, setNewAccess] = useState<AccessDraft>({ mode: 'signed', secret: '', headers: '' })
+  const [globalSecret, setGlobalSecret] = useState(false)
+  const [securityId, setSecurityId] = useState('')
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
   // Inline edit of a single frontend's name + URL (id is preserved server-side).
@@ -33,6 +38,7 @@ export default function FrontendsTab() {
     try {
       const r = await listFrontends()
       setFrontends(r.frontends)
+      setGlobalSecret(!!r.global_secret_configured)
       setSelected(sel => {
         if (sel && r.frontends.some(f => f.frontend_id === sel)) return sel
         return r.frontends[0]?.frontend_id || ''
@@ -53,8 +59,9 @@ export default function FrontendsTab() {
     if (!newUrl.trim() || !newName.trim()) return
     setError('')
     try {
-      const r = await registerFrontend({ url: newUrl.trim(), name: newName.trim() })
+      const r = await registerFrontend({ url: newUrl.trim(), name: newName.trim(), ...draftToCredentials(newAccess) })
       setNewUrl(''); setNewName(''); setShowRegister(false)
+      setNewAccess({ mode: 'signed', secret: '', headers: '' })
       await reload()
       setSelected(r.frontend.frontend_id)
       setInfo(t('frontends_registered_info', { name: r.frontend.name }))
@@ -167,6 +174,9 @@ export default function FrontendsTab() {
                   className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm" />
               </div>
             </div>
+            <div className="mt-3">
+              <AccessFields draft={newAccess} setDraft={setNewAccess} globalSecret={globalSecret} />
+            </div>
             <button onClick={register} disabled={!newUrl.trim() || !newName.trim()}
               className="mt-3 text-sm bg-uni-blue text-white rounded-lg px-3 py-1.5 hover:opacity-90 disabled:opacity-50">
               {t('frontends_register_submit')}
@@ -182,7 +192,7 @@ export default function FrontendsTab() {
               <li
                 key={fe.frontend_id}
                 onClick={() => editingId !== fe.frontend_id && setSelected(fe.frontend_id)}
-                className={`flex items-center gap-3 px-3 py-2 ${editingId === fe.frontend_id ? '' : 'cursor-pointer'} ${selected === fe.frontend_id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                className={`flex flex-wrap items-center gap-3 px-3 py-2 ${editingId === fe.frontend_id ? '' : 'cursor-pointer'} ${selected === fe.frontend_id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
               >
                 <StatusDot status={fe.status} />
                 {editingId === fe.frontend_id ? (
@@ -215,6 +225,9 @@ export default function FrontendsTab() {
                       <div className="text-sm font-medium text-gray-800 truncate">{fe.name}</div>
                       <div className="text-xs text-gray-500 truncate">{fe.url}</div>
                     </div>
+                    <div className="flex flex-wrap gap-1">
+                      <SigningBadge f={fe} />
+                    </div>
                     <div className="text-xs text-gray-400 whitespace-nowrap">
                       {fe.last_seen
                         ? t('frontends_last_seen', { time: new Date(fe.last_seen).toLocaleTimeString() })
@@ -225,6 +238,12 @@ export default function FrontendsTab() {
                         onChange={e => toggleEnabled(fe.frontend_id, e.target.checked)} />
                       {t('frontends_enabled_toggle')}
                     </label>
+                    <button
+                      onClick={e => { e.stopPropagation(); setSecurityId(id => id === fe.frontend_id ? '' : fe.frontend_id) }}
+                      className="text-xs text-uni-blue hover:underline"
+                    >
+                      {t('frontends_security')}
+                    </button>
                     <button
                       onClick={e => { e.stopPropagation(); startEdit(fe) }}
                       className="text-xs text-uni-blue hover:underline"
@@ -238,6 +257,12 @@ export default function FrontendsTab() {
                       {t('frontends_unregister')}
                     </button>
                   </>
+                )}
+                {securityId === fe.frontend_id && editingId !== fe.frontend_id && (
+                  <div className="basis-full">
+                    <FrontendSecurityPanel key={`${fe.frontend_id}-${fe.url}-${fe.auth_mode}`} f={fe}
+                      globalSecret={globalSecret} onSaved={reload} />
+                  </div>
                 )}
               </li>
             ))}

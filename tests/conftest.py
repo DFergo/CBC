@@ -17,7 +17,8 @@ os.environ.setdefault("CBC_DATA_DIR", tempfile.mkdtemp(prefix="cbc-test-data-"))
 
 # Alias `src` -> .../src/backend so `import src.services...` resolves locally.
 _BACKEND = pathlib.Path(__file__).resolve().parent.parent / "src" / "backend"
-if "src" not in sys.modules:
+# Inside the backend container the code already lives at /app/src — no alias.
+if "src" not in sys.modules and _BACKEND.is_dir():
     _pkg = types.ModuleType("src")
     _pkg.__path__ = [str(_BACKEND)]
     sys.modules["src"] = _pkg

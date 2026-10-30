@@ -571,13 +571,27 @@ export interface FrontendInfo {
   last_seen: string | null
   created_at: string | null
   metadata: Record<string, unknown>
+  // Backend-surface access — secret values are write-only.
+  auth_mode?: FrontendAuthMode
+  signing_source?: 'own' | 'global' | ''
+  signing_enabled?: boolean
+  extra_header_names?: string[]
+  surface_auth?: 'signed' | 'trusted-network' | null  // what the frontend itself reports on poll
 }
 
-export async function listFrontends(): Promise<{ frontends: FrontendInfo[] }> {
+export type FrontendAuthMode = 'signed' | 'unsigned' | 'legacy'
+
+export interface FrontendCredentials {
+  auth_mode?: FrontendAuthMode
+  signing_secret?: string
+  extra_headers?: Record<string, string>
+}
+
+export async function listFrontends(): Promise<{ frontends: FrontendInfo[]; global_secret_configured?: boolean }> {
   return request('/admin/api/v1/frontends')
 }
 
-export async function registerFrontend(data: { url: string; name: string }): Promise<{ frontend: FrontendInfo }> {
+export async function registerFrontend(data: { url: string; name: string } & FrontendCredentials): Promise<{ frontend: FrontendInfo }> {
   return request('/admin/api/v1/frontends', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -586,7 +600,7 @@ export async function registerFrontend(data: { url: string; name: string }): Pro
 
 export async function updateFrontend(
   frontendId: string,
-  patch: { url?: string; name?: string; enabled?: boolean; metadata?: Record<string, unknown> },
+  patch: { url?: string; name?: string; enabled?: boolean; metadata?: Record<string, unknown> } & FrontendCredentials,
   // verify=false skips ONLY the reachability probe (the 409 URL-collision
   // check still runs). Used by an external reconciler pushing a pre-resolved
   // IP; the admin panel always leaves it at the default (verify).

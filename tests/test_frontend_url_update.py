@@ -34,9 +34,9 @@ def client():
 @pytest.fixture
 def probe_ok(monkeypatch):
     """Reachability probe always succeeds."""
-    async def _ok(url):  # noqa: ARG001
+    async def _ok(url, entry):  # noqa: ARG001
         return None
-    monkeypatch.setattr(fe_mod, "_probe_reachable", _ok)
+    monkeypatch.setattr(fe_mod, "_probe", _ok)
 
 
 def test_url_update_preserves_id_and_normalises(client, probe_ok):
@@ -63,9 +63,9 @@ def test_generic_host_accepted(client, probe_ok):
 
 
 def test_unreachable_url_rejected_400(client, monkeypatch):
-    async def _fail(url):  # noqa: ARG001
+    async def _fail(url, entry):  # noqa: ARG001
         raise HTTPException(400, "not reachable")
-    monkeypatch.setattr(fe_mod, "_probe_reachable", _fail)
+    monkeypatch.setattr(fe_mod, "_probe", _fail)
 
     fid = registry.register(url="http://10.0.0.1:8190", name="A")["frontend_id"]
     r = client.patch(f"{BASE}/{fid}", json={"url": "http://10.0.0.9:8190"})
@@ -77,10 +77,10 @@ def test_unreachable_url_rejected_400(client, monkeypatch):
 def test_verify_false_skips_reachability(client, monkeypatch):
     called = []
 
-    async def _fail(url):
+    async def _fail(url, entry):
         called.append(url)
         raise HTTPException(400, "probe should have been skipped")
-    monkeypatch.setattr(fe_mod, "_probe_reachable", _fail)
+    monkeypatch.setattr(fe_mod, "_probe", _fail)
 
     fid = registry.register(url="http://10.0.0.1:8190", name="A")["frontend_id"]
     r = client.patch(f"{BASE}/{fid}?verify=false", json={"url": "http://host.local:8190"})
@@ -102,9 +102,9 @@ def test_collision_rejected_409(client, probe_ok):
 
 def test_collision_checked_even_with_verify_false(client, monkeypatch):
     # Probe must never run: collision is checked first AND verify=false skips it.
-    async def _boom(url):  # noqa: ARG001
+    async def _boom(url, entry):  # noqa: ARG001
         raise AssertionError("reachability must not run for a colliding URL")
-    monkeypatch.setattr(fe_mod, "_probe_reachable", _boom)
+    monkeypatch.setattr(fe_mod, "_probe", _boom)
 
     a = registry.register(url="http://10.0.0.1:8190", name="A")
     registry.register(url="http://10.0.0.2:8190", name="B")
@@ -120,9 +120,9 @@ def test_collision_checked_even_with_verify_false(client, monkeypatch):
 def test_rename_only_does_not_probe(client, monkeypatch):
     called = []
 
-    async def _spy(url):
+    async def _spy(url, entry):
         called.append(url)
-    monkeypatch.setattr(fe_mod, "_probe_reachable", _spy)
+    monkeypatch.setattr(fe_mod, "_probe", _spy)
 
     fid = registry.register(url="http://10.0.0.1:8190", name="Old")["frontend_id"]
     r = client.patch(f"{BASE}/{fid}", json={"name": "New name"})

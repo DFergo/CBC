@@ -25,6 +25,7 @@ from src.services import (
     session_settings_store,
 )
 from src.services.branding_store import Branding
+from src.services import frontend_client
 from src.services.frontend_registry import registry
 from src.services.llm_override_store import LLMOverride
 from src.services.orgs_override_store import OrgsOverride
@@ -36,30 +37,48 @@ logger = logging.getLogger("admin.frontends")
 router = APIRouter(prefix="/admin/api/v1/frontends", tags=["admin-frontends"])
 
 PUSH_TIMEOUT = 5.0
-# Reachability probe for a URL change: the sidecar must answer GET
-# /internal/config. Generous timeout — a frontend that just came up over a
+# Reachability + auth probe: the sidecar must answer GET config with the
+# entry's final mode. Generous timeout — a frontend that just came up over a
 # slow office LAN shouldn't be rejected as unreachable.
 CONFIG_PROBE_TIMEOUT = 10.0
 
+MIN_SECRET_LENGTH = frontend_client.MIN_SECRET_LENGTH
+_CRED_FIELDS = {"auth_mode", "signing_secret", "extra_headers"}
 
-async def _probe_reachable(url: str) -> None:
-    """Confirm a frontend URL is reachable before we point the registry at it.
 
-    Probes the sidecar's `GET /internal/config` (the endpoint the frontend
-    always serves). Raises HTTPException(400) with the underlying error if it
-    doesn't answer. Host-agnostic: works for an IP, a hostname, a `.local`
-    name or a Tailscale MagicDNS name — we decide on reachability, never on
-    the shape of the string. (Caveat: the backend container may not resolve
-    `.local` names even if the host can — that's why the reconciler can pass
-    `?verify=false` and push a pre-resolved IP.)
+async def _probe(url: str, entry: dict[str, Any]) -> None:
+    """Confirm a frontend URL is reachable AND accepts the entry's mode before
+    the registry points at it (adapted from HRDDHelper admin/frontends.py).
+
+    Probes `GET {url}/internal/config`; the client rewrites it to
+    `/backend/v1/config` (signed or not) unless the mode is legacy. Host-
+    agnostic: works for an IP, a hostname, a `.local` name or a Tailscale
+    MagicDNS name — we decide on reachability, never on the shape of the
+    string. (Caveat: the backend container may not resolve `.local` names
+    even if the host can — that's why the reconciler can pass `?verify=false`
+    and push a pre-resolved IP.)
     """
-    probe = f"{url.rstrip('/')}/internal/config"
+    mode = frontend_client.auth_mode(entry)
     try:
-        async with httpx.AsyncClient(timeout=CONFIG_PROBE_TIMEOUT) as client:
-            r = await client.get(probe)
+        async with frontend_client.ProbeClient(entry, timeout=CONFIG_PROBE_TIMEOUT) as client:
+            r = await client.get(f"{url.rstrip('/')}/internal/config")
             r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        if code == 401 and mode == frontend_client.MODE_SIGNED:
+            detail = (f"Frontend at {url} rejected the signature — check that its CBC_BACKEND_SECRET matches "
+                      f"this frontend's secret (or CBC_FRONTEND_SECRET here) and that both clocks are in sync")
+        elif code == 401:
+            detail = (f"Frontend at {url} requires signed requests — choose 'Signed', or start the frontend "
+                      f"with BACKEND_SURFACE_AUTH=trusted-network")
+        elif code == 404 and mode != frontend_client.MODE_LEGACY:
+            detail = (f"No backend surface at {url} — use the frontend's backend port (container port 8080), "
+                      f"not the public one; a frontend on the old image needs mode 'Legacy'")
+        else:
+            detail = f"URL not reachable ({url}): {e}"
+        raise HTTPException(400, detail)
     except httpx.HTTPError as e:
-        raise HTTPException(400, f"URL not reachable ({probe}): {e}")
+        raise HTTPException(400, f"URL not reachable ({url}): {e}")
 
 
 async def _push(frontend_id: str, path: str, body: dict[str, Any]) -> None:
@@ -72,7 +91,7 @@ async def _push(frontend_id: str, path: str, body: dict[str, Any]) -> None:
         return
     url = f"{fe['url'].rstrip('/')}{path}"
     try:
-        async with httpx.AsyncClient(timeout=PUSH_TIMEOUT) as client:
+        async with frontend_client.AsyncClient(timeout=PUSH_TIMEOUT) as client:
             r = await client.post(url, json=body)
             if r.status_code // 100 != 2:
                 logger.warning(f"Push {path} → {url} returned HTTP {r.status_code}: {r.text[:200]}")
@@ -83,6 +102,10 @@ async def _push(frontend_id: str, path: str, body: dict[str, Any]) -> None:
 
 
 def _serialise(fe: dict[str, Any]) -> dict[str, Any]:
+    """Registry entry for the admin. Secrets are write-only: the admin only
+    sees whether they are set and the names of the extra headers."""
+    mode = frontend_client.auth_mode(fe)
+    _, source = frontend_client.effective_secret(fe)
     return {
         "frontend_id": fe["frontend_id"],
         "url": fe["url"],
@@ -92,14 +115,44 @@ def _serialise(fe: dict[str, Any]) -> dict[str, Any]:
         "last_seen": fe.get("last_seen"),
         "created_at": fe.get("created_at"),
         "metadata": fe.get("metadata", {}),
+        "auth_mode": mode,
+        "signing_source": source if mode == frontend_client.MODE_SIGNED else "",
+        "signing_enabled": mode == frontend_client.MODE_SIGNED and bool(source),
+        "extra_header_names": sorted((fe.get("extra_headers") or {}).keys()),
+        # What the frontend itself reports on each poll ("signed" | "trusted-network").
+        "surface_auth": fe.get("surface_auth"),
     }
+
+
+def _check_mode(mode: str) -> None:
+    if mode not in frontend_client.AUTH_MODES:
+        raise HTTPException(400, f"auth_mode must be one of {', '.join(frontend_client.AUTH_MODES)}")
+
+
+def _check_secret(secret: str) -> None:
+    if secret and len(secret) < MIN_SECRET_LENGTH:
+        raise HTTPException(400, f"Signing secret must be at least {MIN_SECRET_LENGTH} characters")
+
+
+def _check_signable(entry: dict[str, Any]) -> None:
+    if frontend_client.auth_mode(entry) == frontend_client.MODE_SIGNED and not frontend_client.effective_secret(entry)[0]:
+        raise HTTPException(
+            400,
+            "Signed mode needs a secret: set CBC_FRONTEND_SECRET on the backend (installation secret) "
+            "or enter a secret for this frontend.",
+        )
 
 
 # --- Registry CRUD ---
 
 class RegisterRequest(BaseModel):
-    url: str
+    url: str  # the frontend's BACKEND port URL (container port 8080) — or the old URL in legacy mode
     name: str
+    # "signed" (default: own secret, else the installation secret CBC_FRONTEND_SECRET),
+    # "unsigned" (trusted network) or "legacy" (frontend on the image from before the two-port split).
+    auth_mode: str = frontend_client.MODE_SIGNED
+    signing_secret: str = ""  # optional per-frontend secret; blank = installation secret
+    extra_headers: dict[str, str] = {}
 
 
 class UpdateRequest(BaseModel):
@@ -107,20 +160,42 @@ class UpdateRequest(BaseModel):
     name: str | None = None
     enabled: bool | None = None
     metadata: dict[str, Any] | None = None
+    auth_mode: str | None = None
+    # None = unchanged; "" = remove the per-frontend secret (falls back to the installation secret)
+    signing_secret: str | None = None
+    # None = unchanged; {} = remove. Values are write-only (never returned).
+    extra_headers: dict[str, str] | None = None
 
 
 @router.get("")
 async def list_frontends(_admin: dict = Depends(require_admin)):
-    return {"frontends": [_serialise(f) for f in registry.list_all()]}
+    return {
+        "frontends": [_serialise(f) for f in registry.list_all()],
+        "global_secret_configured": bool(frontend_client.global_secret()),
+    }
 
 
 @router.post("", status_code=201)
 async def register_frontend(req: RegisterRequest, _admin: dict = Depends(require_admin)):
-    if not req.url.strip():
+    url = req.url.strip().rstrip("/")
+    if not url:
         raise HTTPException(400, "url is required")
     if not req.name.strip():
         raise HTTPException(400, "name is required")
-    fe = registry.register(url=req.url.strip(), name=req.name.strip())
+    secret = req.signing_secret.strip()
+    _check_mode(req.auth_mode)
+    _check_secret(secret)
+    entry = {"auth_mode": req.auth_mode, "signing_secret": secret, "extra_headers": req.extra_headers}
+    _check_signable(entry)
+    for other in registry.list_all():
+        if (other.get("url") or "").rstrip("/") == url:
+            raise HTTPException(409, f"URL {url} already used by frontend {other.get('frontend_id')!r}")
+
+    # Verify the frontend is reachable and accepts this mode before saving anything.
+    await _probe(url, entry)
+
+    fe = registry.register(url=url, name=req.name.strip())
+    fe = registry.update(fe["frontend_id"], **entry)
     return {"frontend": _serialise(fe)}
 
 
@@ -151,14 +226,28 @@ async def update_frontend(
         (the launchd reconciler pushes a host-resolved IP the backend
         container might not otherwise reach the same way).
 
-    The poller reads `registry.list_enabled()` every tick, so a URL change
-    takes effect on the next poll without a restart.
+    URL + mode + credentials are verified together, with the values that will
+    be in effect after the update — migrating a frontend (new port + new mode
+    + secret) is one verified save, never two half-verified ones.
+
+    The poller reads `registry.list_enabled()` every tick, so a change takes
+    effect on the next poll without a restart.
     """
     existing = registry.get(frontend_id)
     if not existing:
         raise HTTPException(404, f"Frontend {frontend_id!r} not found")
 
     patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "auth_mode" in patch:
+        _check_mode(patch["auth_mode"])
+    if "signing_secret" in patch:
+        patch["signing_secret"] = patch["signing_secret"].strip()
+        _check_secret(patch["signing_secret"])
+    if _CRED_FIELDS & patch.keys():
+        # Pin the mode explicitly: entries from before modes existed derive it from
+        # their secret, and removing that secret must not silently switch to legacy.
+        patch.setdefault("auth_mode", frontend_client.auth_mode(existing))
+        _check_signable({**existing, **patch})
 
     if "url" in patch:
         new_url = patch["url"].rstrip("/")
@@ -170,10 +259,14 @@ async def update_frontend(
                 continue
             if (other.get("url") or "").rstrip("/") == new_url:
                 raise HTTPException(409, f"URL {new_url} already used by frontend {other.get('frontend_id')!r}")
-        if verify:
-            await _probe_reachable(new_url)
+
+    if verify and (({"url"} | _CRED_FIELDS) & patch.keys()):
+        final = {**existing, **patch}
+        await _probe(final["url"], final)
 
     updated = registry.update(frontend_id, **patch)
+    if _CRED_FIELDS & patch.keys():
+        logger.info(f"Frontend {frontend_id} access mode set to {frontend_client.auth_mode(updated)}")
     return {"frontend": _serialise(updated)}
 
 
