@@ -1,8 +1,7 @@
-# Pull-inverse architecture (HRDD parity): the backend is the single Docker
-# stack on its host. It does NOT share a Docker network with frontends —
-# frontends live on different machines (by design), and the backend polls
-# them over the LAN / Tailscale / hostname URL that the admin registered
-# in the Frontends tab. No shared networks, no service-name DNS needed.
+# Pull-inverse architecture (HRDD parity): the backend polls each frontend's
+# backend port (container port 8080) at the URL the admin registered in the
+# Frontends tab — LAN IP, hostname, Tailscale name or a tunnel hostname. For a
+# frontend on the same host over a shared internal network, see deploy/t3-same-host.
 #
 # Host port is configurable via BACKEND_PORT (default 8100). Override
 # via Portainer's Environment variables without editing the compose.
@@ -27,6 +26,10 @@ services:
     environment:
       - DEPLOYMENT_JSON_PATH=/app/config/deployment_backend.json
       - CBC_DATA_DIR=/app/data
+      # Installation-wide signing secret (≥ 32 chars, e.g. `openssl rand -hex 32`): used for
+      # every signed frontend without its own secret. Same value as CBC_BACKEND_SECRET on
+      # those frontends. Optional — without it, signed frontends need their own secret.
+      - CBC_FRONTEND_SECRET=${CBC_FRONTEND_SECRET:-}
 
 volumes:
   cbc-data:

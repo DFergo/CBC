@@ -1,18 +1,19 @@
-# Pure pull-inverse (HRDD parity, locked-in by Sprint 10B): the sidecar
-# makes ZERO outbound HTTP. Backend polls this frontend over the LAN /
-# Tailscale / hostname URL the admin registered in the Frontends tab. The
-# frontend just has to be reachable on FRONTEND_PORT from the backend's
-# host. No CBC_BACKEND_URL is needed any more — it used to feed the
-# auth / recovery / upload sidecar→backend calls that have all been
-# refactored to queue + poll + push-back.
+# Pure pull-inverse (HRDD parity): the sidecar makes ZERO outbound HTTP. The
+# backend polls this frontend; the frontend never needs to know where the
+# backend is.
 #
-# Host port is configurable via FRONTEND_PORT (default 8190). The
-# container port stays 80 (Nginx).
+# Two ports (container side fixed, host side configurable via env vars —
+# Portainer pattern, no compose edits):
+#   80   public surface  — SPA + browser routes. Map this in the tunnel / give it to users.
+#   8080 backend surface — signed requests from the CBC backend only. Register THIS
+#        port's URL in Admin → Frontends.
+# Other topologies (frontend on a VPS, frontend on the backend host): see deploy/.
 #
 # No explicit container_name: Portainer prefixes containers with the stack
 # name so multiple frontend stacks (one per campaign/union) can coexist on a
 # single host. Top-level named volumes are also prefixed with the stack name,
-# so each stack gets its own isolated `/app/data` — no shared state.
+# so each stack gets its own isolated `/app/data` — no shared state. Give each
+# stack its own FRONTEND_PORT / FRONTEND_BACKEND_PORT.
 services:
   cbc-frontend:
     restart: unless-stopped
@@ -21,10 +22,22 @@ services:
       dockerfile: Dockerfile.frontend
     ports:
       - "${FRONTEND_PORT:-8190}:80"
+      # Backend surface: bound to BACKEND_BIND only (default 127.0.0.1 = not reachable
+      # from other machines). For a backend on another LAN machine set BACKEND_BIND to
+      # this host's LAN IP. Never 0.0.0.0 on a machine with a public interface.
+      - "${BACKEND_BIND:-127.0.0.1}:${FRONTEND_BACKEND_PORT:-8191}:8080"
     volumes:
       - cbc-frontend-data:/app/data
     environment:
       - DEPLOYMENT_JSON_PATH=/app/config/deployment_frontend.json
+      # Backend-surface auth: "signed" (default) or "trusted-network" (no signature
+      # check — only where nothing but the CBC backend can reach the backend port).
+      - BACKEND_SURFACE_AUTH=${BACKEND_SURFACE_AUTH:-signed}
+      # Signing secret (≥ 32 chars): the backend's installation secret CBC_FRONTEND_SECRET,
+      # or this frontend's own secret from Admin → Frontends → Security. Not needed in
+      # trusted-network. Rotation: put the old value in CBC_BACKEND_SECRET_PREVIOUS.
+      - CBC_BACKEND_SECRET=${CBC_BACKEND_SECRET:-}
+      - CBC_BACKEND_SECRET_PREVIOUS=${CBC_BACKEND_SECRET_PREVIOUS:-}
 
 volumes:
   cbc-frontend-data:
