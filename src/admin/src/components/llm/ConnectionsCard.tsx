@@ -173,6 +173,31 @@ export default function ConnectionsCard({ defaults, status, onChanged, onRefresh
   )
 }
 
+// OpenRouter `provider` routing object, edited as JSON (applied on blur when valid).
+function RoutingField({ value, onChange }: { value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void }) {
+  const [text, setText] = useState(Object.keys(value).length ? JSON.stringify(value) : '')
+  const [bad, setBad] = useState(false)
+  const apply = () => {
+    if (!text.trim()) { setBad(false); onChange({}); return }
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) { setBad(false); onChange(parsed) } else setBad(true)
+    } catch { setBad(true) }
+  }
+  return (
+    <div>
+      <label className="block text-xs text-gray-500">OpenRouter routing (JSON)</label>
+      <input value={text} onChange={e => setText(e.target.value)} onBlur={apply} spellCheck={false}
+        placeholder='{"order": ["alibaba"], "allow_fallbacks": false}'
+        className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono" />
+      <p className={`text-[11px] ${bad ? 'text-uni-red' : 'text-gray-400'}`}>
+        {bad ? 'Not a valid JSON object — not applied.'
+          : 'Sent as OpenRouter\u2019s "provider" object. Pinning a session to one endpoint lets its prompt cache hit.'}
+      </p>
+    </div>
+  )
+}
+
 function ConnectionForm({
   conn, isNew, defaults, onChange, onSave, onCancel,
 }: {
@@ -316,6 +341,30 @@ function ConnectionForm({
         <input type="checkbox" checked={conn.enable} onChange={e => onChange({ enable: e.target.checked })} className="rounded border-gray-300" />
         Enabled
       </label>
+
+      {conn.type === 'api' && conn.api_flavor !== 'anthropic' && (
+        <details className="text-xs" open={!!(conn.provider || conn.prompt_cache_key || Object.keys(conn.routing || {}).length)}>
+          <summary className="cursor-pointer text-gray-500 select-none">Provider options (optional)</summary>
+          <div className="space-y-2 mt-2">
+            <label className="block text-xs text-gray-500">Provider profile</label>
+            <select value={conn.provider || ''} onChange={e => onChange({ provider: e.target.value })}
+              className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+              <option value="">Auto (from the API endpoint)</option>
+              <option value="mistral">Mistral API</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="openai">OpenAI</option>
+              <option value="openai_compatible">Other OpenAI-compatible</option>
+            </select>
+            <p className="text-[11px] text-gray-400">Decides which request fields are sent and how reasoning is controlled.</p>
+            <label className="flex items-center gap-2 text-xs text-gray-600">
+              <input type="checkbox" checked={!!conn.prompt_cache_key} onChange={e => onChange({ prompt_cache_key: e.target.checked })}
+                className="rounded border-gray-300" />
+              Send a per-session prompt cache key (a hash of the session, never the session token)
+            </label>
+            <RoutingField value={conn.routing || {}} onChange={routing => onChange({ routing })} />
+          </div>
+        </details>
+      )}
 
       <div className="flex gap-2 pt-2">
         <button

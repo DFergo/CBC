@@ -38,12 +38,24 @@ SlotName = Literal["inference", "compressor", "summariser", "translation"]
 SLOT_NAMES: tuple[SlotName, ...] = ("inference", "compressor", "summariser", "translation")
 
 
+ReasoningLevel = Literal["off", "low", "medium", "high"]
+
+
 class SlotConfig(BaseModel):
     connection_id: str = ""
     model: str = ""
-    temperature: float = 0.7
-    max_tokens: int = 4096
-    num_ctx: int = 8192
+    # Sprint 22: None = "don't send" (provider/model default applies). The
+    # defaults keep existing configs and new slots behaving as before.
+    temperature: float | None = 0.7
+    max_tokens: int | None = 4096
+    num_ctx: int | None = 8192  # Ollama only (options.num_ctx)
+    # Sprint 22: per-slot reasoning control, mapped per provider by
+    # llm_capabilities.py (None = provider default). Replaces the global
+    # disable_thinking flag, whose default was True — so the default here is
+    # "off" to keep fresh installs behaving as before (reasoning hurts
+    # first-token latency in chat). Some models cannot switch it off; the admin
+    # says so.
+    reasoning: ReasoningLevel | None = "off"
 
 
 # Sentinel string used to (a) tell the admin UI "this connection has an
@@ -98,12 +110,6 @@ class LLMConfig(BaseModel):
     translation: SlotConfig = Field(default_factory=SlotConfig)
     compression: CompressionSettings = Field(default_factory=CompressionSettings)
     routing: RoutingToggles = Field(default_factory=RoutingToggles)
-    # Sprint 13: when True, the provider request body and the system prompt are
-    # nudged to suppress reasoning/<think> tokens. Effective for qwen3 family
-    # (think:false on Ollama, /no_think on LM Studio); harmless no-op for
-    # models without a thinking mode (gemma, llama, mistral). Defaults to True
-    # because thinking models hurt first-token latency in CBC's chat use.
-    disable_thinking: bool = True
     # Sprint 14: concurrency ceiling for parallel chat turns across the whole
     # backend. polling.py runs frontends + their messages in parallel and
     # acquires a semaphore sized from this field before each LLM call.
@@ -182,6 +188,23 @@ def _migrate_legacy(data: dict[str, Any]) -> dict[str, Any]:
         data = dict(data)
         data["translation"] = dict(data.get("summariser") or {})
 
+    data = _migrate_disable_thinking(data)
+    return data
+
+
+def _migrate_disable_thinking(data: dict[str, Any]) -> dict[str, Any]:
+    """Sprint 22: the global `disable_thinking` flag (default True) becomes a
+    per-slot `reasoning` setting. True → every slot without its own setting
+    gets "off"; False → provider default (None). Applied to global configs and
+    per-frontend overrides alike; the old key is dropped."""
+    if "disable_thinking" not in data:
+        return data
+    data = dict(data)
+    off = bool(data.pop("disable_thinking"))
+    for name in SLOT_NAMES:
+        slot = data.get(name)
+        if isinstance(slot, dict) and "reasoning" not in slot:
+            data[name] = {**slot, "reasoning": "off" if off else None}
     return data
 
 

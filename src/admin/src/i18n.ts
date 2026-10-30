@@ -222,7 +222,6 @@ export type AdminTranslationKeys =
   | 'llm_summary_routing' | 'llm_summary_routing_description'
   | 'llm_summary_document' | 'llm_summary_final'
   | 'llm_summary_contextual' | 'llm_summary_contextual_hint'
-  | 'llm_thinking_mode' | 'llm_thinking_mode_description'
   | 'llm_max_concurrent_turns' | 'llm_max_concurrent_turns_description'
   | 'llm_save_config' | 'llm_check_health' | 'llm_refresh_providers'
   // SMTP section
@@ -342,12 +341,27 @@ export type AdminTranslationKeys =
   | 'sessions_upload_downloading' | 'sessions_upload_saved'
   | 'sessions_upload_copying' | 'sessions_upload_copied' | 'sessions_upload_failed'
   | 'sessions_conversation_count_heading'
+  | 'llm_usage_heading' | 'llm_usage_description' | 'llm_usage_refresh' | 'llm_usage_reset' | 'llm_usage_reset_confirm' | 'llm_usage_empty' | 'llm_usage_col_slot' | 'llm_usage_col_model' | 'llm_usage_col_calls' | 'llm_usage_col_prompt' | 'llm_usage_col_cached' | 'llm_usage_col_hit_rate' | 'llm_usage_col_completion' | 'llm_usage_col_reasoning'
 
 export type AdminTranslations = Partial<Record<AdminTranslationKeys, string>>
 
 // --- English (source of truth) ---
 
 const EN: AdminTranslations = {
+  llm_usage_heading: "Usage and prompt cache",
+  llm_usage_description: "Cache hit rate = cached prompt tokens / prompt tokens, as reported by the provider. Cached input is much cheaper on providers that cache automatically (Mistral, OpenAI, Anthropic, OpenRouter when it routes to a caching provider). \"—\" means the provider reports no usage or no cache figure.",
+  llm_usage_refresh: "Refresh",
+  llm_usage_reset: "Reset",
+  llm_usage_reset_confirm: "Reset the usage counters?",
+  llm_usage_empty: "No calls recorded yet.",
+  llm_usage_col_slot: "Slot",
+  llm_usage_col_model: "Connection / model",
+  llm_usage_col_calls: "Calls",
+  llm_usage_col_prompt: "Prompt",
+  llm_usage_col_cached: "Cached",
+  llm_usage_col_hit_rate: "Hit rate",
+  llm_usage_col_completion: "Completion",
+  llm_usage_col_reasoning: "Reasoning",
   // Header / shell
   header_title: 'CBC Admin',
   header_subtitle: 'Collective Bargaining Copilot',
@@ -692,8 +706,6 @@ const EN: AdminTranslations = {
   llm_summary_final: 'Final conversation summary',
   llm_summary_contextual: 'Contextual Retrieval (per chunk)',
   llm_summary_contextual_hint: 'Which slot generates the 60-word context sentence CR prepends to each chunk at ingest. Default Compressor — the task is light and this keeps a 100-CBA reindex at ~3-4 h instead of ~35 h on the Summariser. Switch to Summariser only if CR quality is visibly off with a smaller model.',
-  llm_thinking_mode: 'Thinking / Reasoning',
-  llm_thinking_mode_description: 'OFF (recommended) = model answers directly; reasoning tokens are suppressed and, if any slip through, stripped before they reach the user. Cuts first-token latency dramatically on qwen3 / deepseek-r1 family models. ON = model emits its <think> reasoning prelude into the chat. Harmless either way for models without a thinking mode (gemma, llama, mistral).',
   llm_max_concurrent_turns: 'Max concurrent turns (backend-wide)',
   llm_max_concurrent_turns_description: 'Maximum number of chat turns the backend will process in parallel, total across all frontends. Must match the per-model Parallel setting of the inference runtime: OLLAMA_NUM_PARALLEL (set in the Ollama server env) or LM Studio\'s Parallel value. If this cap is HIGHER than the runtime\'s, excess turns queue INSIDE the runtime with no queue indicator in CBC. If this cap is LOWER, the runtime\'s slots go under-used. 1 = serial processing (one conversation at a time); 4 = typical; 6 = heavy deployment.',
   llm_save_config: 'Save LLM config',
@@ -895,6 +907,20 @@ const EN: AdminTranslations = {
 // --- Spanish (ES) ---
 
 const ES: AdminTranslations = {
+  llm_usage_heading: "Uso y caché de prompt",
+  llm_usage_description: "Tasa de aciertos = tokens de prompt cacheados / tokens de prompt, según informa el proveedor. La entrada cacheada es mucho más barata en los proveedores que cachean automáticamente (Mistral, OpenAI, Anthropic, OpenRouter cuando enruta a un proveedor con caché). \"—\" significa que el proveedor no informa del uso o de la caché.",
+  llm_usage_refresh: "Actualizar",
+  llm_usage_reset: "Reiniciar",
+  llm_usage_reset_confirm: "¿Reiniciar los contadores de uso?",
+  llm_usage_empty: "Aún no hay llamadas registradas.",
+  llm_usage_col_slot: "Slot",
+  llm_usage_col_model: "Conexión / modelo",
+  llm_usage_col_calls: "Llamadas",
+  llm_usage_col_prompt: "Prompt",
+  llm_usage_col_cached: "Cacheados",
+  llm_usage_col_hit_rate: "Tasa de aciertos",
+  llm_usage_col_completion: "Respuesta",
+  llm_usage_col_reasoning: "Razonamiento",
   // Header / shell
   header_title: 'CBC Admin',
   header_subtitle: 'Collective Bargaining Copilot',
@@ -1238,8 +1264,6 @@ const ES: AdminTranslations = {
   llm_summary_final: 'Resumen final de la conversación',
   llm_summary_contextual: 'Contextual Retrieval (por chunk)',
   llm_summary_contextual_hint: 'Qué slot genera la frase de contexto de 60 palabras que CR añade a cada chunk en ingesta. Default Compressor — la tarea es liviana y mantener un reindex de 100 CBAs en ~3-4 h en vez de ~35 h con el Summariser. Cambia a Summariser sólo si notas que la calidad de CR es claramente peor con un modelo más pequeño.',
-  llm_thinking_mode: 'Thinking / Reasoning',
-  llm_thinking_mode_description: 'OFF (recomendado) = el modelo responde directo; los tokens de razonamiento se suprimen en el request y, si alguno escapa, se filtra antes de mostrarlo. Reduce bastante la latencia hasta el primer token en modelos qwen3 / deepseek-r1. ON = el modelo emite su prelude <think> de razonamiento dentro del chat. Inofensivo en modelos sin modo thinking (gemma, llama, mistral) — el toggle no tiene efecto visible en ellos.',
   llm_max_concurrent_turns: 'Máximo de turnos simultáneos (todo el backend)',
   llm_max_concurrent_turns_description: 'Número máximo de turnos de chat que el backend procesa en paralelo, sumando todos los frontends. Debe coincidir con el Parallel por modelo del runtime de inferencia: OLLAMA_NUM_PARALLEL (env del servidor Ollama) o el Parallel de LM Studio. Si este límite es MAYOR que el del runtime, los turnos extra se encolan DENTRO del runtime sin indicador visible en CBC. Si es MENOR, los slots del runtime se infrautilizan. 1 = serial (una conversación a la vez); 4 = típico; 6 = despliegue con carga alta.',
   llm_save_config: 'Guardar configuración LLM',

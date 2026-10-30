@@ -84,7 +84,13 @@ async def get_session(token: str, _admin: dict = Depends(require_admin)):
         "messages": messages,
         "uploads": upload_payload,
         "summary": summary,
+        "llm_usage": _llm_usage(token),
     }
+
+
+def _llm_usage(token: str) -> dict:
+    from src.services import llm_usage
+    return llm_usage.session_summary(token)
 
 
 @router.post("/{token}/flag")

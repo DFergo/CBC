@@ -99,6 +99,14 @@ class AssembledPrompt:
     # with per-source locator hints ("p. 14", "Art. 12") when Phase B's
     # cite_inline flag is on.
     sources: list[dict[str, Any]] = None  # type: ignore[assignment]
+    # Sprint 22 (prompt-cache layout): `stable_text` = the layers that do not
+    # depend on the current turn (core … organizations) → the session's system
+    # prompt, byte-identical between turns. `rag_context` = this turn's
+    # retrieved excerpts + tables → appended to the current user message
+    # (request only), so it never shifts the cacheable prefix. `text` keeps
+    # the old all-in-one rendering for callers/debug views that want it.
+    stable_text: str = ""
+    rag_context: str = ""
 
 
 # --- Layer 1-2: core + guardrails ---
@@ -532,10 +540,16 @@ def assemble(
         f"prompt_assembler: total={len(text)} chars, {len(used_chunks)} chunks used, "
         f"sections: {_section_sizes}"
     )
+    stable_text = "\n\n".join(
+        v for v in (core_text, guardrails_text, role_text, context_text, glossary_text, orgs_text) if v
+    ).strip()
+    rag_context = "\n\n".join(v for v in (rag_text, tables_text) if v).strip()
     return AssembledPrompt(
         text=text,
         layers=layers,
         rag_chunks_used=len(used_chunks),
         rag_paths=rag_paths,
         sources=sources,
+        stable_text=stable_text,
+        rag_context=rag_context,
     )

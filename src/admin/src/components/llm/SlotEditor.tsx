@@ -1,4 +1,4 @@
-// Single-slot LLM editor (connection / model / temp / tokens / ctx).
+// Single-slot LLM editor (connection / model / temp / tokens / ctx / reasoning).
 // Shared between the global LLMSection and the per-frontend LLM panel.
 //
 // The slot only picks a connection (from the registry, see ConnectionsCard)
@@ -8,9 +8,40 @@
 // `disabled` greys the whole slot out and stops the model auto-correct from
 // firing — used at the per-frontend tier when the slot is showing an inherited
 // (read-only) global value.
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import ModelCombobox from '../ModelCombobox'
-import type { SlotConfig, SlotHealth, LLMConnection, ConnectionsStatus } from '../../api'
+import { getSlotCapabilities } from '../../api'
+import type {
+  SlotConfig, SlotHealth, LLMConnection, ConnectionsStatus, SlotCapabilities, ControlStatus, ReasoningLevel,
+} from '../../api'
+
+const inputCls = 'w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100 disabled:text-gray-500'
+
+// Sprint 22: what happens to a control on this provider/model (from the backend).
+function StatusLine({ st }: { st?: ControlStatus }) {
+  if (!st || st.status === 'not sent (default)' || (st.status === 'sent' && !st.note)) return null
+  return (
+    <p className={`text-[11px] leading-snug mt-0.5 ${st.status === 'ignored' ? 'text-amber-600' : 'text-gray-400'}`}>
+      {st.status === 'ignored' ? 'Ignored: ' : ''}{st.note}
+    </p>
+  )
+}
+
+// Number input where blank = null ("don't send").
+function NumField({ label, value, onChange, disabled, step, min, placeholder, status }: {
+  label: string; value: number | null; onChange: (v: number | null) => void; disabled: boolean
+  step?: string; min?: string; placeholder?: string; status?: ControlStatus
+}) {
+  return (
+    <div>
+      <label className="block text-xs text-gray-500">{label}</label>
+      <input type="number" step={step} min={min} value={value ?? ''} placeholder={placeholder ?? 'default'}
+        onChange={e => onChange(e.target.value === '' ? null : Number(e.target.value))}
+        disabled={disabled} className={inputCls} />
+      <StatusLine st={status} />
+    </div>
+  )
+}
 
 interface Props {
   label: string
@@ -60,6 +91,23 @@ export default function SlotEditor({
       return () => window.clearTimeout(t)
     }
   }, [connModels, slot.model, onChange, disabled])
+
+  // Sprint 22: ask the backend which controls apply to this connection + model,
+  // with the values being edited, so no setting is a silent no-op.
+  const [caps, setCaps] = useState<SlotCapabilities | null>(null)
+  const capsInput = JSON.stringify({
+    connection: slot.connection_id, model: slot.model, temperature: slot.temperature ?? null,
+    max_tokens: slot.max_tokens ?? null, num_ctx: slot.num_ctx ?? null, reasoning: slot.reasoning ?? null,
+  })
+  useEffect(() => {
+    if (!slot.connection_id) { setCaps(null); return }
+    const t = window.setTimeout(() => {
+      getSlotCapabilities(JSON.parse(capsInput)).then(setCaps).catch(() => setCaps(null))
+    }, 400)
+    return () => window.clearTimeout(t)
+  }, [capsInput, slot.connection_id])
+  const isOllama = caps?.provider === 'ollama' || activeConnection?.type === 'ollama'
+  const reasoningOptions = caps?.controls.reasoning.options
 
   const onConnectionChange = (connectionId: string) => {
     // Reset model — the previous connection's model id won't exist in the
@@ -111,29 +159,33 @@ export default function SlotEditor({
         placeholder={activeConnection ? undefined : 'pick a connection first'}
       />
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
+        <NumField label="Temp" step="0.1" min="0" value={slot.temperature} disabled={disabled}
+          onChange={v => onChange({ temperature: v })} status={caps?.controls.temperature} />
+        <NumField label="Max tokens" min="1" value={slot.max_tokens} disabled={disabled}
+          onChange={v => onChange({ max_tokens: v })} status={caps?.controls.max_tokens} />
+        <NumField label={isOllama ? 'Context (num_ctx)' : 'Context (Ollama only)'} min="256" value={slot.num_ctx}
+          disabled={disabled} onChange={v => onChange({ num_ctx: v })}
+          placeholder={caps?.context_length ? `model: ${caps.context_length.toLocaleString()}` : 'default'}
+          status={isOllama ? undefined : { status: 'ignored', note: 'not sent to this provider' }} />
         <div>
-          <label className="block text-xs text-gray-500">Temp</label>
-          <input type="number" step="0.1" min="0" max="2" value={slot.temperature}
-            onChange={e => onChange({ temperature: parseFloat(e.target.value) })}
-            disabled={disabled}
-            className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100 disabled:text-gray-500" />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500">Max tokens</label>
-          <input type="number" min="1" value={slot.max_tokens}
-            onChange={e => onChange({ max_tokens: parseInt(e.target.value, 10) })}
-            disabled={disabled}
-            className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100 disabled:text-gray-500" />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-500">Context</label>
-          <input type="number" min="256" value={slot.num_ctx}
-            onChange={e => onChange({ num_ctx: parseInt(e.target.value, 10) })}
-            disabled={disabled}
-            className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100 disabled:text-gray-500" />
+          <label className="block text-xs text-gray-500">Reasoning</label>
+          <select value={slot.reasoning ?? ''} disabled={disabled}
+            onChange={e => onChange({ reasoning: (e.target.value || null) as ReasoningLevel | null })}
+            className={inputCls}>
+            <option value="">provider default</option>
+            {(['off', 'low', 'medium', 'high'] as ReasoningLevel[]).map(lv => {
+              const unavailable = !!reasoningOptions && !reasoningOptions.includes(lv)
+              return <option key={lv} value={lv} disabled={unavailable}>{lv}{unavailable ? ' (n/a)' : ''}</option>
+            })}
+          </select>
+          <StatusLine st={caps?.controls.reasoning} />
         </div>
       </div>
+      <p className="text-[11px] text-gray-400 leading-snug">
+        {caps ? `${caps.provider_label}. ` : ''}Blank = not sent (provider default). Reasoning tokens are billed and
+        count against Max tokens: with reasoning on, a small value can return an empty answer.
+      </p>
       {footer}
     </div>
   )

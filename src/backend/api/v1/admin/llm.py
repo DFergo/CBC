@@ -31,8 +31,10 @@ class LLMSettingsPatch(BaseModel):
     these, and vice versa."""
     compression: CompressionSettings
     routing: RoutingToggles
-    disable_thinking: bool
     max_concurrent_turns: Literal[1, 2, 4, 6]
+    # Sprint 22: replaced by the per-slot `reasoning` setting. Still accepted
+    # (and ignored) so an admin page loaded before the upgrade can save.
+    disable_thinking: bool | None = None
 
 
 class ConnectionModel(BaseModel):
@@ -45,6 +47,10 @@ class ConnectionModel(BaseModel):
     api_key_env: str | None = None
     model_ids: list[str] = []
     enable: bool = True
+    # Sprint 22 provider options (see llm_capabilities.py)
+    provider: str = ""                 # "" = infer from type/api_endpoint
+    prompt_cache_key: bool = False     # send a per-session cache key (hash)
+    routing: dict[str, Any] = {}       # OpenRouter `provider` object
 
 
 def _redact_connection(conn: dict[str, Any]) -> dict[str, Any]:
@@ -70,7 +76,7 @@ async def save_config(cfg: LLMConfig, _admin: dict = Depends(require_admin)):
 async def save_slot(slot_name: str, slot: SlotConfig, _admin: dict = Depends(require_admin)):
     """Save a single slot in isolation — read-modify-write against the
     persisted config, leaving every other slot and the top-level settings
-    (compression/routing/disable_thinking/max_concurrent_turns) untouched.
+    (compression/routing/max_concurrent_turns) untouched.
     Backs the per-slot Save button in the admin's LLM section."""
     if slot_name not in llm_config_store.SLOT_NAMES:
         raise HTTPException(status_code=404, detail=f"Unknown slot: {slot_name!r}")
@@ -88,10 +94,47 @@ async def save_settings(patch: LLMSettingsPatch, _admin: dict = Depends(require_
     cfg = llm_config_store.load_config()
     cfg.compression = patch.compression
     cfg.routing = patch.routing
-    cfg.disable_thinking = patch.disable_thinking
     cfg.max_concurrent_turns = patch.max_concurrent_turns
     llm_config_store.save_config(cfg)
     return llm_config_store.redact_for_response(cfg)
+
+
+class CapabilitiesRequest(BaseModel):
+    connection: str
+    model: str = ""
+    temperature: float | None = None
+    max_tokens: int | None = None
+    num_ctx: int | None = None
+    reasoning: str | None = None
+
+
+@router.post("/capabilities")
+async def slot_capabilities(req: CapabilitiesRequest, _admin: dict = Depends(require_admin)):
+    """Which of a slot's controls are sent, adjusted or ignored on this
+    connection + model (Sprint 22) — so the admin never shows a silent no-op.
+    Takes the values being edited, not only the saved ones."""
+    from src.services import llm_capabilities, llm_provider
+    conn = connection_registry.connections.get(req.connection)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    info = await llm_provider.model_info(req.connection, req.model) if req.model else {}
+    out = llm_capabilities.describe(conn, req.model, req.model_dump(), info.get("supported_parameters"))
+    out["context_length"] = info.get("context_length")
+    return out
+
+
+@router.get("/usage")
+async def llm_usage_summary(_admin: dict = Depends(require_admin)):
+    """Token and prompt-cache usage per slot/connection/model since the last reset."""
+    from src.services import llm_usage
+    return {"rows": llm_usage.global_summary()}
+
+
+@router.post("/usage/reset")
+async def llm_usage_reset(_admin: dict = Depends(require_admin)):
+    from src.services import llm_usage
+    llm_usage.reset_global()
+    return {"rows": []}
 
 
 @router.get("/defaults")

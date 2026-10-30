@@ -548,6 +548,19 @@ async def _push_chunk(client: httpx.AsyncClient, url: str, token: str, event: st
             await asyncio.sleep(0.3)
 
 
+_RAG_HEADER = "\n\n---\n[Reference material retrieved automatically for this message — not written by the user]\n\n"
+
+
+def _append_to_last_user(messages: list[dict[str, Any]], text: str) -> None:
+    """Append ``text`` to the last user message (the dicts are per-request
+    copies from session_store.get_llm_messages — history on disk is untouched)."""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            msg["content"] = f"{msg.get('content') or ''}{_RAG_HEADER}{text}"
+            return
+    messages.append({"role": "user", "content": text})
+
+
 async def _process_turn(
     client: httpx.AsyncClient,
     url: str,
@@ -625,7 +638,10 @@ async def _process_turn(
     )
     session_store.init_session(
         token=session_token,
-        system_prompt=assembled.text,
+        # Only the turn-independent layers: the stored system prompt (and so
+        # the request prefix) stays byte-identical between turns. This turn's
+        # RAG goes to the tail below.
+        system_prompt=assembled.stable_text,
         survey=survey,
         language=language,
         frontend_id=frontend_id,
@@ -643,6 +659,11 @@ async def _process_turn(
     # the progressive thresholds. Returns `messages` unchanged when disabled
     # or below threshold.
     messages = await context_compressor.compress_if_needed(session_token, messages, frontend_id)
+    # Per-turn RAG excerpts + tables: appended to this turn's user message
+    # (request only, never stored) instead of being part of the system prompt,
+    # so everything before the current turn is a cacheable prefix (Sprint 22).
+    if assembled.rag_context:
+        _append_to_last_user(messages, assembled.rag_context)
     accumulated: list[str] = []
     turn_started_at = time.monotonic()
     first_token_at: float | None = None
@@ -663,6 +684,7 @@ async def _process_turn(
             slot="inference",
             frontend_id=frontend_id,
             cancel_check=lambda: session_token in _pending_cancellations,
+            session=session_token,
         ):
             if first_token_at is None:
                 first_token_at = time.monotonic()
@@ -823,7 +845,7 @@ async def _process_close(
     accumulated: list[str] = []
     try:
         async for token_text in llm_provider.stream_chat(
-            prompt_messages, slot="summariser", frontend_id=frontend_id,
+            prompt_messages, slot="summariser", frontend_id=frontend_id, session=session_token,
         ):
             accumulated.append(token_text)
             await _push_chunk(client, url, session_token, "token", token_text)

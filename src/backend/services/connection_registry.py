@@ -105,6 +105,7 @@ class ConnectionRegistry:
         for key in (
             "type", "api_flavor", "endpoint", "api_endpoint",
             "api_key", "api_key_env", "model_ids", "enable",
+            "provider", "prompt_cache_key", "routing",
         ):
             if key in patch:
                 existing[key] = patch[key]
@@ -168,6 +169,13 @@ class ConnectionRegistry:
             "api_key_env": conn.get("api_key_env"),
             "model_ids": conn.get("model_ids") or [],
             "enable": conn.get("enable", True),
+            # Sprint 22 — optional provider hints (llm_capabilities.py):
+            # provider: force the provider profile ("" = infer);
+            # prompt_cache_key: send a per-session cache key (a hash);
+            # routing: OpenRouter `provider` object to keep a session on one endpoint.
+            "provider": conn.get("provider") or "",
+            "prompt_cache_key": bool(conn.get("prompt_cache_key", False)),
+            "routing": conn.get("routing") or {},
         }
 
 

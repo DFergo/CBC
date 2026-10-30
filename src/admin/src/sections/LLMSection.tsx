@@ -19,6 +19,7 @@ import type {
 } from '../api'
 import SlotEditor from '../components/llm/SlotEditor'
 import ConnectionsCard from '../components/llm/ConnectionsCard'
+import UsageCard from '../components/llm/UsageCard'
 import { useT } from '../i18n'
 import type { AdminTranslationKeys } from '../i18n'
 
@@ -121,7 +122,7 @@ export default function LLMSection() {
     setSavedCfg(c => c ? { ...c, [which]: saved[which] } : c)
   }
 
-  // Non-slot settings (thinking mode, concurrency, compression, routing) —
+  // Non-slot settings (concurrency, compression, routing) —
   // isolated PUT that leaves all 4 slots untouched on the backend; mirror
   // that here by only merging the settings fields, not the whole response,
   // so any slot mid-edit elsewhere on the page keeps its unsaved draft.
@@ -130,14 +131,12 @@ export default function LLMSection() {
     const saved = await saveLLMSettings({
       compression: cfg.compression,
       routing: cfg.routing,
-      disable_thinking: cfg.disable_thinking,
       max_concurrent_turns: cfg.max_concurrent_turns,
     })
     const merge = (c: LLMConfig): LLMConfig => ({
       ...c,
       compression: saved.compression,
       routing: saved.routing,
-      disable_thinking: saved.disable_thinking,
       max_concurrent_turns: saved.max_concurrent_turns,
     })
     setCfg(c => c ? merge(c) : c)
@@ -170,7 +169,6 @@ export default function LLMSection() {
   const miscDirty =
     JSON.stringify(cfg.compression) !== JSON.stringify(savedCfg.compression) ||
     JSON.stringify(cfg.routing) !== JSON.stringify(savedCfg.routing) ||
-    cfg.disable_thinking !== savedCfg.disable_thinking ||
     cfg.max_concurrent_turns !== savedCfg.max_concurrent_turns
 
   return (
@@ -216,28 +214,7 @@ export default function LLMSection() {
         ))}
       </div>
 
-      {/* Sprint 13 / Sprint 14 fix — Thinking / Reasoning toggle. Semantics
-          expressed as ON/OFF on the switch to match the adjacent dropdown
-          and avoid the double-negative confusion of "disable thinking". OFF
-          is the default and keeps reasoning out of the chat; ON lets the
-          model emit its <think> prelude. Applies across all slots regardless
-          of provider. Backend field stays `disable_thinking` (inverted here). */}
-      <div className="mt-6 border border-gray-200 rounded-lg p-4">
-        <div className="flex items-center justify-between mb-1">
-          <h4 className="text-sm font-semibold text-gray-700">{t('llm_thinking_mode')}</h4>
-          <select
-            value={cfg.disable_thinking ? 'off' : 'on'}
-            onChange={e => setCfg(c => c ? { ...c, disable_thinking: e.target.value === 'off' } : c)}
-            className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
-          >
-            <option value="off">OFF</option>
-            <option value="on">ON</option>
-          </select>
-        </div>
-        <p className="text-xs text-gray-500">
-          {t('llm_thinking_mode_description')}
-        </p>
-      </div>
+      {/* Sprint 22: reasoning is now a per-slot control (SlotEditor). */}
 
       {/* Sprint 14 — Max concurrent turns. Backend-wide cap on parallel chat
           turns; must align with the runtime's Parallel setting. */}
@@ -349,6 +326,8 @@ export default function LLMSection() {
       <div className="mt-4">
         <CardSaveButton dirty={miscDirty} onSave={persistSettings} label={t('llm_save_config')} />
       </div>
+
+      <UsageCard />
     </section>
   )
 }

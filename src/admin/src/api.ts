@@ -351,6 +351,10 @@ export interface LLMConnection {
   // Optional manual model allowlist; empty = auto-discover via probe.
   model_ids: string[]
   enable: boolean
+  // Sprint 22 provider options (optional)
+  provider?: string
+  prompt_cache_key?: boolean
+  routing?: Record<string, unknown>
 }
 
 // Sentinel literal mirrored from the backend. Used by the admin UI to detect
@@ -358,12 +362,52 @@ export interface LLMConnection {
 // the value back to the backend on Save.
 export const API_KEY_SENTINEL = '••••••••'
 
+export type ReasoningLevel = 'off' | 'low' | 'medium' | 'high'
+
 export interface SlotConfig {
   connection_id: string
   model: string
-  temperature: number
-  max_tokens: number
-  num_ctx: number
+  // Sprint 22: null = not sent (provider/model default applies)
+  temperature: number | null
+  max_tokens: number | null
+  num_ctx: number | null        // Ollama only
+  // Sprint 22: per-slot reasoning control (null = provider default);
+  // replaces the global disable_thinking toggle.
+  reasoning?: ReasoningLevel | null
+}
+
+export interface ControlStatus {
+  status: 'sent' | 'not sent (default)' | 'ignored' | 'adjusted'
+  note?: string
+  options?: ReasoningLevel[]
+}
+
+export interface SlotCapabilities {
+  provider: string
+  provider_label: string
+  context_length: number | null
+  controls: { temperature: ControlStatus; max_tokens: ControlStatus; num_ctx: ControlStatus; reasoning: ControlStatus }
+}
+
+export async function getSlotCapabilities(data: {
+  connection: string; model: string; temperature: number | null; max_tokens: number | null
+  num_ctx: number | null; reasoning: ReasoningLevel | null
+}): Promise<SlotCapabilities> {
+  return request('/admin/api/v1/llm/capabilities', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export interface LLMUsageRow {
+  slot: string; connection: string; model: string; calls: number; calls_with_usage: number
+  prompt_tokens: number; cached_tokens: number; completion_tokens: number; reasoning_tokens: number
+  hit_rate: number | null; updated_at: number | null
+}
+
+export async function getLLMUsage(): Promise<{ rows: LLMUsageRow[] }> {
+  return request('/admin/api/v1/llm/usage')
+}
+
+export async function resetLLMUsage(): Promise<{ rows: LLMUsageRow[] }> {
+  return request('/admin/api/v1/llm/usage/reset', { method: 'POST' })
 }
 
 export interface CompressionSettings {
@@ -394,12 +438,6 @@ export interface LLMConfig {
   translation: SlotConfig
   compression: CompressionSettings
   routing: RoutingToggles
-  // Sprint 13 — when true, the backend nudges the runtime to suppress
-  // reasoning/<think> tokens (think:false on Ollama, /no_think on LM Studio,
-  // system-prompt hint everywhere, post-stream tag stripping). Defaults to
-  // true for new configs; existing JSON files without the field migrate to
-  // true on first load. Harmless no-op for non-thinking models.
-  disable_thinking: boolean
   // Sprint 14 — concurrency cap for simultaneous chat turns backend-wide.
   // Must match OLLAMA_NUM_PARALLEL and LM Studio Parallel or excess queues
   // silently inside the runtime. Options: 1 / 2 / 4 / 6.
@@ -434,7 +472,7 @@ export async function getLLMConfig(): Promise<LLMConfig> {
 }
 
 // Save one slot in isolation — leaves every other slot and the top-level
-// settings (compression/routing/disable_thinking/max_concurrent_turns)
+// settings (compression/routing/max_concurrent_turns)
 // untouched. Backs each slot card's own Save button.
 export async function saveLLMSlot(slotName: SlotName, slot: SlotConfig): Promise<LLMConfig> {
   return request(`/admin/api/v1/llm/slots/${encodeURIComponent(slotName)}`, {
@@ -446,7 +484,6 @@ export async function saveLLMSlot(slotName: SlotName, slot: SlotConfig): Promise
 export interface LLMSettingsPatch {
   compression: CompressionSettings
   routing: RoutingToggles
-  disable_thinking: boolean
   max_concurrent_turns: 1 | 2 | 4 | 6
 }
 

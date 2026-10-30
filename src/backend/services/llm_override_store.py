@@ -59,6 +59,11 @@ def _migrate_legacy(data: dict[str, Any]) -> dict[str, Any]:
         slot = data.get(key)
         if isinstance(slot, dict) and "provider" in slot and "connection_id" not in slot:
             data[key] = _migrate_legacy_slot(slot)
+        # Sprint 22: overridden slots always ran with the old global
+        # disable_thinking default (True) — keep that behaviour explicitly.
+        slot = data.get(key)
+        if isinstance(slot, dict) and "reasoning" not in slot:
+            data[key] = {**slot, "reasoning": "off"}
 
     return data
 

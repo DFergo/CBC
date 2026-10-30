@@ -137,6 +137,22 @@ Open **Admin → General**.
 - **Connection types:** LM Studio, Ollama, or an API (Anthropic, OpenAI, or any OpenAI-compatible server such as vLLM or OpenRouter).
 - **Slots:** **Inference** (the chat), **Compressor** (folds long conversations into a running summary), **Summariser** (document summaries and the end-of-session summary emailed to the user) and **Translation** (translates branding texts). Each slot picks its own connection and model and has its own **Save** button. A frontend can override the global choice in its **LLM** panel.
 
+**What each provider supports.** Each slot shows, under every control, whether it is sent, adjusted or ignored for the chosen connection and model, so no setting is a silent no-op. Leave a number blank to not send it (the provider's default applies). In short:
+
+| | Temp, Max tokens | Context (`num_ctx`) | Reasoning | Prompt cache |
+|---|---|---|---|---|
+| **Mistral API** | sent | not sent | `mistral-large-4`: low/medium/high, cannot be switched off; `mistral-small`/`-medium`: off/high | automatic; best effort for short prompts |
+| **OpenRouter** | sent (some models ignore them: the panel says which, from OpenRouter's model list) | not sent | off/low/medium/high where the model supports it | depends on the provider OpenRouter routes to |
+| **OpenAI** | sent; reasoning models (o-series, gpt-5) take no temperature | not sent | low/medium/high on reasoning models | automatic |
+| **Anthropic** | sent; Max tokens required (4096 if blank); no temperature while thinking | not sent | low/medium/high = thinking budget | breakpoints set automatically |
+| **LM Studio, vLLM** | sent | not sent | on/off (`enable_thinking`, plus a fixed instruction in the system prompt when off) | server-side, if enabled |
+| **Ollama** | sent | sent | on/off (`think`) | not reported |
+
+- **Reasoning tokens are billed and count against Max tokens.** With reasoning on and a small Max tokens a model can spend the whole budget thinking and return an empty answer. Upgraded installations keep their old behaviour: the former global "Thinking / Reasoning: OFF" setting became **Reasoning: off** on every slot.
+- **Usage and prompt cache.** The **Usage and prompt cache** card shows prompt, cached, completion and reasoning tokens per slot and model, with the cache hit rate; the session detail shows the same per session. The system prompt stays identical from turn to turn and the retrieved agreement excerpts are sent last, with the current message, so everything before them can be cached; those excerpts are new on every turn and are never cached.
+- **Provider options per connection** (optional, *Provider options* in an OpenAI-compatible API connection): *Provider profile* forces the profile when it cannot be inferred from the endpoint; *Send a per-session prompt cache key* sends a hash of the session (never the session token) to providers that use it; *OpenRouter routing* is OpenRouter's `provider` object, e.g. `{"order": ["alibaba"], "allow_fallbacks": false}`, to keep a session on one endpoint.
+- If a provider rejects an optional field (reasoning setting, cache key, usage request), the request is retried once without it and the backend logs which field was dropped.
+
 **RAG pipeline — embeddings and reranker.** The knowledge base needs an embedding model (turns documents and questions into vectors) and, optionally, a reranker (reorders the retrieved passages).
 
 - **API** (required with the published image): an OpenAI-compatible server exposing `/embeddings`, and for the reranker the `/rerank` endpoint offered by servers such as Hugging Face TEI, vLLM or Infinity. Use **Test connection** before saving.
