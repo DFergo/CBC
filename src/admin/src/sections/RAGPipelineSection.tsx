@@ -466,6 +466,17 @@ export default function RAGPipelineSection() {
                   provider changes. Stays up until the Reindex button below
                   succeeds, so the admin can't think the change is live when
                   it isn't. */}
+              {/* Local provider selected on an image built without local
+                  models, or an unreadable provider config. */}
+              {(embedRemote?.model_mode?.warnings.length ?? 0) > 0 && (
+                <div className="border-2 border-red-400 bg-red-50 rounded-lg p-4">
+                  <div className="text-sm font-semibold text-red-900 mb-1">{t('rag_models_unavailable_title')}</div>
+                  {embedRemote!.model_mode!.warnings.map((w, i) => (
+                    <p key={i} className="text-[12px] text-red-900">{w}</p>
+                  ))}
+                </div>
+              )}
+
               {pendingReindex && (
                 <div className="border-2 border-amber-400 bg-amber-50 rounded-lg p-4">
                   <div className="flex gap-3">

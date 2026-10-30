@@ -23,26 +23,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch CPU-only first so sentence-transformers doesn't drag in
-# the ~5 GB CUDA/NVIDIA stack (HRDD pattern). Must come BEFORE requirements.txt.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# true  → local embedding/reranker stack (PyTorch CPU, sentence-transformers)
+#         with BGE-M3, MiniLM and bge-reranker-v2-m3 weights baked in.
+# false → no local models; embeddings and reranking go through an API
+#         connection configured in Admin (much smaller image).
+ARG INSTALL_LOCAL_MODELS=true
 
-# Backend dependencies
-COPY src/backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# PyTorch CPU-only first so sentence-transformers doesn't drag in the ~5 GB
+# CUDA/NVIDIA stack (HRDD pattern). Must come BEFORE the local requirements.
+RUN if [ "$INSTALL_LOCAL_MODELS" = "true" ]; then \
+        pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu; \
+    fi
 
-# Pre-download the embedding + reranker weights so first query doesn't hit
-# HuggingFace (predictable cold start, works air-gapped).
-#  - BGE-M3 embedder (~2.2 GB, 1024-dim multilingual)
-#  - bge-reranker-v2-m3 cross-encoder (~568 M params, multilingual)
-# Cached in /root/.cache/huggingface/. Also downloads MiniLM as a fallback
-# in case rag_embedding_model is overridden back to it via deployment_backend.json.
-RUN python -c "\
-from sentence_transformers import SentenceTransformer, CrossEncoder; \
+COPY src/backend/requirements.txt src/backend/requirements-local-models.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && \
+    if [ "$INSTALL_LOCAL_MODELS" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-local-models.txt; \
+    fi
+
+# Pre-download the embedding + reranker weights so the first query doesn't hit
+# HuggingFace (predictable cold start, works air-gapped). MiniLM is kept as the
+# alternative local embedder selectable via deployment_backend.json.
+RUN if [ "$INSTALL_LOCAL_MODELS" = "true" ]; then \
+        python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
 SentenceTransformer('BAAI/bge-m3'); \
 SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
-CrossEncoder('BAAI/bge-reranker-v2-m3')\
-"
+CrossEncoder('BAAI/bge-reranker-v2-m3')"; \
+    fi
 
 # Application code
 COPY src/backend/ ./src/

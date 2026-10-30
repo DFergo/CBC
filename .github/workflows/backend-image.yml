@@ -1,6 +1,7 @@
 name: backend-image
 
 # main → :latest + :sha-<commit>   (the nightly auto-updater follows :latest)
+# Light variant (INSTALL_LOCAL_MODELS=false): no PyTorch, no baked-in weights.
 on:
   push:
     branches: [main]
@@ -33,6 +34,9 @@ jobs:
           context: .
           file: Dockerfile.backend
           platforms: linux/arm64
+          # Published image is the light variant: embeddings and reranking via API.
+          build-args: |
+            INSTALL_LOCAL_MODELS=false
           push: true
           tags: |
             ghcr.io/dfergo/cbc-backend:latest

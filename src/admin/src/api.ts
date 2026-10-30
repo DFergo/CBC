@@ -1156,9 +1156,18 @@ export interface ActiveCollectionPointer {
   model: string
 }
 
+export interface RagModelMode {
+  local_models_available: boolean
+  configured: boolean
+  embedding: string
+  reranker: string
+  warnings: string[]
+}
+
 export interface EmbeddingConfigResponse extends EmbeddingConfig {
   pending_reindex: boolean
   active_collection: ActiveCollectionPointer
+  model_mode?: RagModelMode
 }
 
 export async function getEmbeddingConfig(): Promise<EmbeddingConfigResponse> {

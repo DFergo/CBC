@@ -50,6 +50,7 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, Field, model_validator
 
+from src.services import local_models
 from src.services._paths import EMBEDDING_CONFIG_FILE, atomic_write_json, read_json
 from src.services.llm_config_store import API_KEY_SENTINEL
 
@@ -162,6 +163,23 @@ def load_config() -> EmbeddingConfig:
         return EmbeddingConfig()
 
 
+def is_configured() -> bool:
+    """True once the admin has saved a provider config (the file exists)."""
+    return EMBEDDING_CONFIG_FILE.exists()
+
+
+def load_config_strict() -> EmbeddingConfig:
+    """Like `load_config`, but a present-yet-unreadable file raises instead of
+    returning the local defaults — the RAG path must not silently swap a
+    configured API provider for the local model."""
+    if not EMBEDDING_CONFIG_FILE.exists():
+        return EmbeddingConfig()
+    data = read_json(EMBEDDING_CONFIG_FILE)
+    if not isinstance(data, dict):
+        raise ValueError(f"{EMBEDDING_CONFIG_FILE.name} is unreadable or not a JSON object")
+    return EmbeddingConfig(**_migrate_legacy_provider_names(data))
+
+
 def save_config(cfg: EmbeddingConfig) -> None:
     """Persist the config. Preserves the stored api_key when the incoming
     value is the redact sentinel (admin opened the form, didn't retype the
@@ -262,6 +280,8 @@ async def check_embedding_slot_health(
       keystroke, if the admin UI ever adds that).
     """
     if slot.provider == "local":
+        if not local_models.available():
+            return _result(False, 0, f"Local embedding model unavailable. {local_models.LOCAL_MODELS_HINT}", [])
         return _result(True, 200, None, list(SUPPORTED_EMBEDDING_MODELS_LOCAL))
 
     endpoint = (slot.api_endpoint or "").rstrip("/")
@@ -304,6 +324,8 @@ async def check_reranker_slot_health(
     endpoint, so this may legitimately fail against a generic "api"
     provider that doesn't implement it)."""
     if slot.provider == "local":
+        if not local_models.available():
+            return _result(False, 0, f"Local reranker unavailable. {local_models.LOCAL_MODELS_HINT}", [])
         return _result(True, 200, None, list(SUPPORTED_RERANKER_MODELS_LOCAL))
 
     endpoint = (slot.api_endpoint or "").rstrip("/")

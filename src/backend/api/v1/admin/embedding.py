@@ -43,6 +43,7 @@ async def get_config(_admin: dict = Depends(require_admin)):
     out = embedding_config_store.redact_for_response(cfg)
     out["pending_reindex"] = _pending_reindex(cfg)
     out["active_collection"] = rag_service._read_active_collection_pointer()
+    out["model_mode"] = rag_service.model_mode_report()
     return out
 
 
@@ -60,6 +61,7 @@ async def save_config(cfg: EmbeddingConfig, _admin: dict = Depends(require_admin
     out = embedding_config_store.redact_for_response(cfg)
     out["pending_reindex"] = _pending_reindex(cfg)
     out["active_collection"] = rag_service._read_active_collection_pointer()
+    out["model_mode"] = rag_service.model_mode_report()
     return out
 
 

@@ -1,0 +1,5 @@
+# Local embedding + reranker stack — installed only with INSTALL_LOCAL_MODELS=true
+# (see Dockerfile.backend). torch is installed CPU-only in a separate step
+# BEFORE this file to keep the CUDA/NVIDIA stack (~5 GB) out of the image.
+llama-index-embeddings-huggingface>=0.6
+sentence-transformers>=2.2

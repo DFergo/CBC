@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.config import config as backend_config
+from src.services import local_models
 from src.services._paths import (
     DATA_DIR,
     DOCUMENTS_DIR,
@@ -217,9 +218,14 @@ def _resolve_active_embedding_slot() -> tuple[str, str]:
     from src.services import embedding_config_store
 
     try:
-        slot = embedding_config_store.load_config().embedding
-    except Exception:
-        return ("local", backend_config.rag_embedding_model)
+        slot = embedding_config_store.load_config_strict().embedding
+    except Exception as e:
+        # A configured-but-broken provider must fail loudly, never silently
+        # swap in the local model (wrong vectors against the active collection).
+        raise RuntimeError(
+            f"Embedding provider config is invalid ({e}). Fix it in Admin → General → "
+            "RAG Pipeline; not falling back to the local model."
+        ) from e
     if slot.provider == "local":
         return ("local", backend_config.rag_embedding_model)
     return (slot.provider, slot.model)
@@ -234,12 +240,10 @@ def _resolve_active_reranker_slot() -> tuple[str, str, bool, int]:
     from src.services import embedding_config_store
 
     try:
-        slot = embedding_config_store.load_config().reranker
-    except Exception:
-        return (
-            "local", backend_config.rag_reranker_model,
-            backend_config.rag_reranker_enabled, backend_config.rag_reranker_top_n,
-        )
+        slot = embedding_config_store.load_config_strict().reranker
+    except Exception as e:
+        logger.error(f"Reranker provider config is invalid ({e}); reranking disabled until fixed in Admin")
+        return ("local", backend_config.rag_reranker_model, False, backend_config.rag_reranker_top_n)
     if slot.provider == "local":
         return (
             "local", backend_config.rag_reranker_model,
@@ -253,6 +257,7 @@ def _construct_embed_model(provider: str, model: str) -> Any:
     no caching here, callers own the cache (global singleton or thread-local
     build override)."""
     if provider == "local":
+        local_models.require("embedding model")
         from llama_index.embeddings.huggingface import HuggingFaceEmbedding
         m = HuggingFaceEmbedding(model_name=model)
         logger.info(f"Loaded local embedding model {model}")
@@ -271,6 +276,12 @@ def _construct_reranker(provider: str, model: str, enabled: bool, top_n: int) ->
     if not enabled:
         return None
     if provider == "local":
+        if not local_models.available():
+            global _local_reranker_warned
+            if not _local_reranker_warned:
+                _local_reranker_warned = True
+                logger.error(f"Local reranker unavailable — reranking skipped. {local_models.LOCAL_MODELS_HINT}")
+            return None
         try:
             from llama_index.core.postprocessor import SentenceTransformerRerank
             rr = SentenceTransformerRerank(model=model, top_n=top_n)
@@ -286,6 +297,50 @@ def _construct_reranker(provider: str, model: str, enabled: bool, top_n: int) ->
     rr = ApiRerank(api_endpoint=slot.api_endpoint or "", api_key=key, model=model, top_n=top_n)
     logger.info(f"Loaded API reranker {model!r} via provider={provider} endpoint={slot.api_endpoint}")
     return rr
+
+
+_local_reranker_warned = False
+
+
+def model_mode_report() -> dict[str, Any]:
+    """Which embedder/reranker the RAG path will use, plus actionable
+    problems for the admin. Never imports torch."""
+    from src.services import embedding_config_store
+
+    warnings: list[str] = []
+    out: dict[str, Any] = {
+        "local_models_available": local_models.available(),
+        "configured": embedding_config_store.is_configured(),
+        "warnings": warnings,
+    }
+    try:
+        out["embedding"] = "%s:%s" % _resolve_active_embedding_slot()
+    except RuntimeError as e:
+        out["embedding"] = "invalid"
+        warnings.append(str(e))
+    provider, model, enabled, _ = _resolve_active_reranker_slot()
+    out["reranker"] = f"{provider}:{model}" if enabled else "disabled"
+    if not out["local_models_available"]:
+        if out["embedding"].startswith("local:"):
+            warnings.append(f"Embedding provider is 'local' but local models are not installed. {local_models.LOCAL_MODELS_HINT}")
+        if enabled and provider == "local":
+            warnings.append(f"Reranker provider is 'local' but local models are not installed. {local_models.LOCAL_MODELS_HINT}")
+    return out
+
+
+def log_model_mode() -> None:
+    """Startup log of the active RAG model mode (chat retrieval, file-watcher
+    reindex and Compare All all resolve the embedder through the same path)."""
+    r = model_mode_report()
+    logger.info(
+        f"RAG model mode: local models installed={r['local_models_available']}, "
+        f"embedding={r['embedding']}, reranker={r['reranker']} "
+        "(applies to chat retrieval, file-watcher reindex and Compare All)"
+    )
+    if not r["configured"] and r["local_models_available"]:
+        logger.warning("No embedding/reranker provider configured — using the local models (zero-config default)")
+    for w in r["warnings"]:
+        logger.error(w)
 
 
 def _get_embed_model() -> Any:

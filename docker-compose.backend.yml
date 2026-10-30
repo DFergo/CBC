@@ -16,6 +16,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        # true = local embedding/reranker models baked in (zero-config RAG);
+        # false = smaller image, embeddings/reranking via an API connection.
+        INSTALL_LOCAL_MODELS: ${INSTALL_LOCAL_MODELS:-true}
     ports:
       - "${BACKEND_PORT:-8100}:8000"
     volumes:

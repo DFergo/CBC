@@ -83,6 +83,11 @@ async def lifespan(app: FastAPI):
     # so user-click Stop can fire mid-stream (main poll is on a 2s cycle and
     # only drains queued messages, not cancellations).
     cancel_task = asyncio.create_task(cancel_watcher_loop())
+    from src.services import rag_service
+    try:
+        rag_service.log_model_mode()
+    except Exception as e:
+        logger.error(f"Could not determine the RAG model mode: {e}")
     rag_watcher.start()
     logger.info("CBC backend started (Sprint 14 — parallel polling + shared cancel watcher)")
     yield
