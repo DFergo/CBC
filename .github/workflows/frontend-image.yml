@@ -1,13 +1,12 @@
 name: frontend-image
 
 # main → :latest + :sha-<commit>
-# feat/flexible-deploy → :pilot + :sha-<commit>   (never :latest)
 # Multi-arch: amd64 (VPS) + arm64 (Raspberry Pi, Apple Silicon). The React build
 # runs once on the build platform (Dockerfile uses --platform=$BUILDPLATFORM);
 # only the small Python/Nginx runtime stage is built per architecture.
 on:
   push:
-    branches: [main, feat/flexible-deploy]
+    branches: [main]
     paths-ignore:
       - "docs/**"
       - "**.md"
@@ -18,7 +17,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: frontend-image-${{ github.ref_name }}
+  group: frontend-image
   cancel-in-progress: false
 
 jobs:
@@ -40,7 +39,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/dfergo/cbc-frontend:${{ github.ref_name == 'main' && 'latest' || 'pilot' }}
+            ghcr.io/dfergo/cbc-frontend:latest
             ghcr.io/dfergo/cbc-frontend:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}

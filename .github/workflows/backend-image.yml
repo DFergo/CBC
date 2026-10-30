@@ -1,10 +1,9 @@
 name: backend-image
 
 # main → :latest + :sha-<commit>   (the nightly auto-updater follows :latest)
-# feat/flexible-deploy → :pilot + :sha-<commit>   (never :latest)
 on:
   push:
-    branches: [main, feat/flexible-deploy]
+    branches: [main]
     paths-ignore:
       - "docs/**"
       - "**.md"
@@ -15,7 +14,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: backend-image-${{ github.ref_name }}
+  group: backend-image
   cancel-in-progress: false
 
 jobs:
@@ -36,7 +35,7 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ghcr.io/dfergo/cbc-backend:${{ github.ref_name == 'main' && 'latest' || 'pilot' }}
+            ghcr.io/dfergo/cbc-backend:latest
             ghcr.io/dfergo/cbc-backend:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
