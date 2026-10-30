@@ -17,6 +17,7 @@ from src.api.v1.admin.auth import require_admin
 from src.services import branding_defaults_store, branding_store, resolvers
 from src.services.branding_store import Branding
 from src.services.branding_translator import auto_translate_branding
+from src.services import frontend_client
 from src.services.frontend_registry import registry
 
 logger = logging.getLogger("admin.branding")
@@ -68,7 +69,7 @@ async def _push_to_frontend(frontend_id: str, body: dict[str, Any]) -> None:
         return
     url = f"{fe['url'].rstrip('/')}/internal/branding"
     try:
-        async with httpx.AsyncClient(timeout=PUSH_TIMEOUT) as client:
+        async with frontend_client.AsyncClient(timeout=PUSH_TIMEOUT) as client:
             r = await client.post(url, json=body)
             if r.status_code // 100 != 2:
                 logger.warning(f"Push branding → {url}: HTTP {r.status_code}")

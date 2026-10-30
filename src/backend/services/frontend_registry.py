@@ -108,7 +108,7 @@ class FrontendRegistry:
     def update(self, frontend_id: str, **patch: Any) -> dict[str, Any] | None:
         if frontend_id not in self._frontends:
             return None
-        ALLOWED = {"url", "name", "enabled", "metadata"}
+        ALLOWED = {"url", "name", "enabled", "metadata", "auth_mode", "signing_secret", "extra_headers"}
         for key, val in patch.items():
             if key in ALLOWED and val is not None:
                 if key == "url":
@@ -132,6 +132,12 @@ class FrontendRegistry:
         self._frontends[frontend_id]["status"] = status
         if status == "online":
             self._frontends[frontend_id]["last_seen"] = _now()
+
+
+    def set_surface_auth(self, frontend_id: str, mode: str | None) -> None:
+        """Backend-surface auth mode the frontend reports on each poll (runtime only)."""
+        if frontend_id in self._frontends and mode:
+            self._frontends[frontend_id]["surface_auth"] = mode
 
 
 registry = FrontendRegistry()

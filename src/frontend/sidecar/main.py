@@ -20,10 +20,20 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from sidecar.backend_auth import BackendSignatureMiddleware, surface_mode
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sidecar")
 
-app = FastAPI(title="CBC Frontend Sidecar", version="0.4.0")
+# Two surfaces, two apps, two ports (served together by serve.py so they share
+# the in-memory state below):
+#   app          — public surface, browser routes under /internal/
+#   backend_app  — backend surface, routes under /backend/v1/, every request
+#                  signed (backend_auth.py). Never reachable on the public port.
+app = FastAPI(title="CBC Frontend Sidecar", version="0.5.0")
+backend_app = FastAPI(title="CBC Frontend Sidecar — backend surface", version="0.5.0",
+                      docs_url=None, redoc_url=None, openapi_url=None)
+backend_app.add_middleware(BackendSignatureMiddleware)
 
 _config_path = os.environ.get("DEPLOYMENT_JSON_PATH", "/app/config/deployment_frontend.json")
 _base_config: dict[str, Any] = {}
@@ -92,11 +102,13 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 @app.get("/internal/health")
+@backend_app.get("/backend/v1/health")
 async def health():
     return {"status": "ok"}
 
 
 @app.get("/internal/config")
+@backend_app.get("/backend/v1/config")
 async def get_config():
     """Effective config = baseline deployment_frontend.json + pushed overrides.
 
@@ -142,7 +154,7 @@ async def get_config():
 
 # --- Backend push targets ---
 
-@app.post("/internal/branding")
+@backend_app.post("/backend/v1/branding")
 async def push_branding(body: dict[str, Any]):
     """Backend pushes branding here when admin saves changes.
 
@@ -156,7 +168,7 @@ async def push_branding(body: dict[str, Any]):
     return {"status": "ok"}
 
 
-@app.post("/internal/session-settings")
+@backend_app.post("/backend/v1/session-settings")
 async def push_session_settings(body: dict[str, Any]):
     """Backend pushes session-settings override here when admin saves changes.
 
@@ -186,7 +198,7 @@ _COMPARE_ALL_ENTRY = {
 }
 
 
-@app.post("/internal/companies")
+@backend_app.post("/backend/v1/companies")
 async def push_companies(body: dict[str, Any]):
     """Backend pushes this frontend's company list on every poll cycle (or
     after admin CRUD). Body: {"companies": [...]}. Cached to disk so the list
@@ -337,7 +349,7 @@ async def get_auth_status(session_token: str):
     }
 
 
-@app.post("/internal/auth/{session_token}/result")
+@backend_app.post("/backend/v1/auth/{session_token}/result")
 async def push_auth_result(session_token: str, body: AuthResultPush):
     """Backend pushes the resolved result here after processing a queued
     auth request. Schedules a GC of the entry after the TTL so the dict
@@ -464,7 +476,7 @@ async def cancel_chat(session_token: str):
     return {"status": "queued"}
 
 
-@app.get("/internal/cancellations")
+@backend_app.get("/backend/v1/cancellations")
 async def drain_cancellations():
     """Backend per-turn cancel-watcher polls this. Returns and clears all
     pending cancellation signals (older than _CANCEL_TTL are dropped silently
@@ -480,7 +492,7 @@ async def drain_cancellations():
     return {"cancellations": fresh}
 
 
-@app.get("/internal/queue")
+@backend_app.get("/backend/v1/queue")
 async def dequeue_messages():
     """Backend poll target — drains pending chat/survey/close messages and
     surfaces pending recovery_requests (tokens), auth_requests, and
@@ -498,7 +510,8 @@ async def dequeue_messages():
     async with _document_lock:
         doc_drain = list(_document_queue)
         _document_queue.clear()
-    result: dict[str, Any] = {"messages": valid}
+    # surface_auth lets the backend show the frontend's real auth mode in the admin
+    result: dict[str, Any] = {"messages": valid, "surface_auth": surface_mode()}
     if pending_tokens:
         result["recovery_requests"] = pending_tokens
     if auth_drain:
@@ -557,7 +570,7 @@ async def _get_or_create_stream(token: str) -> asyncio.Queue:
         return _streams[token]
 
 
-@app.post("/internal/stream/{session_token}/chunk")
+@backend_app.post("/backend/v1/stream/{session_token}/chunk")
 async def push_stream_chunk(session_token: str, chunk: StreamChunk):
     """Backend pushes one SSE event. Terminal events (`done`, `error`,
     `cancelled`) close the SSE connection and schedule queue cleanup so the
@@ -621,7 +634,7 @@ class GuardrailThresholdsBody(BaseModel):
     end_at: int
 
 
-@app.post("/internal/guardrails/thresholds")
+@backend_app.post("/backend/v1/guardrails/thresholds")
 async def push_guardrails_thresholds(body: GuardrailThresholdsBody):
     """Backend pushes the configured guardrails thresholds here on every poll."""
     _write_json(_GUARDRAIL_THRESHOLDS_CACHE, body.model_dump())
@@ -693,7 +706,7 @@ async def poll_recovery(token: str):
         return {"status": state["status"], "data": state.get("data")}
 
 
-@app.post("/internal/session/{token}/recovery-data")
+@backend_app.post("/backend/v1/session/{token}/recovery-data")
 async def push_recovery_data(token: str, body: RecoveryData):
     """Backend pushes the resolved recovery payload here. Status is one of
     'found' (payload in `data`), 'not_found', or 'expired'."""
@@ -774,7 +787,7 @@ async def poll_document(request_id: str):
     )
 
 
-@app.post("/internal/document/{request_id}/result")
+@backend_app.post("/backend/v1/document/{request_id}/result")
 async def push_document_bytes(request_id: str, file: UploadFile = File(...)):
     """Backend pushes the fetched file here. Stored under a per-request dir
     so the cleanup task knows exactly what to remove on TTL expiry."""
@@ -809,7 +822,7 @@ async def push_document_bytes(request_id: str, file: UploadFile = File(...)):
     return {"status": "ok"}
 
 
-@app.post("/internal/document/{request_id}/error")
+@backend_app.post("/backend/v1/document/{request_id}/error")
 async def push_document_error(request_id: str, body: dict[str, Any]):
     """Backend couldn't fetch the file — surface to React via status poll."""
     async with _document_lock:
@@ -859,7 +872,7 @@ async def upload_file(session_token: str, file: UploadFile = File(...)):
     return {"status": "uploaded", "filename": file.filename, "size": len(content)}
 
 
-@app.get("/internal/uploads")
+@backend_app.get("/backend/v1/uploads")
 async def list_pending_uploads():
     """Backend polls this alongside /internal/queue. Returns all pending
     upload notifications and clears the list."""
@@ -869,7 +882,7 @@ async def list_pending_uploads():
     return {"uploads": uploads}
 
 
-@app.get("/internal/upload/{session_token}/{filename}")
+@backend_app.get("/backend/v1/upload/{session_token}/{filename}")
 async def fetch_upload(session_token: str, filename: str):
     """Backend fetches the raw file bytes for ingest."""
     safe_name = Path(filename).name  # strip any directory components
@@ -879,7 +892,7 @@ async def fetch_upload(session_token: str, filename: str):
     return FileResponse(file_path)
 
 
-@app.delete("/internal/upload/{session_token}/{filename}")
+@backend_app.delete("/backend/v1/upload/{session_token}/{filename}")
 async def cleanup_upload(session_token: str, filename: str):
     """Backend signals ingest is done; sidecar removes the temp copy."""
     safe_name = Path(filename).name

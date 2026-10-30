@@ -44,6 +44,7 @@ from src.services import (
     session_settings_store,
     smtp_service,
 )
+from src.services import frontend_client
 from src.services.frontend_registry import registry
 from src.services.session_store import store as session_store
 
@@ -898,6 +899,7 @@ async def _process_frontend(client: httpx.AsyncClient, fe: dict[str, Any]) -> No
 
     # 3. Queue drain
     drained = await _drain_queue(client, url)
+    registry.set_surface_auth(fid, drained.get("surface_auth"))
 
     # 3a. Messages: fire-and-forget so this tick doesn't block on LLM
     #     streaming time. Each spawned task acquires the global turn
@@ -986,7 +988,7 @@ async def polling_loop() -> None:
     """Background task kicked off from `main.py` lifespan. Never exits
     voluntarily; restarts itself if anything inside explodes."""
     logger.info(f"Polling loop started (interval {POLL_INTERVAL_SECONDS}s, health + queue drain)")
-    async with httpx.AsyncClient() as client:
+    async with frontend_client.AsyncClient(timeout=5.0) as client:
         while True:
             try:
                 await _tick(client)
@@ -1015,7 +1017,7 @@ async def cancel_watcher_loop() -> None:
     same session. The sidecar itself also TTLs cancel signals at 30 s.
     """
     logger.info(f"Cancel watcher loop started (interval {CANCEL_POLL_INTERVAL}s)")
-    async with httpx.AsyncClient() as client:
+    async with frontend_client.AsyncClient(timeout=5.0) as client:
         while True:
             try:
                 for fe in registry.list_enabled():
